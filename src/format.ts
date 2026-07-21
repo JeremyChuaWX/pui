@@ -1,7 +1,15 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
+import type { ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 
 const MAX_TOOL_TEXT = 8_000;
+
+type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
+
+export interface DisplayFormatOptions {
+  toolExecutions?: ToolExecutionState;
+}
 
 function truncate(value: string, max = MAX_TOOL_TEXT): string {
   if (value.length <= max) return value;
@@ -34,6 +42,51 @@ function safeJson(value: unknown): string {
   }
 }
 
+function recordArgs(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function resultDetails(value: unknown): unknown {
+  return typeof value === "object" && value !== null && "details" in value
+    ? (value as { details?: unknown }).details
+    : undefined;
+}
+
+function resultContent(value: unknown): string {
+  return typeof value === "object" && value !== null && "content" in value
+    ? truncate(contentText((value as { content?: unknown }).content))
+    : "";
+}
+
+function applySubagentPresentation(
+  item: ToolDisplayItem,
+  args: Record<string, unknown>,
+  timestamp?: number,
+): void {
+  const preferredDetails = item.running
+    ? item.partialDetails ?? item.resultDetails
+    : item.resultDetails !== undefined
+      ? item.resultDetails
+      : item.partialDetails;
+  const subagent = normalizeSubagentDetails(preferredDetails, {
+    toolCallId: item.toolCallId,
+    args,
+    running: item.running,
+    isError: item.isError,
+    timestamp,
+    error: item.isError ? item.result : undefined,
+  });
+  if (subagent) {
+    item.subagent = subagent;
+    item.subagentKey = subagentPresentationKey(subagent);
+  } else {
+    delete item.subagent;
+    delete item.subagentKey;
+  }
+}
+
 export function formatToolTitle(name: string, args: Record<string, unknown> = {}): string {
   const target =
     args.path ?? args.file_path ?? args.filePath ?? args.command ?? args.query ?? args.pattern ?? args.url ?? args.input;
@@ -59,12 +112,18 @@ export function formatCount(value: number | null | undefined): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-export function buildDisplayItems(messages: AgentMessage[], streamingMessage?: AgentMessage): DisplayItem[] {
+export function buildDisplayItems(
+  messages: AgentMessage[],
+  streamingMessage?: AgentMessage,
+  options: DisplayFormatOptions = {},
+): DisplayItem[] {
   const source = [...messages];
   if (streamingMessage && !source.includes(streamingMessage)) source.push(streamingMessage);
 
   const result: DisplayItem[] = [];
-  const toolById = new Map<string, Extract<DisplayItem, { kind: "tool" }>>();
+  const toolById = new Map<string, ToolDisplayItem>();
+  const argsById = new Map<string, Record<string, unknown>>();
+  const executions = options.toolExecutions ?? new Map();
 
   source.forEach((message, messageIndex) => {
     const id = `${messageIndex}:${message.timestamp ?? messageIndex}`;
@@ -92,17 +151,32 @@ export function buildDisplayItems(messages: AgentMessage[], streamingMessage?: A
             return;
           }
           if (part.type === "toolCall") {
-            const item: Extract<DisplayItem, { kind: "tool" }> = {
+            const args = recordArgs(part.arguments);
+            const execution = executions.get(part.id);
+            const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
+            const item: ToolDisplayItem = {
               id: partId,
               kind: "tool",
               toolCallId: part.id,
               name: part.name,
-              title: formatToolTitle(part.name, part.arguments),
-              args: formatToolArguments(part.arguments),
-              running: streamingMessage === message,
+              title: formatToolTitle(part.name, args),
+              args: formatToolArguments(args),
+              running: execution?.status === "running",
+              ...(execution?.partialResult === undefined
+                ? {}
+                : { partialDetails: resultDetails(execution.partialResult) }),
+              ...(execution?.finalResult === undefined
+                ? {}
+                : { resultDetails: resultDetails(execution.finalResult) }),
+              ...(liveResult === undefined || resultContent(liveResult) === ""
+                ? {}
+                : { result: resultContent(liveResult) }),
+              ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
             };
+            applySubagentPresentation(item, args, execution?.updatedAt ?? message.timestamp);
             result.push(item);
             toolById.set(part.id, item);
+            argsById.set(part.id, args);
           }
         });
         if (message.errorMessage) {
@@ -117,8 +191,10 @@ export function buildDisplayItems(messages: AgentMessage[], streamingMessage?: A
           existing.result = output;
           existing.isError = message.isError;
           existing.running = false;
+          existing.resultDetails = message.details;
+          applySubagentPresentation(existing, argsById.get(message.toolCallId) ?? {}, message.timestamp);
         } else {
-          result.push({
+          const item: ToolDisplayItem = {
             id,
             kind: "tool",
             toolCallId: message.toolCallId,
@@ -127,7 +203,12 @@ export function buildDisplayItems(messages: AgentMessage[], streamingMessage?: A
             args: "",
             result: output,
             isError: message.isError,
-          });
+            running: false,
+            resultDetails: message.details,
+          };
+          applySubagentPresentation(item, {}, message.timestamp);
+          result.push(item);
+          toolById.set(message.toolCallId, item);
         }
         break;
       }
@@ -155,6 +236,26 @@ export function buildDisplayItems(messages: AgentMessage[], streamingMessage?: A
         break;
     }
   });
+
+  for (const execution of executions.values()) {
+    if (toolById.has(execution.id)) continue;
+    const liveResult = execution.status === "ended" ? execution.finalResult : execution.partialResult;
+    const item: ToolDisplayItem = {
+      id: `tool-execution:${execution.id}`,
+      kind: "tool",
+      toolCallId: execution.id,
+      name: execution.name,
+      title: formatToolTitle(execution.name, execution.args),
+      args: formatToolArguments(execution.args),
+      running: execution.status === "running",
+      ...(execution.partialResult === undefined ? {} : { partialDetails: resultDetails(execution.partialResult) }),
+      ...(execution.finalResult === undefined ? {} : { resultDetails: resultDetails(execution.finalResult) }),
+      ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
+      ...(execution.isError === undefined ? {} : { isError: execution.isError }),
+    };
+    applySubagentPresentation(item, execution.args, execution.updatedAt);
+    result.push(item);
+  }
 
   return result;
 }

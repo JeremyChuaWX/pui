@@ -39,7 +39,8 @@ npm run check
 
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
-- Responsive OpenCode-style session sidebar
+- Live and resumed subagent cards with lifecycle, child activity, usage, output, and diagnostics
+- Responsive OpenCode-style session sidebar with active subagent instances
 - Model and session pickers plus a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
@@ -48,13 +49,23 @@ npm run check
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - `!command` and `!!command` shell execution
 
+## Subagents
+
+Subagents are supplied by a Pi extension; they are not built into Pi core or this client. pi-tui recognizes the renderer-neutral `pi.subagent` protocol in ordinary tool-result `details` and otherwise falls back to its generic tool card. The extension remains responsible for presets, process isolation, concurrency, timeout, cancellation, and output limits.
+
+When a compatible extension is installed, pi-tui shows queued, starting, running, succeeded, failed, cancelled, and timed-out calls independently. `Ctrl+O` expands delegated prompts, working directories, child activity, usage, live previews, final Markdown, diagnostics, and any full-output path. Terminal protocol details are stored in the normal Pi session, so completed cards are restored on resume. Legacy `{ agent, model, toolCalls, usage }` details remain readable; unknown protocol versions stay generic.
+
+The client continues to work normally when the extension is absent. See the extension's own README for its configuration and troubleshooting instructions.
+
 ## Architecture
 
 - `src/index.tsx` owns OpenTUI renderer startup and shutdown.
 - `src/controller.ts` embeds Pi through `AgentSessionRuntime` and rebinds every replaced session.
+- `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
+- `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.
 - `src/app.tsx` is the Solid/OpenTUI view layer.
-- `src/format.ts` projects Pi messages into stable display items.
+- `src/format.ts` projects Pi messages and live tool executions into stable display items.
 - `src/theme.ts` defines the neutral palette and syntax styles.
 - `bin/pi-tui` is the standalone launcher.
 
-Pi extensions and tools are loaded from the normal Pi agent directory. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those visual components inside OpenTUI yet; their non-UI hooks, tools, commands, and lifecycle events still work.
+Pi extensions and tools are loaded from the normal Pi agent directory. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those visual components inside OpenTUI; their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral structured details still work.

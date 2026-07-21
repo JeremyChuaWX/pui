@@ -6,6 +6,16 @@ import { PiTuiController } from "./controller.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { formatCount } from "./format.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
+import {
+  isTerminalSubagentStatus,
+  subagentCurrentActivity,
+  subagentElapsed,
+  subagentStatusIcon,
+  subagentStatusLabel,
+  subagentSummary,
+  type SubagentStatus,
+  type SubagentViewModel,
+} from "./subagent.js";
 import { syntaxStyle, theme } from "./theme.js";
 import type {
   DisplayItem,
@@ -22,6 +32,8 @@ interface PickerItem {
   search: string;
   value: string;
 }
+
+type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
 
 type DialogState =
   | {
@@ -50,6 +62,30 @@ function progressBar(percent: number | null | undefined, width = 14): string {
   return `${"━".repeat(filled)}${"─".repeat(width - filled)}`;
 }
 
+function subagentColor(status: SubagentStatus): string {
+  switch (status) {
+    case "succeeded":
+      return theme.success;
+    case "failed":
+    case "timed_out":
+      return theme.error;
+    case "cancelled":
+    case "queued":
+      return theme.muted;
+    case "starting":
+      return theme.info;
+    case "running":
+      return theme.warning;
+  }
+}
+
+function activeSubagentItems(display: readonly DisplayItem[]): ToolDisplayItem[] {
+  return display.filter(
+    (item): item is ToolDisplayItem =>
+      item.kind === "tool" && Boolean(item.subagent) && !isTerminalSubagentStatus(item.subagent!.status),
+  );
+}
+
 export function App(props: { controller: PiTuiController }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
@@ -61,6 +97,7 @@ export function App(props: { controller: PiTuiController }) {
   const [sidebarOverride, setSidebarOverride] = createSignal<boolean>();
   const [toolsExpanded, setToolsExpanded] = createSignal(false);
   const [thinkingExpanded, setThinkingExpanded] = createSignal(false);
+  const [elapsedNow, setElapsedNow] = createSignal(Date.now());
   let prompt: TextareaRenderable | undefined;
   let promptAnchor: BoxRenderable | undefined;
   let transcript: ScrollBoxRenderable | undefined;
@@ -85,6 +122,13 @@ export function App(props: { controller: PiTuiController }) {
     const name = state.sessionName ? ` · ${state.sessionName}` : "";
     renderer.setTerminalTitle(`Pi${name}`);
     if (state.exitRequested && !renderer.isDestroyed) renderer.destroy();
+  });
+
+  createEffect(() => {
+    if (activeSubagentItems(snapshot.display).length === 0) return;
+    setElapsedNow(Date.now());
+    const timer = setInterval(() => setElapsedNow(Date.now()), 1_000);
+    onCleanup(() => clearInterval(timer));
   });
 
   const wide = createMemo(() => dimensions().width >= 112);
@@ -486,7 +530,12 @@ export function App(props: { controller: PiTuiController }) {
             >
               <For each={snapshot.display}>
                 {(item) => (
-                  <MessageItem item={() => item} toolsExpanded={toolsExpanded()} thinkingExpanded={thinkingExpanded()} />
+                  <MessageItem
+                    item={() => item}
+                    toolsExpanded={toolsExpanded()}
+                    thinkingExpanded={thinkingExpanded()}
+                    now={elapsedNow()}
+                  />
                 )}
               </For>
               <Index each={snapshot.queuedSteering}>
@@ -517,7 +566,7 @@ export function App(props: { controller: PiTuiController }) {
           />
         </box>
         <Show when={sidebarVisible()}>
-          <Sidebar snapshot={snapshot} />
+          <Sidebar snapshot={snapshot} now={elapsedNow()} />
         </Show>
       </box>
       <ToastStack toasts={snapshot.toasts} width={dimensions().width} />
@@ -560,16 +609,10 @@ function MessageItem(props: {
   item: () => DisplayItem;
   toolsExpanded: boolean;
   thinkingExpanded: boolean;
+  now: number;
 }) {
   const textItem = () => props.item() as DisplayItem & { text: string; label?: string; streaming?: boolean };
-  const toolItem = () => props.item() as DisplayItem & {
-    kind: "tool";
-    title: string;
-    args: string;
-    result?: string;
-    isError?: boolean;
-    running?: boolean;
-  };
+  const toolItem = () => props.item() as ToolDisplayItem;
   const bashItem = () => props.item() as DisplayItem & {
     kind: "bash";
     command: string;
@@ -618,23 +661,37 @@ function MessageItem(props: {
         </box>
       </Match>
       <Match when={props.item().kind === "tool"}>
-        <box marginTop={1} border={["left"]} borderColor={toolColor()} backgroundColor={theme.toolBackground}>
-          <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-            <box flexDirection="row">
-              <text fg={toolColor()}>{toolItem().running ? "◌" : toolItem().isError ? "×" : "✓"} </text>
-              <text fg={theme.text}>{toolItem().title}</text>
+        <Show
+          when={toolItem().subagent}
+          fallback={
+            <box marginTop={1} border={["left"]} borderColor={toolColor()} backgroundColor={theme.toolBackground}>
+              <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+                <box flexDirection="row">
+                  <text fg={toolColor()}>{toolItem().running ? "◌" : toolItem().isError ? "×" : "✓"} </text>
+                  <text fg={theme.text}>{toolItem().title}</text>
+                </box>
+                <Show when={props.toolsExpanded && toolItem().args}>
+                  <text fg={theme.muted}>{toolItem().args}</text>
+                </Show>
+                <Show when={props.toolsExpanded && toolItem().result}>
+                  <text fg={toolItem().isError ? theme.error : theme.subtle}>{toolItem().result}</text>
+                </Show>
+                <Show when={!props.toolsExpanded && toolItem().result}>
+                  <text fg={theme.muted}>Ctrl+O to show output</text>
+                </Show>
+              </box>
             </box>
-            <Show when={props.toolsExpanded && toolItem().args}>
-              <text fg={theme.muted}>{toolItem().args}</text>
-            </Show>
-            <Show when={props.toolsExpanded && toolItem().result}>
-              <text fg={toolItem().isError ? theme.error : theme.subtle}>{toolItem().result}</text>
-            </Show>
-            <Show when={!props.toolsExpanded && toolItem().result}>
-              <text fg={theme.muted}>Ctrl+O to show output</text>
-            </Show>
-          </box>
-        </box>
+          }
+        >
+          {(subagent) => (
+            <SubagentTool
+              item={toolItem()}
+              subagent={subagent()}
+              expanded={props.toolsExpanded}
+              now={props.now}
+            />
+          )}
+        </Show>
       </Match>
       <Match when={props.item().kind === "bash"}>
         <box marginTop={1} border={["left"]} borderColor={bashColor()} backgroundColor={theme.toolBackground}>
@@ -676,6 +733,140 @@ function MessageItem(props: {
         </box>
       </Match>
     </Switch>
+  );
+}
+
+function SubagentTool(props: {
+  item: ToolDisplayItem;
+  subagent: SubagentViewModel;
+  expanded: boolean;
+  now: number;
+}) {
+  const color = () => subagentColor(props.subagent.status);
+  const finalOutput = () =>
+    isTerminalSubagentStatus(props.subagent.status) && !props.item.isError ? props.item.result : undefined;
+  const livePreview = () =>
+    !isTerminalSubagentStatus(props.subagent.status) ? props.subagent.outputPreview : undefined;
+  const usageDetails = () => {
+    const usage = props.subagent.usage;
+    return [
+      `${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`,
+      `${formatCount(usage.input)} in`,
+      `${formatCount(usage.output)} out`,
+      `${formatCount(usage.cacheRead)} cache read`,
+      `${formatCount(usage.cacheWrite)} cache write`,
+      `${formatCount(usage.totalTokens)} total`,
+      `$${usage.cost.toFixed(4)}`,
+    ].join(" · ");
+  };
+
+  return (
+    <box marginTop={1} border={["left"]} borderColor={color()} backgroundColor={theme.toolBackground}>
+      <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+        <box flexDirection="row" minWidth={0}>
+          <text fg={color()}>{subagentStatusIcon(props.subagent.status)} </text>
+          <text fg={theme.text} wrapMode="none">{subagentSummary(props.subagent, props.now)}</text>
+        </box>
+        <Show when={!props.expanded && props.subagent.error}>
+          <text fg={theme.error} wrapMode="none">{props.subagent.error}</text>
+        </Show>
+        <Show when={props.expanded}>
+          <box marginTop={1} gap={1}>
+            <Show when={props.subagent.prompt}>
+              {(prompt) => (
+                <box>
+                  <text fg={theme.secondary}>Delegated prompt</text>
+                  <text fg={theme.text}>{prompt()}</text>
+                </box>
+              )}
+            </Show>
+
+            <box>
+              <text fg={theme.secondary}>Run</text>
+              <text fg={theme.muted}>{props.subagent.cwd || "(working directory unavailable)"}</text>
+              <text fg={theme.muted}>
+                {subagentStatusLabel(props.subagent.status)} · {props.subagent.model} · {subagentElapsed(props.subagent, props.now)}
+              </text>
+            </box>
+
+            <Show when={props.subagent.activeTools.length > 0}>
+              <box>
+                <text fg={theme.secondary}>Active child tools</text>
+                <For each={props.subagent.activeTools}>
+                  {(tool) => <text fg={theme.warning}>◌ {tool.title}</text>}
+                </For>
+              </box>
+            </Show>
+
+            <Show when={props.subagent.recentActivity.length > 0}>
+              <box>
+                <text fg={theme.secondary}>Recent activity</text>
+                <For each={props.subagent.recentActivity}>
+                  {(activity) => (
+                    <text fg={activity.isError ? theme.error : theme.muted}>
+                      {activity.kind === "tool_start" ? "›" : activity.kind === "tool_end" ? "·" : "·"} {activity.title}
+                    </text>
+                  )}
+                </For>
+              </box>
+            </Show>
+
+            <box>
+              <text fg={theme.secondary}>Usage</text>
+              <text fg={theme.muted}>{usageDetails()}</text>
+            </box>
+
+            <Show when={props.subagent.error}>
+              {(error) => (
+                <box>
+                  <text fg={theme.error}>Diagnostic</text>
+                  <text fg={theme.error}>{error()}</text>
+                </box>
+              )}
+            </Show>
+
+            <Show when={livePreview()}>
+              {(preview) => (
+                <box>
+                  <text fg={theme.secondary}>Live output</text>
+                  <markdown
+                    syntaxStyle={syntaxStyle}
+                    internalBlockMode="top-level"
+                    content={preview()}
+                    conceal
+                    fg={theme.subtle}
+                    bg={theme.toolBackground}
+                  />
+                </box>
+              )}
+            </Show>
+
+            <Show when={finalOutput()}>
+              {(output) => (
+                <box>
+                  <text fg={theme.secondary}>Output</text>
+                  <markdown
+                    syntaxStyle={syntaxStyle}
+                    internalBlockMode="top-level"
+                    content={output()}
+                    conceal
+                    fg={theme.text}
+                    bg={theme.toolBackground}
+                  />
+                </box>
+              )}
+            </Show>
+
+            <Show when={props.subagent.fullOutputPath}>
+              {(outputPath) => <text fg={theme.muted}>Full output: {outputPath()}</text>}
+            </Show>
+          </box>
+        </Show>
+        <Show when={!props.expanded && (finalOutput() || livePreview())}>
+          <text fg={theme.muted}>Ctrl+O to show subagent details</text>
+        </Show>
+      </box>
+    </box>
   );
 }
 
@@ -814,7 +1005,15 @@ function Prompt(props: {
   );
 }
 
-function Sidebar(props: { snapshot: PiTuiSnapshot }) {
+function Sidebar(props: { snapshot: PiTuiSnapshot; now: number }) {
+  const subagents = () => activeSubagentItems(props.snapshot.display);
+  const subagentIds = () => new Set(
+    props.snapshot.display
+      .filter((item): item is ToolDisplayItem => item.kind === "tool" && Boolean(item.subagent))
+      .map((item) => item.toolCallId),
+  );
+  const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
+
   return (
     <box
       width={34}
@@ -856,12 +1055,27 @@ function Sidebar(props: { snapshot: PiTuiSnapshot }) {
         </text>
       </box>
 
-      <Show when={props.snapshot.activeTools.length > 0}>
+      <Show when={subagents().length > 0}>
+        <box marginTop={1}>
+          <text fg={theme.text}>
+            <strong>Subagents</strong>
+          </text>
+          <For each={subagents()}>
+            {(item) => (
+              <text fg={subagentColor(item.subagent!.status)} wrapMode="none">
+                {subagentStatusIcon(item.subagent!.status)} {item.subagent!.agent} · {subagentCurrentActivity(item.subagent!)} · {subagentElapsed(item.subagent!, props.now)}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+
+      <Show when={genericTools().length > 0}>
         <box marginTop={1}>
           <text fg={theme.text}>
             <strong>Running</strong>
           </text>
-          <For each={props.snapshot.activeTools}>
+          <For each={genericTools()}>
             {(tool) => <text fg={theme.warning} wrapMode="none">◌ {tool.title}</text>}
           </For>
         </box>

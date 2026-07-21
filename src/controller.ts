@@ -19,8 +19,15 @@ import {
   type AutocompleteItem,
   type SlashCommand,
 } from "@earendil-works/pi-tui";
-import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
+import { buildDisplayItems, formatCount, formatToolArguments, formatToolTitle } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
+import {
+  deriveToolWorkingMessage,
+  reconcileToolExecutions,
+  reduceToolExecutions,
+  runningToolExecutions,
+  type ToolExecutionState,
+} from "./tool-executions.js";
 import type {
   ActiveTool,
   AppliedPromptCompletion,
@@ -87,11 +94,13 @@ function textFromMessageContent(content: unknown): string {
     .join("\n");
 }
 
+const OPAQUE_DISPLAY_FIELDS = new Set(["partialDetails", "resultDetails", "subagent"]);
+
 function sameDisplayItem(left: DisplayItem, right: DisplayItem): boolean {
   const leftRecord = left as unknown as Record<string, unknown>;
   const rightRecord = right as unknown as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
+  const leftKeys = Object.keys(leftRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
+  const rightKeys = Object.keys(rightRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(leftRecord[key], rightRecord[key]));
 }
 
@@ -142,7 +151,7 @@ export class PiTuiController {
   private runtime: AgentSessionRuntime;
   private unsubscribeSession?: () => void;
   private listeners = new Set<Listener>();
-  private activeTools = new Map<string, ActiveTool>();
+  private toolExecutions: ToolExecutionState = new Map();
   private autocompleteProvider?: CombinedAutocompleteProvider;
   private displayItems: DisplayItem[] = [];
   private runningBash?: RunningBash;
@@ -237,7 +246,7 @@ export class PiTuiController {
 
   private async bindSession(session: AgentSession): Promise<void> {
     this.unsubscribeSession?.();
-    this.activeTools.clear();
+    this.toolExecutions = new Map();
     this.displayItems = [];
     this.runningBash = undefined;
     this.workingMessage = undefined;
@@ -273,20 +282,10 @@ export class PiTuiController {
 
   private handleEvent(event: AgentSessionEvent): void {
     switch (event.type) {
-      case "tool_execution_start": {
-        this.activeTools.set(event.toolCallId, {
-          id: event.toolCallId,
-          name: event.toolName,
-          title: formatToolTitle(event.toolName, event.args ?? {}),
-          detail: event.args ? JSON.stringify(event.args) : "",
-          startedAt: Date.now(),
-        });
-        this.workingMessage = `Running ${event.toolName}`;
-        break;
-      }
+      case "tool_execution_start":
+      case "tool_execution_update":
       case "tool_execution_end":
-        this.activeTools.delete(event.toolCallId);
-        this.workingMessage = undefined;
+        this.toolExecutions = reduceToolExecutions(this.toolExecutions, event);
         break;
       case "compaction_start":
         this.workingMessage = "Compacting context";
@@ -305,7 +304,7 @@ export class PiTuiController {
         break;
       case "agent_settled":
         this.workingMessage = undefined;
-        this.activeTools.clear();
+        this.toolExecutions = this.reconcileToolExecutionState(true);
         break;
       case "session_info_changed":
       case "thinking_level_changed":
@@ -317,7 +316,6 @@ export class PiTuiController {
       case "agent_end":
       case "turn_start":
       case "turn_end":
-      case "tool_execution_update":
         break;
     }
     if (COALESCED_SESSION_EVENTS.has(event.type)) {
@@ -331,7 +329,12 @@ export class PiTuiController {
     const previousById = new Map(this.displayItems.map((item) => [item.id, item]));
     const reconciled = nextItems.map((item) => {
       const previous = previousById.get(item.id);
-      return previous && sameDisplayItem(previous, item) ? previous : item;
+      if (!previous || !sameDisplayItem(previous, item)) return item;
+      if (previous.kind === "tool" && item.kind === "tool") {
+        previous.partialDetails = item.partialDetails;
+        previous.resultDetails = item.resultDetails;
+      }
+      return previous;
     });
     if (
       reconciled.length === this.displayItems.length &&
@@ -343,11 +346,28 @@ export class PiTuiController {
     return reconciled;
   }
 
+  private persistedToolCallIds(): Set<string> {
+    return new Set(
+      this.runtime.session.messages
+        .filter((message) => message.role === "toolResult")
+        .map((message) => message.toolCallId),
+    );
+  }
+
+  private reconcileToolExecutionState(settled = false): ToolExecutionState {
+    return reconcileToolExecutions(this.toolExecutions, {
+      pendingToolCallIds: this.runtime.session.agent.state.pendingToolCalls,
+      persistedToolCallIds: this.persistedToolCallIds(),
+      settled,
+    });
+  }
+
   private buildSnapshot(): PiTuiSnapshot {
     const session = this.runtime.session;
     const context = session.getContextUsage();
     const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
-    const display = buildDisplayItems(session.messages, streamingMessage);
+    this.toolExecutions = this.reconcileToolExecutionState();
+    const display = buildDisplayItems(session.messages, streamingMessage, { toolExecutions: this.toolExecutions });
 
     if (this.runningBash) {
       display.push({
@@ -362,6 +382,17 @@ export class PiTuiController {
     }
 
     const stableDisplay = this.reconcileDisplayItems(display);
+    const runningExecutions = runningToolExecutions(this.toolExecutions);
+    const activeTools: ActiveTool[] = runningExecutions.map((execution) => ({
+      id: execution.id,
+      name: execution.name,
+      title: formatToolTitle(execution.name, execution.args),
+      detail: formatToolArguments(execution.args),
+      startedAt: execution.startedAt,
+    }));
+    const toolWorkingMessage = deriveToolWorkingMessage(this.toolExecutions);
+    const operationHasPriority = session.isCompacting || session.isRetrying || Boolean(this.runningBash);
+    const workingMessage = operationHasPriority ? this.workingMessage : toolWorkingMessage ?? this.workingMessage;
 
     return {
       revision: this.revision,
@@ -380,11 +411,11 @@ export class PiTuiController {
       isStreaming: session.isStreaming,
       isCompacting: session.isCompacting,
       isRetrying: session.isRetrying,
-      workingMessage: this.workingMessage,
+      workingMessage,
       queuedSteering: [...session.getSteeringMessages()],
       queuedFollowUp: [...session.getFollowUpMessages()],
       display: stableDisplay,
-      activeTools: [...this.activeTools.values()],
+      activeTools,
       activeToolNames: session.getActiveToolNames(),
       toasts: [...this.toasts],
       exitRequested: this.exitRequested,
@@ -735,7 +766,7 @@ export class PiTuiController {
     try {
       await this.session.abort();
     } finally {
-      this.activeTools.clear();
+      this.toolExecutions = new Map();
       this.runningBash = undefined;
       this.workingMessage = undefined;
       this.refresh();
@@ -752,6 +783,7 @@ export class PiTuiController {
     this.disposed = true;
     this.unsubscribeSession?.();
     this.runtime.setRebindSession(undefined);
+    this.toolExecutions = new Map();
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     for (const timer of this.toastTimers) clearTimeout(timer);

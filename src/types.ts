@@ -1,4 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
+import type { SubagentViewModel } from "./subagent.js";
 
 export type DisplayItem =
   | {
@@ -18,6 +19,10 @@ export type DisplayItem =
       result?: string;
       isError?: boolean;
       running?: boolean;
+      partialDetails?: unknown;
+      resultDetails?: unknown;
+      subagent?: SubagentViewModel;
+      subagentKey?: string;
     }
   | {
       id: string;
