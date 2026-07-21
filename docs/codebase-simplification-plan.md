@@ -4,7 +4,7 @@ Status: planned
 
 ## 1. Objective
 
-Reduce the amount of state and cross-module knowledge needed to change pi-tui while preserving current behavior.
+Reduce the amount of state and cross-module knowledge needed to change pui while preserving current behavior.
 
 The repository is healthy: the default check passes 63 tests, and broad copy-paste duplication is low. The main maintenance cost comes from two large orchestration files, opaque display reconciliation, and a process runner that combines several lifecycle concerns.
 
@@ -15,7 +15,7 @@ This plan favors a small number of cohesive modules and pure functions. It does 
 The cleanup is complete when:
 
 - `App` primarily composes the screen and routes global actions;
-- `PiTuiController` primarily owns Pi runtime and session orchestration;
+- `PuiController` primarily owns Pi runtime and session orchestration;
 - command metadata, parsing, and autocomplete cannot drift independently;
 - display items are explicitly typed and reconciled without reflective field inspection;
 - unused snapshot state and opaque extension payloads do not reach the UI;
@@ -132,7 +132,7 @@ Work:
 2. Remove UI casts and non-null assertions that exist only because the union is imprecise.
 3. Extract one tool display-item builder used by both persisted assistant calls and event-only executions.
 4. Replace reflective `sameDisplayItem()` comparison with an explicit, kind-aware presentation key or equality function.
-5. Keep normalized subagent presentation in the UI model, but remove raw `partialDetails` and `resultDetails` from `PiTuiSnapshot` unless a real UI consumer is identified.
+5. Keep normalized subagent presentation in the UI model, but remove raw `partialDetails` and `resultDetails` from `PuiSnapshot` unless a real UI consumer is identified.
 6. Remove unused snapshot properties:
    - `revision`;
    - `sessionFile`;
@@ -261,7 +261,7 @@ Acceptance:
 - Timeout and cancellation remain distinct.
 - Spawn failure, malformed JSONL, missing final output, nonzero exit, abort, and process-group cleanup retain coverage.
 - No progress is emitted after settlement.
-- Regular Pi and pi-tui continue to consume the same protocol.
+- Regular Pi and pui continue to consume the same protocol.
 - `npm run check` passes.
 
 ### SIM-06 — Final repository and documentation pass
@@ -282,8 +282,8 @@ Work:
 
 1. Update architecture documentation to match the final module boundaries.
 2. Keep one canonical verification command in user-facing documentation, with focused commands only where they add value.
-3. Add a lightweight `pi-tui --help` launcher smoke test that does not require a TTY or installed model.
-4. Align the internal package name, project title, and `pi-tui` command terminology, or document why they intentionally differ.
+3. Add a lightweight `pui --help` launcher smoke test that does not require a TTY or installed model.
+4. Align the internal package name, project title, and `pui` command terminology, or document why they intentionally differ.
 5. Review exports and snapshot fields for newly dead API surface.
 6. Reconcile the repository's TODO list with tracked issues or explicitly maintained documentation.
 7. Run clean-install, automated, and manual checks without combining unrelated dependency upgrades.

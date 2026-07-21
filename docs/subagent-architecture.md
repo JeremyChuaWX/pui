@@ -6,7 +6,7 @@ This document records the current subagent design and the boundaries that future
 
 Subagents are provided by the bundled Pi extension in [`extensions/subagent/`](../extensions/subagent/). They are not a Pi core feature.
 
-The extension launches isolated child Pi processes and publishes renderer-neutral progress through ordinary Pi tool updates. pi-tui consumes those updates, converts recognized protocol data into a bounded view model, and falls back to a generic tool card for data it does not recognize.
+The extension launches isolated child Pi processes and publishes renderer-neutral progress through ordinary Pi tool updates. pui consumes those updates, converts recognized protocol data into a bounded view model, and falls back to a generic tool card for data it does not recognize.
 
 ```text
 parent Pi tool call
@@ -14,7 +14,7 @@ parent Pi tool call
   -> isolated child Pi JSON event stream
   -> complete pi.subagent progress snapshots
   -> Pi tool_execution_* events
-  -> pi-tui tool execution reducer
+  -> pui tool execution reducer
   -> defensive protocol normalization
   -> transcript card and sidebar
 ```
@@ -118,7 +118,7 @@ Successful output is returned as normal model-visible tool content. If it exceed
 
 Pi currently marks thrown tool executions as errors before the extension can return structured failure details normally. The extension therefore retains terminal failure details by tool call ID and restores them in a `tool_result` hook. Retained details are removed after use and cleared on session shutdown.
 
-Final protocol details are persisted with the parent session. pi-tui can therefore recreate completed subagent cards without replaying live events.
+Final protocol details are persisted with the parent session. pui can therefore recreate completed subagent cards without replaying live events.
 
 ## Host presentation path
 
