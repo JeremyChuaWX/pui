@@ -51,17 +51,17 @@ npm run check
 
 ## Subagents
 
-Subagents are supplied by the Pi extension in [`extensions/subagent/`](extensions/subagent/); they are not built into Pi core. pi-tui bundles that extension and loads it directly into every embedded Pi runtime, independent of the launch or session working directory. The extension remains responsible for presets, process isolation, concurrency, timeout, cancellation, and output limits.
+Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensions/subagent/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pi-tui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
-pi-tui recognizes the renderer-neutral `pi.subagent` protocol in ordinary tool-result `details` and shows queued, starting, running, succeeded, failed, cancelled, and timed-out calls independently. `Ctrl+O` expands delegated prompts, working directories, child activity, usage, live previews, final Markdown, diagnostics, and any full-output path. Terminal protocol details are stored in the normal Pi session, so completed cards are restored on resume. Legacy `{ agent, model, toolCalls, usage }` details remain readable; malformed and unknown protocol versions stay generic.
+Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
-The regular `pi` command does not auto-load this application-bundled extension. To use the standalone source explicitly, run:
+The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
 
 ```sh
 pi -e /absolute/path/to/pi-tui/extensions/subagent/index.ts
 ```
 
-See the [extension README](extensions/subagent/README.md) for configuration and troubleshooting.
+See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting and the [subagent architecture](docs/subagent-architecture.md) for design boundaries.
 
 ## Architecture
 
@@ -76,4 +76,9 @@ See the [extension README](extensions/subagent/README.md) for configuration and 
 - `src/theme.ts` defines the neutral palette and syntax styles.
 - `bin/pi-tui` is the standalone launcher.
 
-The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those visual components inside OpenTUI; their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral structured details still work.
+The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+
+## Development documentation
+
+- [Subagent architecture](docs/subagent-architecture.md)
+- [Codebase simplification plan](docs/codebase-simplification-plan.md)

@@ -2,6 +2,8 @@
 
 This extension supplies the `subagent` tool. Subagents are **not a Pi core feature**: the extension owns presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
 
+See [`docs/subagent-architecture.md`](../../docs/subagent-architecture.md) for host integration, ownership boundaries, and persistence design.
+
 ## Tool shape
 
 ```ts
@@ -57,10 +59,10 @@ If final output exceeds the model-visible limit, the extension writes the comple
 
 ## Verification
 
+From the repository root:
+
 ```bash
-cd /path/to/pi-tui
-bun test extensions/subagent
-npm run typecheck
+npm run check
 ```
 
-Tests use `fixtures/fake-child.mjs` and do not call a model or the network.
+For a focused extension run, use `bun test extensions/subagent`. Tests use `fixtures/fake-child.mjs` and do not call a model or the network.
