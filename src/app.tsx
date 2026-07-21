@@ -3,6 +3,7 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { PiTuiController } from "./controller.js";
+import { editPromptInNvim } from "./external-editor.js";
 import { formatCount } from "./format.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { syntaxStyle, theme } from "./theme.js";
@@ -66,6 +67,7 @@ export function App(props: { controller: PiTuiController }) {
   let dialogRequest = 0;
   let completionRequest = 0;
   let completionAbort: AbortController | undefined;
+  let externalEditorOpen = false;
 
   let unsubscribe: (() => void) | undefined;
   onMount(() => {
@@ -164,6 +166,42 @@ export function App(props: { controller: PiTuiController }) {
     closePromptCompletions();
     prompt?.clear();
     setPromptText("");
+  }
+
+  async function openExternalEditor(): Promise<void> {
+    if (externalEditorOpen) return;
+    externalEditorOpen = true;
+    closePromptCompletions();
+
+    const draft = prompt?.plainText ?? promptText();
+    const reference = props.controller.getLastAssistantText();
+    let suspended = false;
+    let failure: unknown;
+
+    try {
+      renderer.suspend();
+      suspended = true;
+      process.stdout.write("Launching nvim. Pi TUI will resume when the editor exits.\n");
+      const edited = await editPromptInNvim(draft, reference, snapshot.cwd);
+      if (edited !== undefined && prompt && !prompt.isDestroyed) {
+        prompt.setText(edited);
+        prompt.cursorOffset = edited.length;
+        setPromptText(edited);
+      }
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (suspended && !renderer.isDestroyed) renderer.resume();
+      externalEditorOpen = false;
+      setTimeout(() => prompt?.focus(), 0);
+    }
+
+    if (failure) {
+      props.controller.notify(
+        `Could not open nvim: ${failure instanceof Error ? failure.message : String(failure)}`,
+        "error",
+      );
+    }
   }
 
   function submit(delivery: "steer" | "followUp" = "steer"): void {
@@ -270,6 +308,9 @@ export function App(props: { controller: PiTuiController }) {
       case "tools":
         setToolsExpanded((value) => !value);
         break;
+      case "editor":
+        void openExternalEditor();
+        break;
       case "help":
         setDialog({ kind: "help" });
         break;
@@ -288,6 +329,7 @@ export function App(props: { controller: PiTuiController }) {
       ["Compact context", "Summarize older conversation history", "compact"],
       ["Thinking level", "Cycle the current reasoning level", "thinking"],
       ["Tool details", "Expand or collapse tool output", "tools"],
+      ["Edit in nvim", "Edit the prompt with the last agent response as reference", "editor"],
       ["Help", "Show keyboard shortcuts", "help"],
       ["Quit", "Exit Pi TUI", "quit"],
     ];
@@ -355,6 +397,12 @@ export function App(props: { controller: PiTuiController }) {
     if (key.ctrl && key.name === "d" && !(prompt?.plainText ?? promptText())) {
       key.preventDefault();
       props.controller.requestExit();
+      return;
+    }
+    if (key.ctrl && key.name === "g") {
+      key.preventDefault();
+      key.stopPropagation();
+      void openExternalEditor();
       return;
     }
     if (key.name === "escape" && (snapshot.isStreaming || snapshot.isCompacting)) {
@@ -544,7 +592,6 @@ function MessageItem(props: {
       <Match when={props.item().kind === "user"}>
         <box marginTop={1} border={["left"]} borderColor={theme.primary} backgroundColor={theme.userBackground}>
           <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-            <text fg={theme.primary}>You</text>
             <text fg={theme.text}>{textItem().text}</text>
           </box>
         </box>
@@ -822,6 +869,7 @@ function Sidebar(props: { snapshot: PiTuiSnapshot }) {
 
       <box flexGrow={1} />
       <text fg={theme.muted}>Ctrl+K  commands</text>
+      <text fg={theme.muted}>Ctrl+G  edit in nvim</text>
       <text fg={theme.muted}>Ctrl+L  models</text>
       <text fg={theme.muted}>Ctrl+R  sessions</text>
       <text fg={theme.muted}>Ctrl+B  sidebar</text>
@@ -1021,6 +1069,7 @@ function Help(props: { width: number; onClose: () => void }) {
       <text fg={theme.muted}>Enter         send / steer while working</text>
       <text fg={theme.muted}>Alt+Enter     queue a follow-up</text>
       <text fg={theme.muted}>Shift+Enter   insert a new line</text>
+      <text fg={theme.muted}>Ctrl+G        edit in nvim with last agent response</text>
       <text fg={theme.muted}>Escape        abort the current operation</text>
       <text fg={theme.muted}>Shift+Tab     cycle thinking level</text>
       <text fg={theme.muted}>Alt+N / Alt+P cycle models</text>

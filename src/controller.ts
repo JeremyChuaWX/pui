@@ -70,6 +70,23 @@ const LOCAL_SLASH_COMMANDS: SlashCommand[] = [
   { name: "quit", description: "Quit" },
 ];
 
+function textFromMessageContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block): block is { type: string; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        "type" in block &&
+        block.type === "text" &&
+        "text" in block &&
+        typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
 function sameDisplayItem(left: DisplayItem, right: DisplayItem): boolean {
   const leftRecord = left as unknown as Record<string, unknown>;
   const rightRecord = right as unknown as Record<string, unknown>;
@@ -199,6 +216,17 @@ export class PiTuiController {
 
   snapshot(): PiTuiSnapshot {
     return this.currentSnapshot;
+  }
+
+  getLastAssistantText(): string {
+    const messages = this.session.messages;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (!message || message.role !== "assistant") continue;
+      const text = textFromMessageContent(message.content).trimEnd();
+      if (text.trim()) return text;
+    }
+    return "";
   }
 
   subscribe(listener: Listener): () => void {
