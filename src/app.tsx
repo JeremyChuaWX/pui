@@ -35,10 +35,10 @@ type DialogState =
   | { kind: "help" };
 
 const promptKeyBindings: KeyBinding[] = [
-  { name: "return", action: "submit" },
-  { name: "kpenter", action: "submit" },
-  { name: "linefeed", action: "submit" },
-  { name: "return", shift: true, action: "newline" },
+  { name: "return", action: "newline" },
+  { name: "kpenter", action: "newline" },
+  { name: "linefeed", action: "newline" },
+  { name: "return", shift: true, action: "submit" },
   { name: "return", meta: true, action: "submit" },
   { name: "p", ctrl: true, action: "move-up" },
   { name: "n", ctrl: true, action: "move-down" },
@@ -370,10 +370,7 @@ export function App(props: { controller: PiTuiController }) {
         setCompletionIndex((index) => Math.min(completions.items.length - 1, index + 1));
         return;
       }
-      const confirm =
-        key.name === "tab" ||
-        (!key.shift && !key.ctrl && !key.meta && !key.option && ["return", "enter", "linefeed"].includes(key.name));
-      if (confirm) {
+      if (key.name === "tab") {
         key.preventDefault();
         key.stopPropagation();
         applyPromptCompletion();
@@ -756,7 +753,7 @@ function PromptAutocomplete(props: {
           </box>
         )}
       </Index>
-      <text fg={theme.muted}>  ↑↓ navigate · tab/enter select · esc close</text>
+      <text fg={theme.muted}>  ↑↓ navigate · tab select · esc close</text>
     </box>
   );
 }
@@ -1066,9 +1063,9 @@ function Help(props: { width: number; onClose: () => void }) {
       <text fg={theme.text}>
         <strong>Keyboard shortcuts</strong>
       </text>
-      <text fg={theme.muted}>Enter         send / steer while working</text>
+      <text fg={theme.muted}>Shift+Enter   send / steer while working</text>
+      <text fg={theme.muted}>Enter         insert a new line</text>
       <text fg={theme.muted}>Alt+Enter     queue a follow-up</text>
-      <text fg={theme.muted}>Shift+Enter   insert a new line</text>
       <text fg={theme.muted}>Ctrl+G        edit in nvim with last agent response</text>
       <text fg={theme.muted}>Escape        abort the current operation</text>
       <text fg={theme.muted}>Shift+Tab     cycle thinking level</text>
