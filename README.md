@@ -44,7 +44,7 @@ npm run check
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
 - Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
-- Steering with Shift+Enter and follow-ups with Alt+Enter while Pi is working
+- Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - `!command` and `!!command` shell execution
 
