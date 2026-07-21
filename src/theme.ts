@@ -1,0 +1,40 @@
+import { SyntaxStyle } from "@opentui/core";
+
+export const theme = {
+  background: "#000000",
+  panel: "#0A0A0A",
+  element: "#171717",
+  border: "#404040",
+  borderSubtle: "#262626",
+  text: "#E5E5E5",
+  muted: "#737373",
+  subtle: "#A3A3A3",
+  primary: "#D4D4D4",
+  secondary: "#A3A3A3",
+  accent: "#FAFAFA",
+  success: "#86EFAC",
+  warning: "#FDE68A",
+  error: "#FCA5A5",
+  info: "#A3A3A3",
+  userBackground: "#111111",
+  toolBackground: "#080808",
+  selection: "#333333",
+} as const;
+
+export const syntaxStyle = SyntaxStyle.fromStyles({
+  keyword: { fg: theme.subtle, bold: true },
+  string: { fg: theme.success },
+  comment: { fg: theme.muted, italic: true },
+  number: { fg: theme.warning },
+  boolean: { fg: theme.warning },
+  constant: { fg: theme.warning },
+  function: { fg: theme.text },
+  constructor: { fg: theme.warning },
+  type: { fg: theme.subtle },
+  operator: { fg: theme.accent },
+  variable: { fg: theme.text },
+  property: { fg: theme.text },
+  bracket: { fg: theme.text },
+  punctuation: { fg: theme.text },
+  default: { fg: theme.text },
+});

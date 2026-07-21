@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+source_path=$0
+while [ -L "$source_path" ]; do
+  source_dir=$(CDPATH= cd -P "$(dirname "$source_path")" && pwd)
+  link_target=$(readlink "$source_path")
+  case "$link_target" in
+    /*) source_path=$link_target ;;
+    *) source_path=$source_dir/$link_target ;;
+  esac
+done
+
+project_dir=$(CDPATH= cd -P "$(dirname "$source_path")/.." && pwd)
+preload="$project_dir/node_modules/@opentui/solid/scripts/preload.js"
+entrypoint="$project_dir/src/index.tsx"
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "pi-tui: Bun 1.3 or newer is required" >&2
+  exit 1
+fi
+if [ ! -f "$preload" ]; then
+  echo "pi-tui: dependencies are missing; run 'npm ci' in $project_dir" >&2
+  exit 1
+fi
+
+exec bun --preload "$preload" "$entrypoint" "$@"
