@@ -2,7 +2,7 @@ import type { BoxRenderable, KeyBinding, KeyEvent, ScrollBoxRenderable, Textarea
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { PiTuiController } from "./controller.js";
+import { PuiController } from "./controller.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { formatCount } from "./format.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
@@ -20,7 +20,7 @@ import { syntaxStyle, theme } from "./theme.js";
 import type {
   DisplayItem,
   ModelChoice,
-  PiTuiSnapshot,
+  PuiSnapshot,
   PromptCompletions,
   SessionChoice,
   ToastMessage,
@@ -86,10 +86,10 @@ function activeSubagentItems(display: readonly DisplayItem[]): ToolDisplayItem[]
   );
 }
 
-export function App(props: { controller: PiTuiController }) {
+export function App(props: { controller: PuiController }) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
-  const [snapshot, setSnapshot] = createStore<PiTuiSnapshot>(props.controller.snapshot());
+  const [snapshot, setSnapshot] = createStore<PuiSnapshot>(props.controller.snapshot());
   const [dialog, setDialog] = createSignal<DialogState>();
   const [promptText, setPromptText] = createSignal("");
   const [promptCompletions, setPromptCompletions] = createSignal<PromptCompletions>();
@@ -225,7 +225,7 @@ export function App(props: { controller: PiTuiController }) {
     try {
       renderer.suspend();
       suspended = true;
-      process.stdout.write("Launching nvim. Pi TUI will resume when the editor exits.\n");
+      process.stdout.write("Launching nvim. pui will resume when the editor exits.\n");
       const edited = await editPromptInNvim(draft, reference, snapshot.cwd);
       if (edited !== undefined && prompt && !prompt.isDestroyed) {
         prompt.setText(edited);
@@ -375,7 +375,7 @@ export function App(props: { controller: PiTuiController }) {
       ["Tool details", "Expand or collapse tool output", "tools"],
       ["Edit in nvim", "Edit the prompt with the last agent response as reference", "editor"],
       ["Help", "Show keyboard shortcuts", "help"],
-      ["Quit", "Exit Pi TUI", "quit"],
+      ["Quit", "Exit pui", "quit"],
     ];
     setDialog({
       kind: "picker",
@@ -953,7 +953,7 @@ function PromptAutocomplete(props: {
 }
 
 function Prompt(props: {
-  snapshot: PiTuiSnapshot;
+  snapshot: PuiSnapshot;
   focused: boolean;
   setAnchorRef: (value: BoxRenderable) => void;
   setRef: (value: TextareaRenderable) => void;
@@ -1005,7 +1005,7 @@ function Prompt(props: {
   );
 }
 
-function Sidebar(props: { snapshot: PiTuiSnapshot; now: number }) {
+function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
   const subagents = () => activeSubagentItems(props.snapshot.display);
   const subagentIds = () => new Set(
     props.snapshot.display

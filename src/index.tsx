@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { App } from "./app.js";
-import { PiTuiController, type ControllerOptions } from "./controller.js";
+import { PuiController, type ControllerOptions } from "./controller.js";
 import { syntaxStyle, theme } from "./theme.js";
 
 interface CliOptions extends ControllerOptions {
@@ -13,10 +13,10 @@ interface CliOptions extends ControllerOptions {
 }
 
 function usage(): string {
-  return `Pi OpenTUI
+  return `pui
 
 Usage:
-  pi-tui [options] [prompt]
+  pui [options] [prompt]
 
 Options:
   -c, --continue       Continue the most recent session
@@ -73,10 +73,10 @@ async function main(): Promise<void> {
     return;
   }
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
-    throw new Error("pi-tui requires an interactive terminal");
+    throw new Error("pui requires an interactive terminal");
   }
 
-  const controller = await PiTuiController.create(options);
+  const controller = await PuiController.create(options);
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
     targetFps: 60,
@@ -114,6 +114,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`pi-tui: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`pui: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

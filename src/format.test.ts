@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
 
-describe("Pi OpenTUI formatting", () => {
+describe("pui formatting", () => {
   test("combines a tool call with its result", () => {
     const messages = [
       {

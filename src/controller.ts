@@ -34,7 +34,7 @@ import type {
   AppliedPromptCompletion,
   DisplayItem,
   ModelChoice,
-  PiTuiSnapshot,
+  PuiSnapshot,
   PromptAction,
   PromptCompletionItem,
   PromptCompletions,
@@ -49,7 +49,7 @@ export interface ControllerOptions {
   noSession?: boolean;
 }
 
-export const createPiTuiRuntime: CreateAgentSessionRuntimeFactory = async ({
+export const createPuiRuntime: CreateAgentSessionRuntimeFactory = async ({
   cwd,
   agentDir,
   sessionManager,
@@ -69,7 +69,7 @@ export const createPiTuiRuntime: CreateAgentSessionRuntimeFactory = async ({
   };
 };
 
-type Listener = (snapshot: PiTuiSnapshot) => void;
+type Listener = (snapshot: PuiSnapshot) => void;
 
 const COALESCED_SESSION_EVENTS = new Set<AgentSessionEvent["type"]>([
   "queue_update",
@@ -168,7 +168,7 @@ function readGitBranch(cwd: string): string | undefined {
   }
 }
 
-export class PiTuiController {
+export class PuiController {
   private runtime: AgentSessionRuntime;
   private unsubscribeSession?: () => void;
   private listeners = new Set<Listener>();
@@ -185,7 +185,7 @@ export class PiTuiController {
   private disposed = false;
   private exitRequested = false;
   private gitBranch?: string;
-  private currentSnapshot: PiTuiSnapshot;
+  private currentSnapshot: PuiSnapshot;
 
   private constructor(runtime: AgentSessionRuntime) {
     this.runtime = runtime;
@@ -193,7 +193,7 @@ export class PiTuiController {
     this.currentSnapshot = this.buildSnapshot();
   }
 
-  static async create(options: ControllerOptions): Promise<PiTuiController> {
+  static async create(options: ControllerOptions): Promise<PuiController> {
     const agentDir = getAgentDir();
     let sessionManager: SessionManager;
     if (options.noSession) {
@@ -207,13 +207,13 @@ export class PiTuiController {
     }
 
     const sessionCwd = options.sessionPath ? sessionManager.getCwd() || options.cwd : options.cwd;
-    const runtime = await createAgentSessionRuntime(createPiTuiRuntime, {
+    const runtime = await createAgentSessionRuntime(createPuiRuntime, {
       cwd: sessionCwd,
       agentDir,
       sessionManager,
       sessionStartEvent: { type: "session_start", reason: "startup" },
     });
-    const controller = new PiTuiController(runtime);
+    const controller = new PuiController(runtime);
 
     runtime.setRebindSession(async (session) => controller.bindSession(session));
     await controller.bindSession(runtime.session);
@@ -230,7 +230,7 @@ export class PiTuiController {
     return this.runtime.session;
   }
 
-  snapshot(): PiTuiSnapshot {
+  snapshot(): PuiSnapshot {
     return this.currentSnapshot;
   }
 
@@ -369,7 +369,7 @@ export class PiTuiController {
     });
   }
 
-  private buildSnapshot(): PiTuiSnapshot {
+  private buildSnapshot(): PuiSnapshot {
     const session = this.runtime.session;
     const context = session.getContextUsage();
     const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;

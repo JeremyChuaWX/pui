@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import { PiTuiController } from "./controller.js";
+import { PuiController } from "./controller.js";
 
 function usage() {
   return {
@@ -62,7 +62,7 @@ interface FakeSessionState {
 }
 
 function createController(messages: AgentMessage[]): {
-  controller: PiTuiController;
+  controller: PuiController;
   state: FakeSessionState;
   emit: (event: AgentSessionEvent) => void;
 } {
@@ -102,7 +102,7 @@ function createController(messages: AgentMessage[]): {
     setRebindSession: () => {},
     dispose: async () => {},
   } as unknown as AgentSessionRuntime;
-  const Controller = PiTuiController as unknown as new (runtime: AgentSessionRuntime) => PiTuiController;
+  const Controller = PuiController as unknown as new (runtime: AgentSessionRuntime) => PuiController;
   const controller = new Controller(runtime);
   const emit = (event: AgentSessionEvent) => {
     if (event.type === "tool_execution_start") state.pending.add(event.toolCallId);
@@ -112,7 +112,7 @@ function createController(messages: AgentMessage[]): {
   return { controller, state, emit };
 }
 
-describe("PiTuiController tool event path", () => {
+describe("PuiController tool event path", () => {
   test("transports partial subagent snapshots and preserves a running sibling", async () => {
     const ids = ["slow", "fast"];
     const { controller, state, emit } = createController([assistantCalls(ids)]);

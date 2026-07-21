@@ -49,7 +49,7 @@ export interface ToastMessage {
   type: "info" | "warning" | "error" | "success";
 }
 
-export interface PiTuiSnapshot {
+export interface PuiSnapshot {
   revision: number;
   cwd: string;
   compactCwd: string;

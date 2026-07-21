@@ -12,7 +12,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
-import { createPiTuiRuntime } from "./controller.js";
+import { createPuiRuntime } from "./controller.js";
 
 const bundledSubagentPath = BUNDLED_EXTENSION_PATHS[0];
 
@@ -36,7 +36,7 @@ describe("bundled extensions", () => {
     expect(path.isAbsolute(bundledSubagentPath)).toBe(true);
     expect((await fs.promises.stat(bundledSubagentPath)).isFile()).toBe(true);
 
-    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-tui-bundled-path-test-"));
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-bundled-path-test-"));
     try {
       const moduleUrl = pathToFileURL(path.join(import.meta.dir, "bundled-extensions.ts")).href;
       const output = execFileSync(
@@ -54,7 +54,7 @@ describe("bundled extensions", () => {
   });
 
   test("the controller runtime factory preserves one subagent tool across session replacement", async () => {
-    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-tui-runtime-replacement-test-"));
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-runtime-replacement-test-"));
     const initialCwd = path.join(temp, "initial-cwd");
     const resumedCwd = path.join(temp, "resumed-cwd");
     const agentDir = path.join(temp, "agent-dir");
@@ -66,7 +66,7 @@ describe("bundled extensions", () => {
       fs.promises.mkdir(sessionDir, { recursive: true }),
     ]);
 
-    const runtime = await createAgentSessionRuntime(createPiTuiRuntime, {
+    const runtime = await createAgentSessionRuntime(createPuiRuntime, {
       cwd: initialCwd,
       agentDir,
       sessionManager: SessionManager.inMemory(initialCwd),
@@ -120,7 +120,7 @@ describe("bundled extensions", () => {
   });
 
   test("loads and reloads one subagent extension without disabling normal discovery", async () => {
-    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-tui-bundled-loader-test-"));
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-bundled-loader-test-"));
     const cwd = path.join(temp, "session-cwd");
     const agentDir = path.join(temp, "agent-dir");
     const globalExtensionDir = path.join(agentDir, "extensions");

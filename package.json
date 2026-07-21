@@ -1,11 +1,11 @@
 {
-  "name": "pi-opentui",
+  "name": "pui",
   "version": "0.1.0",
   "private": true,
   "description": "An OpenCode-inspired OpenTUI client for Pi",
   "type": "module",
   "bin": {
-    "pi-tui": "bin/pi-tui"
+    "pui": "bin/pui"
   },
   "scripts": {
     "start": "bun --preload @opentui/solid/preload src/index.tsx",

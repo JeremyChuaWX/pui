@@ -32,7 +32,7 @@ function waitForExit(command: string, args: string[], cwd: string): Promise<numb
 }
 
 export async function editPromptInNvim(draft: string, reference: string, cwd: string): Promise<string | undefined> {
-  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "pi-tui-editor-"));
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "pui-editor-"));
   const tempFile = path.join(tempDirectory, "prompt.pi.md");
 
   try {

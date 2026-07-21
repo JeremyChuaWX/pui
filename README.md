@@ -1,4 +1,4 @@
-# Pi OpenTUI
+# pui
 
 An OpenCode-inspired, full-screen OpenTUI/Solid client backed by Pi's SDK. It uses Pi's existing auth, models, settings, sessions, tools, skills, prompt templates, context files, and extensions without changing the regular `pi` command.
 
@@ -11,22 +11,22 @@ An OpenCode-inspired, full-screen OpenTUI/Solid client backed by Pi's SDK. It us
 ## Install
 
 ```sh
-cd ~/dev/pi-tui
+cd ~/dev/pui
 npm ci --ignore-scripts
 npm run install:local
 ```
 
-This links `pi-tui` into `~/.local/bin`. Make sure that directory is on `PATH`.
+This links `pui` into `~/.local/bin`. Make sure that directory is on `PATH`.
 
 ## Run
 
 ```sh
-pi-tui
-pi-tui -c
-pi-tui "review this repository"
+pui
+pui -c
+pui "review this repository"
 ```
 
-Run `pi-tui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
+Run `pui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
 
 For development, run directly from the project:
 
@@ -51,14 +51,14 @@ npm run check
 
 ## Subagents
 
-Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensions/subagent/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pi-tui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensions/subagent/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
 Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
 The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
 
 ```sh
-pi -e /absolute/path/to/pi-tui/extensions/subagent/index.ts
+pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 ```
 
 See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting and the [subagent architecture](docs/subagent-architecture.md) for design boundaries.
@@ -74,7 +74,7 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 - `src/app.tsx` is the Solid/OpenTUI view layer.
 - `src/format.ts` projects Pi messages and live tool executions into stable display items.
 - `src/theme.ts` defines the neutral palette and syntax styles.
-- `bin/pi-tui` is the standalone launcher.
+- `bin/pui` is the standalone launcher.
 
 The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
