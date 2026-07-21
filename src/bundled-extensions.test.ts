@@ -4,12 +4,31 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  type AgentSessionRuntime,
+  createAgentSessionRuntime,
+  DefaultResourceLoader,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
+import { createPiTuiRuntime } from "./controller.js";
 
 const bundledSubagentPath = BUNDLED_EXTENSION_PATHS[0];
 
 if (!bundledSubagentPath) throw new Error("The bundled subagent extension path is not configured");
+
+function expectOneBundledSubagent(runtime: AgentSessionRuntime, cwd: string): void {
+  expect(runtime.cwd).toBe(cwd);
+  const extensions = runtime.services.resourceLoader.getExtensions();
+  expect(extensions.errors).toEqual([]);
+  expect(
+    extensions.extensions.filter(
+      (extension) => path.resolve(extension.resolvedPath) === path.resolve(bundledSubagentPath),
+    ),
+  ).toHaveLength(1);
+  expect(runtime.session.getAllTools().filter((tool) => tool.name === "subagent")).toHaveLength(1);
+}
 
 describe("bundled extensions", () => {
   test("resolves the subagent entry point absolutely and independently of process cwd", async () => {
@@ -30,6 +49,72 @@ describe("bundled extensions", () => {
       );
       expect(JSON.parse(output)).toEqual(BUNDLED_EXTENSION_PATHS);
     } finally {
+      await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  test("the controller runtime factory preserves one subagent tool across session replacement", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-tui-runtime-replacement-test-"));
+    const initialCwd = path.join(temp, "initial-cwd");
+    const resumedCwd = path.join(temp, "resumed-cwd");
+    const agentDir = path.join(temp, "agent-dir");
+    const sessionDir = path.join(temp, "sessions");
+    await Promise.all([
+      fs.promises.mkdir(initialCwd, { recursive: true }),
+      fs.promises.mkdir(resumedCwd, { recursive: true }),
+      fs.promises.mkdir(agentDir, { recursive: true }),
+      fs.promises.mkdir(sessionDir, { recursive: true }),
+    ]);
+
+    const runtime = await createAgentSessionRuntime(createPiTuiRuntime, {
+      cwd: initialCwd,
+      agentDir,
+      sessionManager: SessionManager.inMemory(initialCwd),
+    });
+    try {
+      expectOneBundledSubagent(runtime, initialCwd);
+
+      expect((await runtime.newSession()).cancelled).toBe(false);
+      expectOneBundledSubagent(runtime, initialCwd);
+
+      const forkEntryId = runtime.session.sessionManager.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "Fork this in-memory session fixture." }],
+        timestamp: Date.now(),
+      });
+      expect((await runtime.fork(forkEntryId)).cancelled).toBe(false);
+      expectOneBundledSubagent(runtime, initialCwd);
+
+      const resumedManager = SessionManager.create(resumedCwd, sessionDir);
+      resumedManager.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "Persist a cwd-changing session fixture." }],
+        timestamp: Date.now(),
+      });
+      resumedManager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: "Fixture persisted." }],
+        api: "fixture-api",
+        provider: "fixture-provider",
+        model: "fixture-model",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      });
+      const resumedPath = resumedManager.getSessionFile();
+      if (!resumedPath) throw new Error("Expected a persisted session fixture");
+
+      expect((await runtime.switchSession(resumedPath)).cancelled).toBe(false);
+      expectOneBundledSubagent(runtime, resumedCwd);
+    } finally {
+      await runtime.dispose();
       await fs.promises.rm(temp, { recursive: true, force: true });
     }
   });

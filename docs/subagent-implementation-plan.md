@@ -1,6 +1,6 @@
 # Extension-backed subagents: execution plan
 
-Status: in progress — SA-01, SA-02, and SA-04 through SA-06 are implemented and verified; SA-03 and SA-07 await a regular-Pi live smoke test; SA-08 remains deferred
+Status: complete — SA-01 through SA-07 are implemented and verified; SA-08 remains deferred
 
 Last reviewed: 2026-07-21
 
@@ -14,40 +14,37 @@ The capability remains a Pi extension:
 - **Pi core** remains unchanged and transports normal `tool_execution_start`, `tool_execution_update`, and `tool_execution_end` events.
 - **pi-tui** tracks those events, recognizes the versioned subagent payload, and renders live and persisted subagent state.
 
-Canonical repositories and paths:
+Canonical repository and paths:
 
-- Extension repository: `/Users/jer/.dotfiles`
-- Extension source: `/Users/jer/.dotfiles/stowables/pi/.pi/agent/extensions/subagent/`
-- Host repository: `/Users/jer/dev/pi-tui`
-- Host source: `/Users/jer/dev/pi-tui/src/`
+- Repository: `/Users/jer/dev/pi-tui`
+- Extension source and protocol producer: `/Users/jer/dev/pi-tui/extensions/subagent/`
+- Host source and defensive protocol consumer: `/Users/jer/dev/pi-tui/src/`
+
+The extension was relocated from the dotfiles repository by the completed [subagent colocation migration](subagent-colocation-migration-plan.md). pi-tui loads it through an absolute module-relative path; regular Pi can load the same standalone source explicitly with `pi -e /Users/jer/dev/pi-tui/extensions/subagent/index.ts`.
 
 ### 1.1 Implementation review
 
-The extension and host tracks are substantially implemented in their working trees. "Implemented" below describes the reviewed working trees, not merged history: all extension changes remain uncommitted, and the host implementation plus this plan are also uncommitted.
+The extension and host tracks are implemented together in pi-tui. The producer remains an ordinary Pi extension while the OpenTUI host retains a defensive, renderer-neutral consumer boundary.
 
-| Task | Review status | Evidence and remaining work |
+| Task | Review status | Evidence |
 | --- | --- | --- |
 | SA-01 | Implemented and verified | `protocol.ts` and `protocol.test.ts` define and test protocol v1, state transitions, bounded activity, usage aggregation, UTF-8 truncation, and the type guard. `tsconfig.json` excludes Bun test files from the extension typecheck. |
 | SA-02 | Implemented and verified | `json-events.ts`, `runner.ts`, focused tests, and deterministic fixtures cover fragmented JSONL, malformed output, concurrent child tools, bounded data, usage, abort, timeout, process-group termination, spawn failure, and invocation resolution. |
-| SA-03 | Implemented; manual acceptance pending | `index.ts`, `semaphore.ts`, and tests cover the public schema, lifecycle snapshots, child isolation flags, four-child queue, queued cancellation, output truncation, failure-detail persistence, and shutdown cleanup. The required regular-Pi smoke test has not been recorded. |
+| SA-03 | Implemented and verified | `index.ts`, `semaphore.ts`, and tests cover the public schema, lifecycle snapshots, child isolation flags, four-child queue, queued cancellation, output truncation, failure-detail persistence, and shutdown cleanup. A standalone regular-Pi invocation loaded the relocated extension and completed queued, starting, running, and succeeded protocol states. |
 | SA-04 | Implemented and verified | `src/tool-executions.ts`, reducer tests, and controller-path tests cover partial updates, out-of-order siblings, pending-call reconciliation, terminal retention through persistence, working-message derivation, session settlement, abort, replacement, and disposal cleanup. |
 | SA-05 | Implemented and verified | `src/subagent.ts`, formatter changes, and tests defensively parse protocol v1, adapt legacy details, retain opaque partial/final details, derive running state from executions, restore persisted cards, and fall back for malformed or unknown versions. |
 | SA-06 | Implemented and verified | `app.tsx` has status-specific collapsed and expanded subagent cards, delegated context/activity/usage/output presentation, a separate active-subagent sidebar group, generic fallback, and an active-only one-second elapsed timer. Deterministic protocol fixtures were manually checked at 80x28 and 140x36, with the expanded view at 140x50. |
-| SA-07 | Automated host work implemented; regular-Pi acceptance pending | Extension fixtures and SDK persistence/resume coverage pass. Host reducer-to-controller-to-formatter tests cover lifecycle updates, failures, cancellation, timeout, malformed details, five queued siblings, out-of-order completion, resume, extension absence, and generic tools. Both READMEs document the ownership boundary, and narrow/wide fixture checks pass. The regular-Pi live smoke test remains. |
+| SA-07 | Implemented and verified | Extension fixtures and SDK persistence/resume coverage pass. Host tests cover lifecycle updates, failures, cancellation, timeout, malformed details, queued siblings, out-of-order completion, persistence, resume, reload, cwd-changing runtime replacement, and generic tools. Live regular-Pi and pi-tui smoke tests completed successfully. |
 | SA-08 | Deferred | No trusted preset discovery has been added, as intended. |
 
-Verification run during this review:
+Verification run after colocation:
 
 ```text
-/Users/jer/.dotfiles/stowables/pi/.pi/agent
-  bun test extensions/subagent  -> 32 pass, 0 fail
-  npm run typecheck             -> pass
-
 /Users/jer/dev/pi-tui
-  npm run check                 -> 28 pass, 0 fail
+  npm run check  -> 63 pass, 0 fail
 ```
 
-The review found no blocking Pi core defect and no reason to change the dependency map. Remaining first-release work is SA-03/SA-07's regular-Pi live smoke test; the pi-tui live-model command remains optional.
+The dotfiles repository typechecks after removal of its global subagent copy. Live smoke tests loaded the standalone source through regular Pi and loaded the bundled source from pi-tui launched in `/tmp`; reload, new-session, parallel siblings, cancellation, persisted-card resume from a different launch cwd, and post-replacement subagent execution succeeded without duplicate-tool diagnostics.
 
 ## 2. Required outcome
 
@@ -173,7 +170,7 @@ Each implementation agent must:
 9. Do not commit, push, or mark later tasks complete.
 10. Return files changed, acceptance results, verification output, blockers, and follow-ups.
 
-The orchestrator should run cross-repository integration checks after `SA-07` and update plan status. Implementation agents should not leave stale running child processes or generated output in either repository.
+The orchestrator should run integration checks after `SA-07` and update plan status. Implementation agents should not leave stale running child processes or generated output in the repository.
 
 ---
 
@@ -181,17 +178,17 @@ The orchestrator should run cross-repository integration checks after `SA-07` an
 
 ### SA-01 — Define the extension protocol and pure state helpers
 
-Status: implemented and verified in the uncommitted extension working tree
+Status: implemented and verified
 
-Repository: `/Users/jer/.dotfiles`
+Repository: `/Users/jer/dev/pi-tui`
 
 Depends on: none
 
 Files:
 
-- Add `stowables/pi/.pi/agent/extensions/subagent/protocol.ts`
-- Add `stowables/pi/.pi/agent/extensions/subagent/protocol.test.ts`
-- Update `stowables/pi/.pi/agent/package.json` only if a test script is needed
+- Add `extensions/subagent/protocol.ts`
+- Add `extensions/subagent/protocol.test.ts`
+- Update `package.json` only if a test script is needed
 
 Work:
 
@@ -213,7 +210,7 @@ Acceptance criteria:
 Verification:
 
 ```bash
-cd /Users/jer/.dotfiles/stowables/pi/.pi/agent
+cd /Users/jer/dev/pi-tui
 bun test extensions/subagent/protocol.test.ts
 npm run typecheck
 ```
@@ -222,16 +219,16 @@ npm run typecheck
 
 ### SA-02 — Build a streaming child-Pi JSON runner
 
-Status: implemented and verified in the uncommitted extension working tree
+Status: implemented and verified
 
-Repository: `/Users/jer/.dotfiles`
+Repository: `/Users/jer/dev/pi-tui`
 
 Depends on: SA-01
 
 Files:
 
-- Add `stowables/pi/.pi/agent/extensions/subagent/json-events.ts`
-- Add `stowables/pi/.pi/agent/extensions/subagent/runner.ts`
+- Add `extensions/subagent/json-events.ts`
+- Add `extensions/subagent/runner.ts`
 - Add focused tests and JSONL fixtures under the same directory
 
 Work:
@@ -266,7 +263,7 @@ Acceptance criteria:
 Verification:
 
 ```bash
-cd /Users/jer/.dotfiles/stowables/pi/.pi/agent
+cd /Users/jer/dev/pi-tui
 bun test extensions/subagent
 npm run typecheck
 ```
@@ -275,16 +272,16 @@ npm run typecheck
 
 ### SA-03 — Integrate the runner into the extension tool
 
-Status: implemented with passing automated tests; required regular-Pi smoke test not yet recorded
+Status: implemented and verified
 
-Repository: `/Users/jer/.dotfiles`
+Repository: `/Users/jer/dev/pi-tui`
 
 Depends on: SA-02
 
 Files:
 
-- Refactor `stowables/pi/.pi/agent/extensions/subagent/index.ts`
-- Optionally add `stowables/pi/.pi/agent/extensions/subagent/agents.ts`
+- Refactor `extensions/subagent/index.ts`
+- Optionally add `extensions/subagent/agents.ts`
 - Add integration-focused extension tests
 
 Work:
@@ -323,7 +320,7 @@ Acceptance criteria:
 Verification:
 
 ```bash
-cd /Users/jer/.dotfiles/stowables/pi/.pi/agent
+cd /Users/jer/dev/pi-tui
 bun test extensions/subagent
 npm run typecheck
 ```
@@ -338,7 +335,7 @@ Manual smoke test in regular Pi:
 
 ### SA-04 — Add a generic tool-execution reducer to pi-tui
 
-Status: implemented and verified in the uncommitted host working tree
+Status: implemented and verified
 
 Repository: `/Users/jer/dev/pi-tui`
 
@@ -383,7 +380,7 @@ npm run typecheck
 
 ### SA-05 — Normalize subagent details and persist them into display items
 
-Status: implemented and verified in the uncommitted host working tree
+Status: implemented and verified
 
 Repository: `/Users/jer/dev/pi-tui`
 
@@ -489,14 +486,11 @@ Manual checks at narrow and wide terminal widths are required.
 
 ---
 
-### SA-07 — Cross-repository integration and regression coverage
+### SA-07 — Integration and regression coverage
 
-Status: automated extension and host coverage plus narrow/wide fixture checks implemented; regular-Pi live acceptance remains
+Status: implemented and verified
 
-Repositories:
-
-- `/Users/jer/.dotfiles`
-- `/Users/jer/dev/pi-tui`
+Repository: `/Users/jer/dev/pi-tui`
 
 Depends on: SA-03, SA-06
 
@@ -525,27 +519,24 @@ Progress recorded on 2026-07-21:
 - Done: extension scenarios for malformed output, cancellation, timeout, out-of-order sibling completion, concurrency queuing, and process cleanup.
 - Done: extension `README.md` describing ownership, protocol versioning, configuration, limits, and troubleshooting.
 - Done: pass protocol-shaped extension updates through the pi-tui controller reducer and display-item formatter, including actual controller snapshot construction.
-- Done: host tests for success, failure, cancellation, timeout, malformed details, sibling ordering, queued concurrency, resume, extension absence, and generic-tool regressions.
+- Done: host tests for success, failure, cancellation, timeout, malformed details, sibling ordering, queued concurrency, resume, generic-tool regressions, and bundled loading across reload and cwd-changing session replacement.
 - Done: host `README.md` ownership and supported-UX documentation.
 - Done: deterministic protocol fixture checks at 80x28 and 140x36, plus expanded rendering at 140x50.
-- Remaining: run the regular-Pi live smoke test; the final pi-tui live-model smoke remains optional.
+- Done: the relocated extension remains loadable explicitly by regular Pi; the final live-model UI smoke is operational verification rather than an automated test dependency.
 
 Acceptance criteria:
 
-- All scenarios pass without network access except the final optional live smoke test.
+- All automated scenarios pass without network access; live smoke tests are recorded separately.
 - No child process survives abort, timeout, or test teardown.
 - No full child transcript is written into parent session details.
 - A regular Pi client continues to use the extension successfully.
-- pi-tui continues to work when the extension is absent.
+- pi-tui loads exactly one bundled extension while preserving ordinary global and trusted project extension discovery.
 
 Verification:
 
 ```bash
-cd /Users/jer/.dotfiles/stowables/pi/.pi/agent
-bun test extensions/subagent
-npm run typecheck
-
 cd /Users/jer/dev/pi-tui
+bun test extensions/subagent
 npm run check
 ```
 
@@ -560,9 +551,9 @@ npm start -- --no-session
 
 ### SA-08 — Optional trusted preset discovery
 
-Status: deferred until SA-07 is accepted
+Status: deferred; not required for the first release
 
-Repository: `/Users/jer/.dotfiles`
+Repository: `/Users/jer/dev/pi-tui`
 
 Depends on: SA-07
 
@@ -598,13 +589,13 @@ SA-02 and SA-04 may be assigned to separate agents after SA-01. Do not begin SA-
 The first release is complete when:
 
 - SA-01 through SA-07 acceptance criteria pass;
-- both repositories typecheck and test successfully;
+- the canonical repository and the remaining dotfiles extensions typecheck successfully;
 - live updates are driven by structured details, not tool-name special cases;
 - concurrent runs remain independently accurate;
 - abort and timeout terminate child processes;
 - terminal details survive parent session persistence and resume;
-- generic tool behavior and extension-free pi-tui behavior remain intact;
-- regular Pi still runs the extension without pi-tui;
+- generic tool behavior and malformed/unknown protocol fallback remain intact;
+- regular Pi can load the standalone extension source explicitly;
 - documentation clearly says that subagents are supplied by an extension, not Pi core.
 
 ## 9. Deferred upstream opportunities

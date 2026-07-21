@@ -49,6 +49,26 @@ export interface ControllerOptions {
   noSession?: boolean;
 }
 
+export const createPiTuiRuntime: CreateAgentSessionRuntimeFactory = async ({
+  cwd,
+  agentDir,
+  sessionManager,
+  sessionStartEvent,
+}) => {
+  const services = await createAgentSessionServices({
+    cwd,
+    agentDir,
+    resourceLoaderOptions: {
+      additionalExtensionPaths: BUNDLED_EXTENSION_PATHS,
+    },
+  });
+  return {
+    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+    services,
+    diagnostics: services.diagnostics,
+  };
+};
+
 type Listener = (snapshot: PiTuiSnapshot) => void;
 
 const COALESCED_SESSION_EVENTS = new Set<AgentSessionEvent["type"]>([
@@ -175,26 +195,6 @@ export class PiTuiController {
 
   static async create(options: ControllerOptions): Promise<PiTuiController> {
     const agentDir = getAgentDir();
-    const createRuntime: CreateAgentSessionRuntimeFactory = async ({
-      cwd,
-      agentDir: targetAgentDir,
-      sessionManager,
-      sessionStartEvent,
-    }) => {
-      const services = await createAgentSessionServices({
-        cwd,
-        agentDir: targetAgentDir,
-        resourceLoaderOptions: {
-          additionalExtensionPaths: BUNDLED_EXTENSION_PATHS,
-        },
-      });
-      return {
-        ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
-        services,
-        diagnostics: services.diagnostics,
-      };
-    };
-
     let sessionManager: SessionManager;
     if (options.noSession) {
       sessionManager = SessionManager.inMemory(options.cwd);
@@ -207,7 +207,7 @@ export class PiTuiController {
     }
 
     const sessionCwd = options.sessionPath ? sessionManager.getCwd() || options.cwd : options.cwd;
-    const runtime = await createAgentSessionRuntime(createRuntime, {
+    const runtime = await createAgentSessionRuntime(createPiTuiRuntime, {
       cwd: sessionCwd,
       agentDir,
       sessionManager,
