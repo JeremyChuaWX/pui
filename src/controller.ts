@@ -19,6 +19,7 @@ import {
   type AutocompleteItem,
   type SlashCommand,
 } from "@earendil-works/pi-tui";
+import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
 import { buildDisplayItems, formatCount, formatToolArguments, formatToolTitle } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
 import {
@@ -180,7 +181,13 @@ export class PiTuiController {
       sessionManager,
       sessionStartEvent,
     }) => {
-      const services = await createAgentSessionServices({ cwd, agentDir: targetAgentDir });
+      const services = await createAgentSessionServices({
+        cwd,
+        agentDir: targetAgentDir,
+        resourceLoaderOptions: {
+          additionalExtensionPaths: BUNDLED_EXTENSION_PATHS,
+        },
+      });
       return {
         ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
         services,

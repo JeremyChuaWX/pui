@@ -1,0 +1,13 @@
+{"type":"turn_start","turnIndex":0,"timestamp":1000}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Inspecting files"}],"model":"fixture/model"},"timestamp":1001}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-a","name":"read","arguments":{"path":"src/a.ts"}},{"type":"toolCall","id":"tool-b","name":"grep","arguments":{"pattern":"needle","path":"src"}}],"api":"fixture","provider":"fixture","model":"fixture/model","usage":{"input":10,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":12,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.01}},"stopReason":"toolUse","timestamp":1002},"timestamp":1002}
+{"type":"tool_execution_start","toolCallId":"tool-a","toolName":"read","args":{"path":"src/a.ts"},"timestamp":1003}
+{"type":"tool_execution_start","toolCallId":"tool-b","toolName":"grep","args":{"pattern":"needle","path":"src"},"timestamp":1004}
+{"type":"tool_execution_update","toolCallId":"tool-a","toolName":"read","args":{"path":"src/a.ts","offset":10},"partialResult":{"content":[{"type":"text","text":"partial"}]},"timestamp":1005}
+{"type":"tool_execution_end","toolCallId":"tool-b","toolName":"grep","result":{"content":[{"type":"text","text":"match"}]},"isError":false,"timestamp":1006}
+{"type":"tool_execution_end","toolCallId":"tool-a","toolName":"read","result":{"content":[{"type":"text","text":"file"}]},"isError":false,"timestamp":1007}
+{"type":"turn_end","turnIndex":0,"message":{"role":"assistant"},"toolResults":[],"timestamp":1008}
+{"type":"turn_start","turnIndex":1,"timestamp":1009}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Final child report"}],"api":"fixture","provider":"fixture","model":"fixture/model","usage":{"input":20,"output":4,"cacheRead":3,"cacheWrite":1,"totalTokens":28,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.02}},"stopReason":"stop","timestamp":1010},"timestamp":1010}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled"}
