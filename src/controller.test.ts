@@ -37,6 +37,19 @@ function details(id: string, status: "queued" | "running" | "succeeded" | "faile
   };
 }
 
+function assistantText(text: string): AgentMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "anthropic-messages",
+    provider: "anthropic",
+    model: "fixture",
+    usage: usage(),
+    stopReason: "stop",
+    timestamp: 1,
+  } as AgentMessage;
+}
+
 function assistantCalls(ids: string[]): AgentMessage {
   return {
     role: "assistant",
@@ -115,7 +128,7 @@ function createController(messages: AgentMessage[]): {
 describe("PuiController tool event path", () => {
   test("transports partial subagent snapshots and preserves a running sibling", async () => {
     const ids = ["slow", "fast"];
-    const { controller, state, emit } = createController([assistantCalls(ids)]);
+    const { controller, state, emit } = createController([assistantText("Stable context"), assistantCalls(ids)]);
 
     for (const id of ids) {
       const args = { agent: "explore", prompt: `Inspect ${id}`, cwd: process.cwd() };
@@ -131,6 +144,12 @@ describe("PuiController tool event path", () => {
     await Bun.sleep(25);
 
     let snapshot = controller.snapshot();
+    const textItem = snapshot.display.find((item) => item.kind === "assistant");
+    const queuedSlow = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow");
+    const queuedFast = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast");
+    expect(textItem).toBeDefined();
+    expect(queuedSlow).toBeDefined();
+    expect(queuedFast).toBeDefined();
     expect(snapshot.activeTools.map((tool) => tool.id).sort()).toEqual([...ids].sort());
     expect(snapshot.workingMessage).toBe("Running 2 tools");
     expect(
@@ -141,6 +160,24 @@ describe("PuiController tool event path", () => {
       ["slow", "queued"],
       ["fast", "queued"],
     ]);
+
+    const slowArgs = { agent: "explore", prompt: "Inspect slow", cwd: process.cwd() };
+    emit({
+      type: "tool_execution_update",
+      toolCallId: "slow",
+      toolName: "delegator",
+      args: slowArgs,
+      partialResult: { content: [{ type: "text", text: "working" }], details: details("slow", "running") },
+    });
+    await Bun.sleep(25);
+    snapshot = controller.snapshot();
+    const runningSlow = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow");
+    expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
+    expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(queuedFast);
+    expect(runningSlow).not.toBe(queuedSlow);
+    expect(runningSlow).toEqual(
+      expect.objectContaining({ running: true, subagent: expect.objectContaining({ status: "running" }) }),
+    );
 
     emit({
       type: "tool_execution_end",
@@ -155,9 +192,13 @@ describe("PuiController tool event path", () => {
     snapshot = controller.snapshot();
     expect(snapshot.activeTools.map((tool) => tool.id)).toEqual(["slow"]);
     expect(snapshot.workingMessage).toBe("Running delegator");
-    expect(
-      snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast"),
-    ).toEqual(expect.objectContaining({ subagent: expect.objectContaining({ status: "failed" }) }));
+    expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
+    expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow")).toBe(runningSlow);
+    const failedFast = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast");
+    expect(failedFast).not.toBe(queuedFast);
+    expect(failedFast).toEqual(
+      expect.objectContaining({ running: false, isError: true, subagent: expect.objectContaining({ status: "failed" }) }),
+    );
 
     state.messages.push({
       role: "toolResult",
@@ -177,7 +218,14 @@ describe("PuiController tool event path", () => {
     });
     snapshot = controller.snapshot();
     expect(snapshot.activeTools).toEqual([]);
-    expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toEqual(
+    expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
+    expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(failedFast);
+    const succeededSlow = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow");
+    expect(succeededSlow).not.toBe(runningSlow);
+    expect(succeededSlow).toEqual(
+      expect.objectContaining({ running: false, isError: false, subagent: expect.objectContaining({ status: "succeeded" }) }),
+    );
+    expect(failedFast).toEqual(
       expect.objectContaining({ resultDetails: expect.objectContaining({ schema: "pi.subagent" }) }),
     );
 
