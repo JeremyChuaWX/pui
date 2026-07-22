@@ -99,8 +99,7 @@ test("installed AgentSession transports parallel updates and persists success an
                     id: "outer-sdk-success",
                     name: "subagent",
                     arguments: {
-                      agent: "explore",
-                      prompt: "Inspect the successful SDK fixture",
+                      prompt: "Implement the successful SDK fixture",
                       cwd: temp,
                     },
                   },
@@ -213,10 +212,12 @@ test("installed AgentSession transports parallel updates and persists success an
     expect(persistedSuccess.isError).toBe(false);
     expect(isSubagentDetailsV1(persistedSuccess.details)).toBe(true);
     expect((persistedSuccess.details as any).run.status).toBe("succeeded");
+    expect((persistedSuccess.details as any).run.agent).toBe("worker");
     expect(persistedSuccess.content[0]).toEqual({ type: "text", text: "SDK delegated output" });
     expect(persistedFailure.isError).toBe(true);
     expect(isSubagentDetailsV1(persistedFailure.details)).toBe(true);
     expect((persistedFailure.details as any).run.status).toBe("failed");
+    expect((persistedFailure.details as any).run.agent).toBe("explore");
     expect((persistedFailure.details as any).run.error).toBe("SDK delegated failure");
 
     const sessionFile = manager.getSessionFile();
@@ -227,14 +228,15 @@ test("installed AgentSession transports parallel updates and persists success an
       .filter((entry) => entry.type === "message")
       .map((entry) => entry.message)
       .filter((message) => message.role === "toolResult");
-    for (const [id, status] of [
-      ["outer-sdk-success", "succeeded"],
-      ["outer-sdk-failure", "failed"],
+    for (const [id, status, agent] of [
+      ["outer-sdk-success", "succeeded", "worker"],
+      ["outer-sdk-failure", "failed", "explore"],
     ] as const) {
       const resumed = resumedResults.find((message) => message.toolCallId === id);
       expect(resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)).toBe(true);
       if (resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)) {
         expect(resumed.details.run.status).toBe(status);
+        expect(resumed.details.run.agent).toBe(agent);
         expect(resumed.details.run.id).toBe(id);
       }
     }

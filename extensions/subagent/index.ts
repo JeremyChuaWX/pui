@@ -21,39 +21,53 @@ import {
 import { getPiInvocation, runSubagent, type RunSubagentOptions, type SubagentRunResult } from "./runner.js";
 import { AbortableSemaphore, configuredSubagentConcurrency, type SemaphoreRelease } from "./semaphore.js";
 
-const AGENT_NAMES = ["explore"] as const;
+const AGENT_NAMES = ["worker", "explore"] as const;
+const DEFAULT_AGENT_NAME: AgentName = "worker";
 type AgentName = (typeof AGENT_NAMES)[number];
 
 type AgentPreset = {
   description: string;
   tools: readonly string[];
-  defaultModel: string;
-  modelEnv?: string;
+  defaultModel?: string;
+  modelEnv: string;
   promptPath: string;
+  promptFlag: "--system-prompt" | "--append-system-prompt";
   timeoutMs: number;
 };
 
 const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS: Record<AgentName, AgentPreset> = {
+  worker: {
+    description: "general coding with Ponytail standards",
+    tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+    defaultModel: "openai-codex/gpt-5.6-sol:low",
+    modelEnv: "PI_WORKER_MODEL",
+    promptPath: path.join(extensionDir, "agents", "worker.md"),
+    promptFlag: "--append-system-prompt",
+    timeoutMs: 600_000,
+  },
   explore: {
     description: "read-only codebase exploration",
     tools: ["read", "grep", "find", "ls"],
     defaultModel: "openai-codex/gpt-5.4-mini:off",
     modelEnv: "PI_EXPLORE_MODEL",
     promptPath: path.join(extensionDir, "agents", "explore.md"),
+    promptFlag: "--system-prompt",
     timeoutMs: 120_000,
   },
 };
 
 const AGENT_SUMMARY = AGENT_NAMES.map((name) => {
   const agent = AGENTS[name];
-  return `${name} (${agent.description}; tools: ${agent.tools.join(", ")}; default model: ${agent.defaultModel})`;
+  return `${name} (${agent.description}; tools: ${agent.tools.join(", ")}; default model: ${agent.defaultModel ?? "child Pi default"})`;
 }).join("; ");
 
 const SubagentParams = Type.Object({
-  agent: StringEnum(AGENT_NAMES, {
-    description: "Fixed subagent configuration to use.",
-  }),
+  agent: Type.Optional(
+    StringEnum(AGENT_NAMES, {
+      description: `Fixed subagent configuration to use. Omit to use ${DEFAULT_AGENT_NAME}.`,
+    }),
+  ),
   prompt: Type.String({
     description: "Task prompt for the subagent.",
   }),
@@ -80,13 +94,17 @@ export interface SubagentExtensionDependencies {
   run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
   invocation?: typeof getPiInvocation;
   now?: () => number;
+  environment?: NodeJS.ProcessEnv;
 }
 
-function resolveModel(agent: AgentPreset, override: string | undefined): string {
+function resolveModel(
+  agent: AgentPreset,
+  override: string | undefined,
+  environment: NodeJS.ProcessEnv,
+): string | undefined {
   const explicit = override?.trim();
   if (explicit) return explicit;
-  const fromEnvironment = agent.modelEnv ? process.env[agent.modelEnv]?.trim() : undefined;
-  return fromEnvironment || agent.defaultModel;
+  return environment[agent.modelEnv]?.trim() || agent.defaultModel;
 }
 
 function workingDirectoryCandidate(input: string, parentCwd: string): string {
@@ -161,6 +179,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
   const run = dependencies.run ?? runSubagent;
   const resolveInvocation = dependencies.invocation ?? getPiInvocation;
   const now = dependencies.now ?? Date.now;
+  const environment = dependencies.environment ?? process.env;
   const shutdownController = new AbortController();
   const failedDetails = new Map<string, SubagentDetailsV1>();
   let shuttingDown = false;
@@ -182,27 +201,29 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     name: "subagent",
     label: "Subagent",
     description:
-      "Spawn an isolated Pi subagent using an agent preset, task prompt, and working directory. " +
+      "Spawn an isolated Pi subagent for delegated coding work. " +
       `Available presets: ${AGENT_SUMMARY}. ` +
-      "An optional model argument overrides the preset default. Output is capped at 50KB or 2000 lines.",
-    promptSnippet: "Spawn an isolated Pi subagent for a task in a specified working directory.",
+      `Omitting agent selects ${DEFAULT_AGENT_NAME}. An optional model argument overrides the selected agent's default. ` +
+      "Output is capped at 50KB or 2000 lines.",
+    promptSnippet: "Delegate implementation, review, debugging, testing, or read-only exploration to an isolated Pi subagent.",
     promptGuidelines: [
-      'Use subagent with agent "explore" for isolated, read-only codebase reconnaissance.',
-      "Give subagent a focused prompt and the exact working directory it should inspect.",
-      "Issue multiple independent subagent calls in the same turn when their exploration tasks can run in parallel.",
+      "Use subagent instead of bash launching headless Pi when the user asks to delegate work to a worker, implementer, reviewer, or another agent.",
+      'Omit subagent\'s agent argument for general coding work; use agent "explore" only for read-only reconnaissance.',
+      "Give subagent a focused, self-contained prompt and the exact working directory because child context files, skills, and extensions are disabled.",
+      "Issue multiple independent subagent calls in the same turn when their tasks can run in parallel.",
       "Omit subagent's model argument unless a model override is specifically useful.",
     ],
     parameters: SubagentParams,
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const agentName = params.agent as AgentName;
+      const agentName = (params.agent ?? DEFAULT_AGENT_NAME) as AgentName;
       const agent = AGENTS[agentName];
-      const model = resolveModel(agent, params.model);
+      const model = resolveModel(agent, params.model, environment);
       const cwdCandidate = workingDirectoryCandidate(params.cwd, ctx.cwd);
       let details = createInitialSubagentDetails({
         id: toolCallId,
         agent: agentName,
-        model,
+        model: model ?? "default",
         cwd: cwdCandidate,
         now: now(),
       });
@@ -246,9 +267,9 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         );
         publish(details);
 
-        let systemPrompt: string;
+        let agentPrompt: string;
         try {
-          systemPrompt = await fs.promises.readFile(agent.promptPath, "utf8");
+          agentPrompt = await fs.promises.readFile(agent.promptPath, "utf8");
         } catch (error) {
           settleSetupFailure("failed", `Unable to load the ${agentName} preset: ${errorMessage(error)}`);
           throw error;
@@ -288,12 +309,9 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
           "--no-context-files",
           "--tools",
           agent.tools.join(","),
-          "--model",
-          model,
-          "--system-prompt",
-          systemPrompt,
-          params.prompt,
         ];
+        if (model) args.push("--model", model);
+        args.push(agent.promptFlag, agentPrompt, params.prompt);
         const invocation = resolveInvocation(args);
         const execution = await run({
           details,
@@ -348,8 +366,8 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
       }
     },
 
-    renderCall(args, theme) {
-      const agent = typeof args.agent === "string" ? args.agent : "...";
+    renderCall(args, theme, context) {
+      const agent = typeof args.agent === "string" ? args.agent : context.argsComplete ? DEFAULT_AGENT_NAME : "...";
       const prompt = typeof args.prompt === "string" ? args.prompt : "...";
       const preview = truncateUtf8(prompt.replace(/\s+/g, " "), 160).content;
       let text = `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", agent)}`;

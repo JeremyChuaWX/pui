@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInitialSubagentDetails, updateSubagentDetails, type SubagentDetailsV1 } from "./protocol.ts";
-import { getPiInvocation, runSubagent } from "./runner.ts";
+import { compactToolTitle, getPiInvocation, runSubagent } from "./runner.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
@@ -30,6 +30,14 @@ async function runFixture(
   });
   return { result, snapshots };
 }
+
+describe("compactToolTitle", () => {
+  test("summarizes write-capable worker activity", () => {
+    expect(compactToolTitle("bash", { command: "bun test src" })).toBe("$ bun test src");
+    expect(compactToolTitle("edit", { path: "src/controller.ts" })).toBe("edit src/controller.ts");
+    expect(compactToolTitle("write", { path: "src/new-file.ts" })).toBe("write src/new-file.ts");
+  });
+});
 
 describe("runSubagent", () => {
   test("streams fragmented JSONL, tracks parallel tools, and aggregates each assistant once", async () => {

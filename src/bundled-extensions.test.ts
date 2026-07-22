@@ -172,7 +172,12 @@ describe("bundled extensions", () => {
       }
 
       const extensionDir = path.dirname(bundledSubagentPath);
-      for (const relativePath of ["protocol.ts", "runner.ts", path.join("agents", "explore.md")]) {
+      for (const relativePath of [
+        "protocol.ts",
+        "runner.ts",
+        path.join("agents", "worker.md"),
+        path.join("agents", "explore.md"),
+      ]) {
         expect((await fs.promises.stat(path.join(extensionDir, relativePath))).isFile()).toBe(true);
       }
     } finally {

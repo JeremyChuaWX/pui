@@ -48,14 +48,27 @@ function successRun(output = "delegated answer") {
   };
 }
 
-function execute(tool: any, id: string, signal?: AbortSignal, onUpdate?: (value: any) => void) {
+function execute(
+  tool: any,
+  id: string,
+  options: {
+    params?: { agent?: "worker" | "explore"; prompt: string; cwd: string; model?: string };
+    signal?: AbortSignal;
+    onUpdate?: (value: any) => void;
+  } = {},
+) {
   return tool.execute(
     id,
-    { agent: "explore", prompt: "Inspect the target", cwd: extensionCwd },
-    signal,
-    onUpdate,
+    options.params ?? { agent: "explore", prompt: "Inspect the target", cwd: extensionCwd },
+    options.signal,
+    options.onUpdate,
     { cwd: extensionCwd },
   );
+}
+
+function argumentAfter(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index < 0 ? undefined : args[index + 1];
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -67,11 +80,62 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 describe("subagent extension integration", () => {
-  test("preserves the public schema, outer id, child isolation flags, and lifecycle snapshots", async () => {
+  test("defaults omitted agents to the write-capable Ponytail worker", async () => {
+    const host = fakePi();
+    let runnerOptions: any;
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      environment: {},
+      invocation: (args) => ({ command: "fake-pi", args }),
+      run: async (options) => {
+        runnerOptions = options;
+        return successRun()(options);
+      },
+    });
+
+    const result = await execute(host.tool, "default-worker", {
+      params: { prompt: "Implement the target", cwd: extensionCwd },
+    });
+
+    expect(host.tool.parameters.required).toEqual(["prompt", "cwd"]);
+    expect(host.tool.parameters.properties.agent.enum).toEqual(["worker", "explore"]);
+    expect(result.details.run.agent).toBe("worker");
+    expect(result.details.run.model).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
+    expect(runnerOptions.args).toContain("--append-system-prompt");
+    expect(argumentAfter(runnerOptions.args, "--append-system-prompt")).toContain("Ponytail");
+    expect(runnerOptions.args).not.toContain("--system-prompt");
+    expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(runnerOptions.timeoutMs).toBe(600_000);
+
+    const metadata = [host.tool.description, host.tool.promptSnippet, ...host.tool.promptGuidelines].join("\n");
+    expect(metadata).toContain("Omitting agent selects worker");
+    expect(metadata).toContain("instead of bash launching headless Pi");
+
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+    const complete = host.tool.renderCall(
+      { prompt: "Implement the target", cwd: extensionCwd },
+      theme,
+      { argsComplete: true },
+    ).render(200).join("\n");
+    const streaming = host.tool.renderCall(
+      { prompt: "Implement the target", cwd: extensionCwd },
+      theme,
+      { argsComplete: false },
+    ).render(200).join("\n");
+    expect(complete).toContain("subagent worker");
+    expect(streaming).toContain("subagent ...");
+  });
+
+  test("preserves explicit explore behavior, outer id, isolation flags, and lifecycle snapshots", async () => {
     const host = fakePi();
     let runnerOptions: any;
     registerSubagentExtension(host.pi, {
       semaphore: new AbortableSemaphore(4),
+      environment: {},
       invocation: (args) => ({ command: "fake-pi", args }),
       run: async (options) => {
         runnerOptions = options;
@@ -80,10 +144,13 @@ describe("subagent extension integration", () => {
     });
     const updates: any[] = [];
 
-    const result = await execute(host.tool, "outer-call-42", undefined, (update) => updates.push(update));
+    const result = await execute(host.tool, "outer-call-42", {
+      onUpdate: (update) => updates.push(update),
+    });
 
-    expect(host.tool.parameters.required).toEqual(["agent", "prompt", "cwd"]);
     expect(result.details.run.id).toBe("outer-call-42");
+    expect(result.details.run.agent).toBe("explore");
+    expect(result.details.run.model).toBe("openai-codex/gpt-5.4-mini:off");
     expect(result.content[0].text).toBe("delegated answer");
     expect(updates.map((item) => item.details.run.status)).toEqual([
       "queued",
@@ -104,8 +171,43 @@ describe("subagent extension integration", () => {
     ]) {
       expect(runnerOptions.args).toContain(flag);
     }
+    expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,grep,find,ls");
+    expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.4-mini:off");
+    expect(runnerOptions.args).toContain("--system-prompt");
+    expect(runnerOptions.args).not.toContain("--append-system-prompt");
+    expect(runnerOptions.timeoutMs).toBe(120_000);
     expect(runnerOptions.args.at(-1)).toBe("Inspect the target");
     expect(result.details.run.fullOutputPath).toBeUndefined();
+  });
+
+  test("resolves worker models from explicit input, then PI_WORKER_MODEL", async () => {
+    const host = fakePi();
+    const invocations: string[][] = [];
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      environment: { PI_WORKER_MODEL: "fixture/environment-model" },
+      invocation: (args) => {
+        invocations.push(args);
+        return { command: "fake-pi", args };
+      },
+      run: successRun(),
+    });
+
+    const fromEnvironment = await execute(host.tool, "worker-environment-model", {
+      params: { agent: "worker", prompt: "Implement one", cwd: extensionCwd },
+    });
+    const fromInput = await execute(host.tool, "worker-explicit-model", {
+      params: {
+        prompt: "Implement two",
+        cwd: extensionCwd,
+        model: "fixture/explicit-model",
+      },
+    });
+
+    expect(fromEnvironment.details.run.model).toBe("fixture/environment-model");
+    expect(argumentAfter(invocations[0]!, "--model")).toBe("fixture/environment-model");
+    expect(fromInput.details.run.model).toBe("fixture/explicit-model");
+    expect(argumentAfter(invocations[1]!, "--model")).toBe("fixture/explicit-model");
   });
 
   test("regular Pi renderer shows token and turn usage without monetary cost", async () => {
@@ -162,7 +264,9 @@ describe("subagent extension integration", () => {
       },
     });
     const updates: any[] = [];
-    await execute(host.tool, "active-tool-render", undefined, (update) => updates.push(update));
+    await execute(host.tool, "active-tool-render", {
+      onUpdate: (update) => updates.push(update),
+    });
     const runningUpdate = updates.find((update) => update.details.run.activeTools.length > 0);
     expect(runningUpdate.content[0].text).toBe("explore subagent is running...");
 
@@ -250,7 +354,9 @@ describe("subagent extension integration", () => {
     });
     const statuses = Array.from({ length: 5 }, () => [] as string[]);
     const executions = statuses.map((items, index) =>
-      execute(host.tool, `call-${index}`, undefined, (update) => items.push(update.details.run.status)),
+      execute(host.tool, `call-${index}`, {
+        onUpdate: (update) => items.push(update.details.run.status),
+      }),
     );
 
     await waitUntil(() => semaphore.active === 4 && semaphore.queued === 1);
@@ -277,8 +383,9 @@ describe("subagent extension integration", () => {
     });
     const controller = new AbortController();
     const statuses: string[] = [];
-    const execution = execute(host.tool, "queued-cancel", controller.signal, (update) => {
-      statuses.push(update.details.run.status);
+    const execution = execute(host.tool, "queued-cancel", {
+      signal: controller.signal,
+      onUpdate: (update) => statuses.push(update.details.run.status),
     });
     await waitUntil(() => semaphore.queued === 1);
     controller.abort();

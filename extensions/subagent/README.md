@@ -1,21 +1,46 @@
 # Subagent extension
 
-This extension supplies the `subagent` tool. Subagents are **not a Pi core feature**: the extension owns presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
+This extension supplies the `subagent` tool. Subagents are **not a Pi core feature**: the extension owns its trusted presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
 
 ## Tool shape
 
+Omit `agent` for the default general-purpose worker:
+
 ```ts
 {
-  agent: "explore",
-  prompt: "Focused delegated task",
+  prompt: "Implement the focused task and run its tests",
   cwd: "/absolute/or/relative/path",
   model?: "provider/model:thinking"
 }
 ```
 
-The built-in `explore` preset is intentionally read-only. Child Pi runs with only `read`, `grep`, `find`, and `ls`, and with sessions, extensions, skills, prompt templates, and context files disabled. Project-local or write-capable presets are not loaded.
+Select the read-only explorer explicitly:
+
+```ts
+{
+  agent: "explore",
+  prompt: "Locate and explain the relevant code",
+  cwd: "/absolute/or/relative/path",
+  model?: "provider/model:thinking"
+}
+```
+
+| Preset | Capabilities | Prompt | Default model | Timeout |
+| --- | --- | --- | --- | --- |
+| `worker` (default) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Pi's normal coding prompt plus bundled worker and [Ponytail](https://ponytail.dev/) minimal-coding standards | `openai-codex/gpt-5.6-sol:low` | 10 minutes |
+| `explore` | `read`, `grep`, `find`, `ls` | Dedicated read-only exploration prompt | `openai-codex/gpt-5.4-mini:off` | 120 seconds |
+
+The worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility.
+
+Both presets disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt therefore tells the child to discover `AGENTS.md` and contribution documentation before editing. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
 
 Relative working directories resolve from the parent session's working directory. `~`, `~/...`, and the accidental leading `@` commonly produced by models are normalized before the directory is canonicalized.
+
+## Security boundary
+
+> **The worker is write-capable and not sandboxed.** It can edit files and execute arbitrary shell commands. The child inherits the parent process environment, `cwd` is only its starting directory, and process/context isolation does not confine filesystem or operating-system access. Use worker delegation only in trusted repositories.
+
+The explorer's Pi tool allowlist is read-only, but it is likewise not an operating-system sandbox and does not confine reads to `cwd` or scrub the inherited environment.
 
 ## Progress protocol
 
@@ -38,10 +63,14 @@ When an execution throws, the extension temporarily retains terminal details by 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `PI_SUBAGENT_MAX_CONCURRENCY` | `4` | Process-wide child limit (valid range 1–64) |
+| `PI_WORKER_MODEL` | `openai-codex/gpt-5.6-sol:low` | Model for the `worker` preset |
 | `PI_EXPLORE_MODEL` | `openai-codex/gpt-5.4-mini:off` | Model for the `explore` preset |
-| Preset timeout | 120 seconds | Sends SIGTERM, then SIGKILL after a grace period |
+| Worker timeout | 10 minutes | Sends SIGTERM, then SIGKILL after a grace period |
+| Explore timeout | 120 seconds | Sends SIGTERM, then SIGKILL after a grace period |
 | Activity history | 20 entries | Bounds persisted progress metadata |
 | Model-visible output | 50 KB or 2000 lines | Pi's normal tool-output limits |
+
+A call's non-empty `model` value overrides its preset environment variable. Without either value, worker uses GPT-5.6 Sol with low thinking and explore uses its bundled fallback.
 
 Sibling outer tool calls are the concurrency unit. Additional calls stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
 
@@ -51,7 +80,7 @@ If final output exceeds the model-visible limit, the extension writes the comple
 
 - **`Unable to start child Pi`**: ensure `pi` is on `PATH`. When the parent is Pi's CLI, the extension safely reuses that CLI entrypoint; SDK hosts do not reuse their own `argv[1]`.
 - **Exited without a final assistant response**: inspect the bounded stderr/diagnostic in the failed tool result. Malformed JSONL lines are reported as diagnostics rather than crashing the parent.
-- **Timed out**: narrow the delegated prompt or change the preset timeout in `index.ts` after review.
+- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `index.ts` after review.
 - **Calls remain queued**: inspect `PI_SUBAGENT_MAX_CONCURRENCY`; invalid values fall back to four.
 - **Full output path missing after truncation**: the result remains usable, but the private temporary file could not be created.
 
