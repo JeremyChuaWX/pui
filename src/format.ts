@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
-import type { ToolExecutionState } from "./tool-executions.js";
+import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 
 const MAX_TOOL_TEXT = 8_000;
@@ -112,6 +112,32 @@ export function formatCount(value: number | null | undefined): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
+function buildToolDisplayItem(
+  id: string,
+  toolCallId: string,
+  name: string,
+  args: Record<string, unknown>,
+  execution?: ToolExecution,
+  timestamp?: number,
+): ToolDisplayItem {
+  const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
+  const item: ToolDisplayItem = {
+    id,
+    kind: "tool",
+    toolCallId,
+    name,
+    title: formatToolTitle(name, args),
+    args: formatToolArguments(args),
+    running: execution?.status === "running",
+    ...(execution?.partialResult === undefined ? {} : { partialDetails: resultDetails(execution.partialResult) }),
+    ...(execution?.finalResult === undefined ? {} : { resultDetails: resultDetails(execution.finalResult) }),
+    ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
+    ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
+  };
+  applySubagentPresentation(item, args, execution?.updatedAt ?? timestamp);
+  return item;
+}
+
 export function buildDisplayItems(
   messages: AgentMessage[],
   streamingMessage?: AgentMessage,
@@ -152,28 +178,14 @@ export function buildDisplayItems(
           }
           if (part.type === "toolCall") {
             const args = recordArgs(part.arguments);
-            const execution = executions.get(part.id);
-            const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
-            const item: ToolDisplayItem = {
-              id: partId,
-              kind: "tool",
-              toolCallId: part.id,
-              name: part.name,
-              title: formatToolTitle(part.name, args),
-              args: formatToolArguments(args),
-              running: execution?.status === "running",
-              ...(execution?.partialResult === undefined
-                ? {}
-                : { partialDetails: resultDetails(execution.partialResult) }),
-              ...(execution?.finalResult === undefined
-                ? {}
-                : { resultDetails: resultDetails(execution.finalResult) }),
-              ...(liveResult === undefined || resultContent(liveResult) === ""
-                ? {}
-                : { result: resultContent(liveResult) }),
-              ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
-            };
-            applySubagentPresentation(item, args, execution?.updatedAt ?? message.timestamp);
+            const item = buildToolDisplayItem(
+              partId,
+              part.id,
+              part.name,
+              args,
+              executions.get(part.id),
+              message.timestamp,
+            );
             result.push(item);
             toolById.set(part.id, item);
             argsById.set(part.id, args);
@@ -194,18 +206,11 @@ export function buildDisplayItems(
           existing.resultDetails = message.details;
           applySubagentPresentation(existing, argsById.get(message.toolCallId) ?? {}, message.timestamp);
         } else {
-          const item: ToolDisplayItem = {
-            id,
-            kind: "tool",
-            toolCallId: message.toolCallId,
-            name: message.toolName,
-            title: message.toolName,
-            args: "",
-            result: output,
-            isError: message.isError,
-            running: false,
-            resultDetails: message.details,
-          };
+          const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
+          item.result = output;
+          item.isError = message.isError;
+          item.running = false;
+          item.resultDetails = message.details;
           applySubagentPresentation(item, {}, message.timestamp);
           result.push(item);
           toolById.set(message.toolCallId, item);
@@ -239,21 +244,13 @@ export function buildDisplayItems(
 
   for (const execution of executions.values()) {
     if (toolById.has(execution.id)) continue;
-    const liveResult = execution.status === "ended" ? execution.finalResult : execution.partialResult;
-    const item: ToolDisplayItem = {
-      id: `tool-execution:${execution.id}`,
-      kind: "tool",
-      toolCallId: execution.id,
-      name: execution.name,
-      title: formatToolTitle(execution.name, execution.args),
-      args: formatToolArguments(execution.args),
-      running: execution.status === "running",
-      ...(execution.partialResult === undefined ? {} : { partialDetails: resultDetails(execution.partialResult) }),
-      ...(execution.finalResult === undefined ? {} : { resultDetails: resultDetails(execution.finalResult) }),
-      ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
-      ...(execution.isError === undefined ? {} : { isError: execution.isError }),
-    };
-    applySubagentPresentation(item, execution.args, execution.updatedAt);
+    const item = buildToolDisplayItem(
+      `tool-execution:${execution.id}`,
+      execution.id,
+      execution.name,
+      execution.args,
+      execution,
+    );
     result.push(item);
   }
 
