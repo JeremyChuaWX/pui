@@ -1115,10 +1115,6 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
 
       <box flexGrow={1} />
       <text fg={theme.muted}>Ctrl+K  commands</text>
-      <text fg={theme.muted}>Ctrl+G  edit in nvim</text>
-      <text fg={theme.muted}>Ctrl+L  models</text>
-      <text fg={theme.muted}>Ctrl+R  sessions</text>
-      <text fg={theme.muted}>Ctrl+B  sidebar</text>
     </box>
   );
 }
