@@ -23,7 +23,6 @@ import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
 import { buildDisplayItems, formatCount, formatToolArguments, formatToolTitle } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
 import {
-  deriveToolWorkingMessage,
   reconcileToolExecutions,
   reduceToolExecutions,
   runningToolExecutions,
@@ -176,11 +175,9 @@ export class PuiController {
   private autocompleteProvider?: CombinedAutocompleteProvider;
   private displayItems: DisplayItem[] = [];
   private runningBash?: RunningBash;
-  private workingMessage?: string;
   private toasts: ToastMessage[] = [];
   private toastId = 0;
   private toastTimers = new Set<ReturnType<typeof setTimeout>>();
-  private revision = 0;
   private refreshTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
   private exitRequested = false;
@@ -256,7 +253,6 @@ export class PuiController {
     this.toolExecutions = new Map();
     this.displayItems = [];
     this.runningBash = undefined;
-    this.workingMessage = undefined;
     this.gitBranch = readGitBranch(this.runtime.cwd);
 
     await session.bindExtensions({
@@ -294,25 +290,14 @@ export class PuiController {
       case "tool_execution_end":
         this.toolExecutions = reduceToolExecutions(this.toolExecutions, event);
         break;
-      case "compaction_start":
-        this.workingMessage = "Compacting context";
-        break;
-      case "compaction_end":
-        this.workingMessage = event.errorMessage ? `Compaction failed: ${event.errorMessage}` : undefined;
-        break;
-      case "auto_retry_start":
-        this.workingMessage = `Retry ${event.attempt}/${event.maxAttempts}`;
-        break;
-      case "auto_retry_end":
-        this.workingMessage = event.success ? undefined : event.finalError;
-        break;
-      case "agent_start":
-        this.workingMessage ??= "Thinking";
-        break;
       case "agent_settled":
-        this.workingMessage = undefined;
         this.toolExecutions = this.reconcileToolExecutionState(true);
         break;
+      case "compaction_start":
+      case "compaction_end":
+      case "auto_retry_start":
+      case "auto_retry_end":
+      case "agent_start":
       case "session_info_changed":
       case "thinking_level_changed":
       case "queue_update":
@@ -397,17 +382,11 @@ export class PuiController {
       detail: formatToolArguments(execution.args),
       startedAt: execution.startedAt,
     }));
-    const toolWorkingMessage = deriveToolWorkingMessage(this.toolExecutions);
-    const operationHasPriority = session.isCompacting || session.isRetrying || Boolean(this.runningBash);
-    const workingMessage = operationHasPriority ? this.workingMessage : toolWorkingMessage ?? this.workingMessage;
-
     return {
-      revision: this.revision,
       cwd: this.runtime.cwd,
       compactCwd: compactPath(this.runtime.cwd),
       gitBranch: this.gitBranch,
       sessionId: session.sessionId,
-      sessionFile: session.sessionFile,
       sessionName: session.sessionName,
       modelId: session.model?.id ?? "no model",
       modelProvider: session.model?.provider,
@@ -417,13 +396,10 @@ export class PuiController {
       contextPercent: context?.percent,
       isStreaming: session.isStreaming,
       isCompacting: session.isCompacting,
-      isRetrying: session.isRetrying,
-      workingMessage,
       queuedSteering: [...session.getSteeringMessages()],
       queuedFollowUp: [...session.getFollowUpMessages()],
       display: stableDisplay,
       activeTools,
-      activeToolNames: session.getActiveToolNames(),
       toasts: [...this.toasts],
       exitRequested: this.exitRequested,
     };
@@ -443,7 +419,6 @@ export class PuiController {
       this.refreshTimer = undefined;
     }
     if (this.disposed) return;
-    this.revision += 1;
     this.currentSnapshot = this.buildSnapshot();
     for (const listener of this.listeners) listener(this.currentSnapshot);
   }
@@ -625,7 +600,6 @@ export class PuiController {
       return;
     }
     this.runningBash = { command, output: "", excluded };
-    this.workingMessage = "Running shell command";
     this.refresh();
     try {
       await this.session.executeBash(
@@ -641,7 +615,6 @@ export class PuiController {
       this.notify(error instanceof Error ? error.message : String(error), "error");
     } finally {
       this.runningBash = undefined;
-      this.workingMessage = undefined;
       this.refresh();
     }
   }
@@ -775,7 +748,6 @@ export class PuiController {
     } finally {
       this.toolExecutions = new Map();
       this.runningBash = undefined;
-      this.workingMessage = undefined;
       this.refresh();
     }
   }

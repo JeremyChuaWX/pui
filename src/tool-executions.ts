@@ -126,10 +126,3 @@ export function runningToolExecutions(state: ToolExecutionState): ToolExecution[
     .filter((execution) => execution.status === "running")
     .sort((left, right) => left.startedAt - right.startedAt || left.id.localeCompare(right.id));
 }
-
-export function deriveToolWorkingMessage(state: ToolExecutionState): string | undefined {
-  const running = runningToolExecutions(state);
-  if (running.length === 0) return undefined;
-  if (running.length === 1) return `Running ${running[0]?.name ?? "tool"}`;
-  return `Running ${running.length} tools`;
-}

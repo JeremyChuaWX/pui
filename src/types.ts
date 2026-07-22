@@ -50,12 +50,10 @@ export interface ToastMessage {
 }
 
 export interface PuiSnapshot {
-  revision: number;
   cwd: string;
   compactCwd: string;
   gitBranch?: string;
   sessionId: string;
-  sessionFile?: string;
   sessionName?: string;
   modelId: string;
   modelProvider?: string;
@@ -65,13 +63,10 @@ export interface PuiSnapshot {
   contextPercent?: number | null;
   isStreaming: boolean;
   isCompacting: boolean;
-  isRetrying: boolean;
-  workingMessage?: string;
   queuedSteering: readonly string[];
   queuedFollowUp: readonly string[];
   display: DisplayItem[];
   activeTools: ActiveTool[];
-  activeToolNames: string[];
   toasts: ToastMessage[];
   exitRequested: boolean;
 }

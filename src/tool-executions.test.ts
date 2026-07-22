@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import {
-  deriveToolWorkingMessage,
   reconcileToolExecutions,
   reduceToolExecutions,
   runningToolExecutions,
@@ -77,7 +76,6 @@ describe("tool execution reducer", () => {
 
     expect(state.get("two")?.status).toBe("ended");
     expect(runningToolExecutions(state).map((execution) => execution.id)).toEqual(["one"]);
-    expect(deriveToolWorkingMessage(state)).toBe("Running read");
   });
 
   test("retains an ended execution until its persisted tool result is visible", () => {

@@ -96,7 +96,6 @@ function createController(messages: AgentMessage[]): {
     },
     getContextUsage: () => undefined,
     sessionId: "fixture-session",
-    sessionFile: undefined,
     sessionName: undefined,
     model: { id: "fixture-model", provider: "fixture" },
     thinkingLevel: "off",
@@ -104,10 +103,8 @@ function createController(messages: AgentMessage[]): {
       return state.isStreaming;
     },
     isCompacting: false,
-    isRetrying: false,
     getSteeringMessages: () => [],
     getFollowUpMessages: () => [],
-    getActiveToolNames: () => ["read", "delegator"],
   };
   const runtime = {
     cwd: process.cwd(),
@@ -151,7 +148,6 @@ describe("PuiController tool event path", () => {
     expect(queuedSlow).toBeDefined();
     expect(queuedFast).toBeDefined();
     expect(snapshot.activeTools.map((tool) => tool.id).sort()).toEqual([...ids].sort());
-    expect(snapshot.workingMessage).toBe("Running 2 tools");
     expect(
       snapshot.display
         .filter((item) => item.kind === "tool")
@@ -191,7 +187,6 @@ describe("PuiController tool event path", () => {
     });
     snapshot = controller.snapshot();
     expect(snapshot.activeTools.map((tool) => tool.id)).toEqual(["slow"]);
-    expect(snapshot.workingMessage).toBe("Running delegator");
     expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
     expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow")).toBe(runningSlow);
     const failedFast = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast");
@@ -241,7 +236,6 @@ describe("PuiController tool event path", () => {
     state.isStreaming = false;
     emit({ type: "agent_settled" });
     snapshot = controller.snapshot();
-    expect(snapshot.workingMessage).toBeUndefined();
     expect(
       snapshot.display
         .filter((item) => item.kind === "tool")
