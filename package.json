@@ -10,7 +10,7 @@
     "test": "bun test src extensions/subagent",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test && bun run build && bun scripts/smoke-build.ts",
-    "install:local": "./scripts/install-local.sh"
+    "install": "./scripts/install-local.sh"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.10",

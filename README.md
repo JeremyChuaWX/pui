@@ -16,12 +16,12 @@ On macOS and Linux:
 cd ~/dev/pui
 bun install --frozen-lockfile --ignore-scripts
 bun run build
-bun run install:local
+bun run install
 ```
 
 `bun run build` creates a minified native executable with embedded source maps for the current platform. The output is `dist/pui` on macOS and Linux or `dist/pui.exe` on Windows. Running it does not require Bun or this project's `node_modules`.
 
-On macOS and Linux, `install:local` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
+On macOS and Linux, `install` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
 
 ## Run
 

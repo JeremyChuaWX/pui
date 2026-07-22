@@ -4,7 +4,7 @@ set -eu
 project_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
 case $(uname -s) in
   CYGWIN*|MINGW*|MSYS*)
-    echo "pui: install:local is for macOS and Linux; add $project_dir/dist/pui.exe to PATH on Windows" >&2
+    echo "pui: install is for macOS and Linux; add $project_dir/dist/pui.exe to PATH on Windows" >&2
     exit 1
     ;;
 esac
