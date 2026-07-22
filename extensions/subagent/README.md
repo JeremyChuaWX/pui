@@ -30,7 +30,7 @@ Select the read-only explorer explicitly:
 | `worker` (default) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Pi's normal coding prompt plus bundled worker and [Ponytail](https://ponytail.dev/) minimal-coding standards | `openai-codex/gpt-5.6-sol:low` | 10 minutes |
 | `explore` | `read`, `grep`, `find`, `ls` | Dedicated read-only exploration prompt | `openai-codex/gpt-5.4-mini:off` | 120 seconds |
 
-The worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility.
+The worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`agents/worker-guidance.LICENSE`](./agents/worker-guidance.LICENSE).
 
 Both presets disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt therefore tells the child to discover `AGENTS.md` and contribution documentation before editing. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
 

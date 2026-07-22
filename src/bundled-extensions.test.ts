@@ -176,6 +176,7 @@ describe("bundled extensions", () => {
         "protocol.ts",
         "runner.ts",
         path.join("agents", "worker.md"),
+        path.join("agents", "worker-guidance.LICENSE"),
         path.join("agents", "explore.md"),
       ]) {
         expect((await fs.promises.stat(path.join(extensionDir, relativePath))).isFile()).toBe(true);

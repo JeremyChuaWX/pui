@@ -80,7 +80,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 describe("subagent extension integration", () => {
-  test("defaults omitted agents to the write-capable Ponytail worker", async () => {
+  test("defaults omitted agents to the full-intensity minimal worker", async () => {
     const host = fakePi();
     let runnerOptions: any;
     registerSubagentExtension(host.pi, {
@@ -103,7 +103,10 @@ describe("subagent extension integration", () => {
     expect(result.details.run.model).toBe("openai-codex/gpt-5.6-sol:low");
     expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
     expect(runnerOptions.args).toContain("--append-system-prompt");
-    expect(argumentAfter(runnerOptions.args, "--append-system-prompt")).toContain("Ponytail");
+    const workerPrompt = argumentAfter(runnerOptions.args, "--append-system-prompt") ?? "";
+    expect(workerPrompt).toContain("Lazy means efficient, not careless.");
+    expect(workerPrompt).toContain("Bug fix = root cause, not symptom");
+    expect(workerPrompt.toLowerCase()).not.toContain("ponytail");
     expect(runnerOptions.args).not.toContain("--system-prompt");
     expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.6-sol:low");
     expect(runnerOptions.timeoutMs).toBe(600_000);
