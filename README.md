@@ -72,17 +72,19 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 ## Architecture
 
 - `src/index.tsx` owns OpenTUI renderer startup and shutdown.
-- `src/controller.ts` embeds Pi through `AgentSessionRuntime` and rebinds every replaced session.
+- `src/controller.ts` embeds Pi through `AgentSessionRuntime`, rebinds every replaced session, and adapts Pi's `CombinedAutocompleteProvider` to OpenTUI prompt completions.
 - `src/bundled-extensions.ts` resolves application-owned extension entry points independently of session cwd.
 - `extensions/subagent/` owns the standalone extension, protocol producer, preset, fixtures, and tests.
 - `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
 - `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.
 - `src/app.tsx` is the Solid/OpenTUI view layer.
-- `src/format.ts` projects Pi messages and live tool executions into stable display items.
+- `src/format.ts` projects Pi messages and live tool executions into explicit display variants and preserves identity when their presentation is unchanged.
 - `src/theme.ts` defines the neutral palette and syntax styles.
 - `bin/pui` is the standalone launcher.
 
-The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. Extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. It emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+
+`@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.
 
 ## Development documentation
 

@@ -1,6 +1,12 @@
-1. [ ] ability to have multiple threads?
-2. [ ] make OpenTUI pui's only renderer
-   - [ ] replace `CombinedAutocompleteProvider` and its `pi-tui` types with a local renderer-independent implementation
-   - [ ] remove the subagent extension's dependency on the `pi-tui` `Text` component while preserving regular Pi compatibility
-   - [ ] remove `@earendil-works/pi-tui` as a direct dependency (it will remain transitive through `pi-coding-agent`)
-3. [ ] code review after impl agent finishes
+# Product work
+
+- [ ] Support multiple independent conversation threads.
+
+## Deliberate dependency boundary
+
+`pui` uses OpenTUI for rendering, while `src/controller.ts` intentionally uses
+`CombinedAutocompleteProvider` from `@earendil-works/pi-tui` for slash commands,
+paths, `fd` search, quoting, ranking, cancellation, and completion insertion.
+Keep `@earendil-works/pi-tui` as a direct dependency while that import remains.
+The bundled subagent extension is renderer-neutral and regular Pi renders it
+through Pi's generic tool fallback.
