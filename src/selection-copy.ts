@@ -18,6 +18,13 @@ export async function copyCurrentSelection(
   return true;
 }
 
-export function isCopyShortcut(key: Pick<KeyEvent, "name" | "ctrl" | "shift">): boolean {
-  return key.name.toLowerCase() === "c" && key.ctrl && key.shift;
+/**
+ * Treat Ctrl-C as copy while text is highlighted because legacy terminal paths,
+ * including tmux without extended-key forwarding, cannot preserve Shift.
+ */
+export function isCopyShortcut(
+  key: Pick<KeyEvent, "name" | "ctrl" | "shift">,
+  hasSelection = false,
+): boolean {
+  return key.name.toLowerCase() === "c" && key.ctrl && (key.shift || hasSelection);
 }

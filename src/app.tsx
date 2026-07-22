@@ -424,7 +424,7 @@ export function App(props: { controller: PuiController }) {
   }
 
   useKeyboard((key) => {
-    if (isCopyShortcut(key) && renderer.hasSelection) {
+    if (isCopyShortcut(key, renderer.hasSelection)) {
       key.preventDefault();
       key.stopPropagation();
       void copyCurrentSelection(renderer)

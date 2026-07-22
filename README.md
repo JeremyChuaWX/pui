@@ -37,7 +37,7 @@ npm run check
 
 ## Clipboard
 
-Highlight text inside pui, then press the terminal-safe shortcut `Ctrl+Shift+C` to copy it.
+Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal or tmux loses the Shift modifier, pui treats `Ctrl+C` as copy while text is highlighted instead of aborting.
 
 ## Included
 

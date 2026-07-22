@@ -31,14 +31,21 @@ describe("selection copying", () => {
     expect(copies).toBe(0);
   });
 
-  test("recognizes only Ctrl-Shift-C", () => {
+  test("recognizes Ctrl-Shift-C", () => {
     const commandC = { name: "c", ctrl: false, shift: false, super: true };
 
     expect(isCopyShortcut({ name: "c", ctrl: true, shift: true })).toBe(true);
     expect(isCopyShortcut({ name: "C", ctrl: true, shift: true })).toBe(true);
     expect(isCopyShortcut(commandC)).toBe(false);
-    expect(isCopyShortcut({ name: "c", ctrl: true, shift: false })).toBe(false);
     expect(isCopyShortcut({ name: "c", ctrl: false, shift: true })).toBe(false);
     expect(isCopyShortcut({ name: "x", ctrl: true, shift: true })).toBe(false);
+  });
+
+  test("treats ambiguous Ctrl-C as copy only while text is selected", () => {
+    const ctrlC = { name: "c", ctrl: true, shift: false };
+
+    expect(isCopyShortcut(ctrlC)).toBe(false);
+    expect(isCopyShortcut(ctrlC, true)).toBe(true);
+    expect(isCopyShortcut({ name: "x", ctrl: true, shift: false }, true)).toBe(false);
   });
 });
