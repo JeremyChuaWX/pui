@@ -328,25 +328,6 @@ export function subagentElapsed(view: SubagentViewModel, now = Date.now()): stri
   return formatElapsed(Math.max(0, end - start));
 }
 
-export function subagentCurrentActivity(view: SubagentViewModel): string {
-  const active = view.activeTools.at(-1);
-  if (active) return active.title;
-  switch (view.phase) {
-    case "queued":
-      return "queued";
-    case "spawning":
-      return "starting child Pi";
-    case "thinking":
-      return "thinking";
-    case "tool":
-      return view.recentActivity.at(-1)?.title ?? "using tools";
-    case "exiting":
-      return subagentStatusLabel(view.status);
-    default:
-      return subagentStatusLabel(view.status);
-  }
-}
-
 export function compactSubagentUsage(usage: SubagentUsage): string {
   const parts: string[] = [];
   if (usage.turns > 0) parts.push(`${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`);
@@ -366,7 +347,7 @@ export function subagentSummary(view: SubagentViewModel, now = Date.now()): stri
   if (view.status === "failed" || view.status === "cancelled" || view.status === "timed_out") {
     parts.push(subagentStatusLabel(view.status));
   } else if (!isTerminalSubagentStatus(view.status)) {
-    parts.push(subagentCurrentActivity(view));
+    parts.push(subagentStatusLabel(view.status));
   }
   parts.push(subagentElapsed(view, now));
   const usage = compactSubagentUsage(view.usage);

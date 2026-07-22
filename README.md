@@ -65,7 +65,7 @@ The regular `pi` command does not auto-load this application-owned extension. Lo
 pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 ```
 
-See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting and the [subagent architecture](docs/subagent-architecture.md) for design boundaries.
+See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
 
 ## Architecture
 
@@ -84,5 +84,4 @@ The bundled subagent extension augments normal Pi discovery: global and trusted 
 
 ## Development documentation
 
-- [Subagent architecture](docs/subagent-architecture.md)
 - [Codebase simplification plan](docs/codebase-simplification-plan.md)

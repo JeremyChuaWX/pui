@@ -61,7 +61,7 @@ The runner is well tested but combines event parsing, projection, throttled publ
 
 ### Documentation and checks
 
-The repository previously kept two long, completed subagent implementation plans. Their durable design decisions now live in [`subagent-architecture.md`](subagent-architecture.md). Extension tests run under Bun but are excluded from the default TypeScript project.
+The repository previously kept completed subagent implementation plans. Their durable behavior is documented in the root and extension READMEs and enforced by the extension and host tests. Extension tests run under Bun but are excluded from the default TypeScript project.
 
 ## 4. Principles and constraints
 
@@ -273,14 +273,13 @@ Depends on: SIM-03 through SIM-05
 Primary files:
 
 - `README.md`
-- `docs/subagent-architecture.md`
 - `extensions/subagent/README.md`
 - `package.json`
 - launcher tests or scripts
 
 Work:
 
-1. Update architecture documentation to match the final module boundaries.
+1. Update the repository and extension architecture sections to match the final module boundaries.
 2. Keep one canonical verification command in user-facing documentation, with focused commands only where they add value.
 3. Add a lightweight `pui --help` launcher smoke test that does not require a TTY or installed model.
 4. Align the internal package name, project title, and `pui` command terminology, or document why they intentionally differ.

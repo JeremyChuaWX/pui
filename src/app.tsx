@@ -12,7 +12,6 @@ import { PromptHistory } from "./prompt-history.js";
 import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
 import {
   isTerminalSubagentStatus,
-  subagentCurrentActivity,
   subagentElapsed,
   subagentStatusIcon,
   subagentStatusLabel,
@@ -1127,7 +1126,7 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
           <For each={subagents()}>
             {(item) => (
               <text fg={subagentColor(item.subagent!.status)} wrapMode="none">
-                {subagentStatusIcon(item.subagent!.status)} {item.subagent!.agent} · {subagentCurrentActivity(item.subagent!)} · {subagentElapsed(item.subagent!, props.now)}
+                {subagentStatusIcon(item.subagent!.status)} {item.subagent!.agent} · {subagentStatusLabel(item.subagent!.status)} · {subagentElapsed(item.subagent!, props.now)}
               </text>
             )}
           </For>

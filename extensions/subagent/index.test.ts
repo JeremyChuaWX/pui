@@ -135,6 +135,58 @@ describe("subagent extension integration", () => {
     expect(text).not.toContain("0.5678");
   });
 
+  test("keeps active child tool calls out of regular Pi status lines", async () => {
+    const host = fakePi();
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      invocation: (args) => ({ command: "fake-pi", args }),
+      run: async (options) => {
+        const timestamp = Date.now();
+        const previousSequence = options.details.run.recentActivity.at(-1)?.sequence ?? 0;
+        let details = updateSubagentDetails(options.details, {
+          status: "running",
+          phase: "tool",
+          startedAt: options.details.run.startedAt ?? timestamp,
+          activeTools: [
+            { id: "child-read", name: "read", title: "read src/controller.ts", startedAt: timestamp },
+          ],
+          recentActivity: [
+            ...options.details.run.recentActivity,
+            { sequence: previousSequence + 1, timestamp, kind: "tool_start", title: "read src/controller.ts" },
+          ],
+        });
+        options.onSnapshot?.(details);
+        details = createTerminalSubagentDetails(details, { status: "succeeded", outputPreview: "done" });
+        options.onSnapshot?.(details);
+        return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+      },
+    });
+    const updates: any[] = [];
+    await execute(host.tool, "active-tool-render", undefined, (update) => updates.push(update));
+    const runningUpdate = updates.find((update) => update.details.run.activeTools.length > 0);
+    expect(runningUpdate.content[0].text).toBe("explore subagent is running...");
+
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+    const collapsed = host.tool.renderResult(
+      runningUpdate,
+      { expanded: false },
+      theme,
+      { isError: false },
+    ).render(200).join("\n");
+    const expanded = host.tool.renderResult(
+      runningUpdate,
+      { expanded: true },
+      theme,
+      { isError: false },
+    ).render(200).join("\n");
+
+    expect(collapsed).not.toContain("read src/controller.ts");
+    expect(expanded).toContain("read src/controller.ts");
+  });
+
   test("stores full output privately only when model-visible output is truncated", async () => {
     const host = fakePi();
     const output = "😀".repeat(20_000);

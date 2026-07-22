@@ -126,10 +126,7 @@ function lifecycleText(details: SubagentDetailsV1): string {
   const { run } = details;
   if (run.status === "queued") return `${run.agent} subagent is queued...`;
   if (run.status === "starting") return `${run.agent} subagent is starting...`;
-  if (run.status === "running") {
-    const active = run.activeTools.at(-1);
-    return active ? `${run.agent} subagent: ${active.title}` : `${run.agent} subagent is running...`;
-  }
+  if (run.status === "running") return `${run.agent} subagent is running...`;
   if (run.status === "succeeded") return `${run.agent} subagent completed.`;
   return run.error || `${run.agent} subagent ${run.status}.`;
 }
@@ -372,8 +369,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
       const iconColor = run.status === "succeeded" ? "success" : isTerminalSubagentStatus(run.status) ? "error" : "warning";
       let text = `${theme.fg(iconColor, statusIcon(run.status))} ${theme.fg("toolTitle", run.agent)}`;
       text += theme.fg("dim", ` · ${run.model} · ${run.status}`);
-      const active = run.activeTools.at(-1);
-      if (active) text += `\n${theme.fg("muted", active.title)}`;
       const usage = formatUsage(details);
       if (usage) text += `\n${theme.fg("dim", usage)}`;
 

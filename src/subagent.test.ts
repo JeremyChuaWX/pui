@@ -51,7 +51,10 @@ describe("subagent detail normalization", () => {
         activeTools: [expect.objectContaining({ title: "read src/controller.ts" })],
       }),
     );
-    expect(subagentSummary(view!, 13_000)).toContain("read src/controller.ts");
+    expect(subagentSummary(view!, 13_000)).toBe(
+      "explore · openai/gpt-5.4-mini · running · 12s · 1 turn · 60 tokens",
+    );
+    expect(subagentSummary(view!, 13_000)).not.toContain("read src/controller.ts");
   });
 
   test("recreates terminal protocol state and uses stable elapsed time", () => {

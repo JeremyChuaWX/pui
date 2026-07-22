@@ -2,8 +2,6 @@
 
 This extension supplies the `subagent` tool. Subagents are **not a Pi core feature**: the extension owns presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
 
-See [`docs/subagent-architecture.md`](../../docs/subagent-architecture.md) for host integration, ownership boundaries, and persistence design.
-
 ## Tool shape
 
 ```ts
