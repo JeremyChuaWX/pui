@@ -461,7 +461,7 @@ describe("subagent extension integration", () => {
       run: async (options) => {
         let details = updateSubagentDetails(options.details, { status: "running", phase: "thinking" });
         options.onSnapshot?.(details);
-        await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+        await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), { once: true }));
         details = createTerminalSubagentDetails(details, { status: "cancelled", error: "shutdown cancellation" });
         options.onSnapshot?.(details);
         return { details, output: "", stderr: "", exitCode: null, signal: "SIGTERM" };

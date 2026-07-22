@@ -10,9 +10,9 @@
     "types": ["node", "bun"],
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "extensions/**/*.ts"],
-  "exclude": ["extensions/**/*.test.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "extensions/**/*.ts"]
 }
