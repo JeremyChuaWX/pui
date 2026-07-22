@@ -5,8 +5,13 @@ export class PromptHistory {
   private readonly entries: string[] = [];
   private index = -1;
   private draft = "";
+  private traversing = false;
 
   constructor(private readonly limit = DEFAULT_HISTORY_LIMIT) {}
+
+  get isTraversing(): boolean {
+    return this.traversing;
+  }
 
   add(text: string): void {
     this.resetBrowsing();
@@ -23,6 +28,7 @@ export class PromptHistory {
 
     if (this.index === -1) this.draft = currentText;
     this.index = nextIndex;
+    this.traversing = true;
     return this.entries[this.index];
   }
 
@@ -30,12 +36,16 @@ export class PromptHistory {
     if (this.index === -1) return undefined;
 
     this.index -= 1;
-    if (this.index === -1) return this.draft;
+    if (this.index === -1) {
+      this.traversing = false;
+      return this.draft;
+    }
     return this.entries[this.index];
   }
 
   resetBrowsing(): void {
     this.index = -1;
     this.draft = "";
+    this.traversing = false;
   }
 }

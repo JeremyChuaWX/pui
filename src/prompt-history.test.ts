@@ -36,6 +36,39 @@ describe("PromptHistory", () => {
     expect(history.previous("second")).toBeUndefined();
   });
 
+  test("retains commands alongside regular prompts", () => {
+    const history = new PromptHistory();
+    history.add("regular prompt");
+    history.add("/model provider/model");
+
+    expect(history.previous("")).toBe("/model provider/model");
+    expect(history.previous("/model provider/model")).toBe("regular prompt");
+  });
+
+  test("tracks traversal until returning to the draft or being reset", () => {
+    const emptyHistory = new PromptHistory();
+    expect(emptyHistory.isTraversing).toBe(false);
+    expect(emptyHistory.previous("draft")).toBeUndefined();
+    expect(emptyHistory.isTraversing).toBe(false);
+
+    const history = new PromptHistory();
+    history.add("first");
+    expect(history.isTraversing).toBe(false);
+
+    expect(history.previous("draft")).toBe("first");
+    expect(history.isTraversing).toBe(true);
+    expect(history.next()).toBe("draft");
+    expect(history.isTraversing).toBe(false);
+
+    expect(history.previous("another draft")).toBe("first");
+    history.resetBrowsing();
+    expect(history.isTraversing).toBe(false);
+
+    expect(history.previous("final draft")).toBe("first");
+    history.add("second");
+    expect(history.isTraversing).toBe(false);
+  });
+
   test("starts a fresh traversal after browsing is reset", () => {
     const history = new PromptHistory();
     history.add("first");

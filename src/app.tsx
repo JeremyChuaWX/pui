@@ -155,7 +155,7 @@ export function App(props: { controller: PuiController }) {
   }
 
   async function updatePromptCompletions(text: string, cursorOffset: number): Promise<void> {
-    if (!shouldTriggerPromptAutocomplete(text, cursorOffset)) {
+    if (promptHistory.isTraversing || !shouldTriggerPromptAutocomplete(text, cursorOffset)) {
       closePromptCompletions();
       return;
     }
@@ -171,7 +171,7 @@ export function App(props: { controller: PuiController }) {
       if (request === completionRequest) setPromptCompletions(undefined);
       return;
     }
-    if (request !== completionRequest || abort.signal.aborted) return;
+    if (request !== completionRequest || abort.signal.aborted || promptHistory.isTraversing) return;
     if (!result || result.items.length === 0) {
       setPromptCompletions(undefined);
       setCompletionIndex(0);
@@ -181,9 +181,11 @@ export function App(props: { controller: PuiController }) {
     setCompletionIndex(0);
   }
 
-  function handlePromptChange(value: string): void {
-    if (value === appliedHistoryText) appliedHistoryText = undefined;
-    else promptHistory.resetBrowsing();
+  function handlePromptChange(): void {
+    const value = prompt?.plainText ?? promptText();
+    const applyingHistory = value === appliedHistoryText;
+    appliedHistoryText = undefined;
+    if (!applyingHistory) promptHistory.resetBrowsing();
     setPromptText(value);
     const cursorOffset = prompt?.cursorOffset ?? value.length;
     void updatePromptCompletions(value, cursorOffset);
@@ -438,6 +440,14 @@ export function App(props: { controller: PuiController }) {
     }
     if (dialog()) return;
 
+    const historyKey = key.ctrl && (key.name === "p" || key.name === "n");
+    if (historyKey && promptHistory.isTraversing) {
+      key.preventDefault();
+      key.stopPropagation();
+      navigatePromptHistory(key.name === "p" ? "previous" : "next");
+      return;
+    }
+
     const completions = promptCompletions();
     if (completions) {
       if (key.name === "escape") {
@@ -469,7 +479,7 @@ export function App(props: { controller: PuiController }) {
       }
     }
 
-    if (key.ctrl && (key.name === "p" || key.name === "n")) {
+    if (historyKey) {
       key.preventDefault();
       key.stopPropagation();
       navigatePromptHistory(key.name === "p" ? "previous" : "next");
@@ -1006,7 +1016,7 @@ function Prompt(props: {
   focused: boolean;
   setAnchorRef: (value: BoxRenderable) => void;
   setRef: (value: TextareaRenderable) => void;
-  onChange: (value: string) => void;
+  onChange: () => void;
   onCursorChange: () => void;
   onSubmit: () => void;
 }) {
@@ -1035,9 +1045,7 @@ function Prompt(props: {
           minHeight={1}
           maxHeight={8}
           keyBindings={promptKeyBindings}
-          onContentChange={(value: unknown) => {
-            if (typeof value === "string") props.onChange(value);
-          }}
+          onContentChange={() => props.onChange()}
           onCursorChange={() => props.onCursorChange()}
           onSubmit={props.onSubmit}
         />
