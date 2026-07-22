@@ -712,7 +712,7 @@ function MessageItem(props: {
         </box>
       </Match>
       <Match when={props.item().kind === "thinking"}>
-        <box marginTop={1} border={["left"]} borderColor={theme.secondary} paddingLeft={2} paddingTop={1}>
+        <box marginTop={1} border={["left"]} borderColor={theme.secondary} paddingLeft={2} paddingTop={1} paddingBottom={1}>
           <text fg={theme.secondary}>◇ Reasoning</text>
           <Show when={props.thinkingExpanded} fallback={<text fg={theme.muted}>hidden · Ctrl+T to expand</text>}>
             <text fg={theme.muted}>{textItem().text}</text>
