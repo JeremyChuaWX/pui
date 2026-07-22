@@ -22,6 +22,7 @@ import {
 import { syntaxStyle, theme } from "./theme.js";
 import type {
   DisplayItem,
+  ToolDisplayItem,
   ModelChoice,
   PuiSnapshot,
   PromptCompletions,
@@ -36,7 +37,9 @@ interface PickerItem {
   value: string;
 }
 
-type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
+interface SubagentDisplayItem extends ToolDisplayItem {
+  subagent: SubagentViewModel;
+}
 
 type DialogState =
   | {
@@ -80,11 +83,11 @@ function subagentColor(status: SubagentStatus): string {
   }
 }
 
-function activeSubagentItems(display: readonly DisplayItem[]): ToolDisplayItem[] {
-  return display.filter(
-    (item): item is ToolDisplayItem =>
-      item.kind === "tool" && Boolean(item.subagent) && !isTerminalSubagentStatus(item.subagent!.status),
-  );
+function activeSubagentItems(display: readonly DisplayItem[]): SubagentDisplayItem[] {
+  return display.filter((item): item is SubagentDisplayItem => {
+    if (item.kind !== "tool" || !item.subagent) return false;
+    return !isTerminalSubagentStatus(item.subagent.status);
+  });
 }
 
 export function App(props: { controller: PuiController }) {
@@ -670,72 +673,89 @@ function MessageItem(props: {
   thinkingExpanded: boolean;
   now: number;
 }) {
-  const textItem = () => props.item() as DisplayItem & { text: string; label?: string; streaming?: boolean };
-  const toolItem = () => props.item() as ToolDisplayItem;
-  const bashItem = () => props.item() as DisplayItem & {
-    kind: "bash";
-    command: string;
-    output: string;
-    exitCode?: number;
-    cancelled: boolean;
-    excluded: boolean;
-    running?: boolean;
-  };
-  const toolColor = () => (toolItem().isError ? theme.error : toolItem().running ? theme.warning : theme.success);
+  const userItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "user" ? item : undefined;
+  });
+  const assistantItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "assistant" ? item : undefined;
+  });
+  const thinkingItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "thinking" ? item : undefined;
+  });
+  const toolItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "tool" ? item : undefined;
+  });
+  const bashItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "bash" ? item : undefined;
+  });
+  const summaryItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "summary" ? item : undefined;
+  });
+  const customItem = createMemo(() => {
+    const item = props.item();
+    return item.kind === "custom" ? item : undefined;
+  });
+  const toolColor = () => (toolItem()?.isError ? theme.error : toolItem()?.running ? theme.warning : theme.success);
   const bashColor = () =>
-    bashItem().running
+    bashItem()?.running
       ? theme.warning
-      : bashItem().cancelled || (bashItem().exitCode ?? 0) !== 0
+      : bashItem()?.cancelled || (bashItem()?.exitCode ?? 0) !== 0
         ? theme.error
         : theme.success;
 
   return (
     <Switch>
-      <Match when={props.item().kind === "user"}>
+      <Match when={userItem()}>
         <box marginTop={1} border={["left"]} borderColor={theme.primary} backgroundColor={theme.userBackground}>
           <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-            <text fg={theme.text}>{textItem().text}</text>
+            <text fg={theme.text}>{userItem()?.text}</text>
           </box>
         </box>
       </Match>
-      <Match when={props.item().kind === "assistant"}>
+      <Match when={assistantItem()}>
         <box marginTop={1} paddingLeft={1} paddingRight={1}>
           <markdown
             syntaxStyle={syntaxStyle}
             streaming={true}
             internalBlockMode="top-level"
-            content={textItem().text}
+            content={assistantItem()?.text}
             conceal
             fg={theme.text}
             bg={theme.background}
           />
         </box>
       </Match>
-      <Match when={props.item().kind === "thinking"}>
+      <Match when={thinkingItem()}>
         <box marginTop={1} border={["left"]} borderColor={theme.secondary} paddingLeft={2} paddingTop={1} paddingBottom={1}>
           <text fg={theme.secondary}>◇ Reasoning</text>
           <Show when={props.thinkingExpanded} fallback={<text fg={theme.muted}>hidden · Ctrl+T to expand</text>}>
-            <text fg={theme.muted}>{textItem().text}</text>
+            <text fg={theme.muted}>{thinkingItem()?.text}</text>
           </Show>
         </box>
       </Match>
-      <Match when={props.item().kind === "tool"}>
+      <Match when={toolItem()}>
         <Show
-          when={toolItem().subagent}
+          when={toolItem()?.subagent}
           fallback={
             <box marginTop={1} border={["left"]} borderColor={toolColor()} backgroundColor={theme.toolBackground}>
               <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
                 <box flexDirection="row">
-                  <text fg={toolColor()}>{toolItem().running ? "◌" : toolItem().isError ? "×" : "✓"} </text>
-                  <text fg={theme.text}>{toolItem().title}</text>
+                  <text fg={toolColor()}>{toolItem()?.running ? "◌" : toolItem()?.isError ? "×" : "✓"} </text>
+                  <text fg={theme.text}>{toolItem()?.title}</text>
                 </box>
-                <Show when={props.toolsExpanded && toolItem().args}>
-                  <text fg={theme.muted}>{toolItem().args}</text>
+                <Show when={props.toolsExpanded && toolItem()?.args}>
+                  <text fg={theme.muted}>{toolItem()?.args}</text>
                 </Show>
-                <Show when={props.toolsExpanded && toolItem().result}>
-                  <text fg={toolItem().isError ? theme.error : theme.subtle}>{toolItem().result}</text>
+                <Show when={props.toolsExpanded && toolItem()?.result}>
+                  <text fg={toolItem()?.isError ? theme.error : theme.subtle}>{toolItem()?.result}</text>
                 </Show>
-                <Show when={!props.toolsExpanded && toolItem().result}>
+                <Show when={!props.toolsExpanded && toolItem()?.result}>
                   <text fg={theme.muted}>Ctrl+O to show output</text>
                 </Show>
               </box>
@@ -752,43 +772,43 @@ function MessageItem(props: {
           )}
         </Show>
       </Match>
-      <Match when={props.item().kind === "bash"}>
+      <Match when={bashItem()}>
         <box marginTop={1} border={["left"]} borderColor={bashColor()} backgroundColor={theme.toolBackground}>
           <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
             <text fg={bashColor()}>
-              {bashItem().running ? "◌" : "›"} shell{bashItem().excluded ? " · excluded" : ""}
+              {bashItem()?.running ? "◌" : "›"} shell{bashItem()?.excluded ? " · excluded" : ""}
             </text>
-            <text fg={theme.text}>$ {bashItem().command}</text>
-            <Show when={bashItem().output}>
-              <text fg={theme.muted}>{bashItem().output}</text>
+            <text fg={theme.text}>$ {bashItem()?.command}</text>
+            <Show when={bashItem()?.output}>
+              <text fg={theme.muted}>{bashItem()?.output}</text>
             </Show>
           </box>
         </box>
       </Match>
-      <Match when={props.item().kind === "summary"}>
+      <Match when={summaryItem()}>
         <box marginTop={1} border={["left"]} borderColor={theme.secondary} paddingLeft={2} paddingTop={1}>
-          <text fg={theme.secondary}>{textItem().label}</text>
+          <text fg={theme.secondary}>{summaryItem()?.label}</text>
           <markdown
             syntaxStyle={syntaxStyle}
             internalBlockMode="top-level"
-            content={textItem().text}
+            content={summaryItem()?.text}
             conceal
             fg={theme.muted}
             bg={theme.background}
           />
         </box>
       </Match>
-      <Match when={true}>
+      <Match when={customItem()}>
         <box
           marginTop={1}
           border={["left"]}
-          borderColor={textItem().label === "error" ? theme.error : theme.info}
+          borderColor={customItem()?.label === "error" ? theme.error : theme.info}
           paddingLeft={2}
         >
-          <text fg={textItem().label === "error" ? theme.error : theme.info}>
-            {textItem().label || "message"}
+          <text fg={customItem()?.label === "error" ? theme.error : theme.info}>
+            {customItem()?.label || "message"}
           </text>
-          <text fg={theme.text}>{textItem().text}</text>
+          <text fg={theme.text}>{customItem()?.text}</text>
         </box>
       </Match>
     </Switch>
@@ -796,14 +816,14 @@ function MessageItem(props: {
 }
 
 function SubagentTool(props: {
-  item: ToolDisplayItem;
+  item?: ToolDisplayItem;
   subagent: SubagentViewModel;
   expanded: boolean;
   now: number;
 }) {
   const color = () => subagentColor(props.subagent.status);
   const finalOutput = () =>
-    isTerminalSubagentStatus(props.subagent.status) && !props.item.isError ? props.item.result : undefined;
+    isTerminalSubagentStatus(props.subagent.status) && !props.item?.isError ? props.item?.result : undefined;
   const livePreview = () =>
     !isTerminalSubagentStatus(props.subagent.status) ? props.subagent.outputPreview : undefined;
   const usageDetails = () => {
@@ -1125,8 +1145,8 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
           </text>
           <For each={subagents()}>
             {(item) => (
-              <text fg={subagentColor(item.subagent!.status)} wrapMode="none">
-                {subagentStatusIcon(item.subagent!.status)} {item.subagent!.agent} · {subagentStatusLabel(item.subagent!.status)} · {subagentElapsed(item.subagent!, props.now)}
+              <text fg={subagentColor(item.subagent.status)} wrapMode="none">
+                {subagentStatusIcon(item.subagent.status)} {item.subagent.agent} · {subagentStatusLabel(item.subagent.status)} · {subagentElapsed(item.subagent, props.now)}
               </text>
             )}
           </For>

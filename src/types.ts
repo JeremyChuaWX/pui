@@ -1,39 +1,72 @@
 import type { Model } from "@earendil-works/pi-ai";
 import type { SubagentViewModel } from "./subagent.js";
 
+interface DisplayItemBase {
+  id: string;
+}
+
+export interface UserDisplayItem extends DisplayItemBase {
+  kind: "user";
+  text: string;
+}
+
+export interface AssistantDisplayItem extends DisplayItemBase {
+  kind: "assistant";
+  text: string;
+  streaming?: boolean;
+}
+
+export interface ThinkingDisplayItem extends DisplayItemBase {
+  kind: "thinking";
+  text: string;
+  streaming?: boolean;
+}
+
+export interface CustomDisplayItem extends DisplayItemBase {
+  kind: "custom";
+  text: string;
+  label?: string;
+}
+
+export interface SummaryDisplayItem extends DisplayItemBase {
+  kind: "summary";
+  text: string;
+  label?: string;
+}
+
+export interface ToolDisplayItem extends DisplayItemBase {
+  kind: "tool";
+  toolCallId: string;
+  name: string;
+  title: string;
+  args: string;
+  result?: string;
+  isError?: boolean;
+  running?: boolean;
+  partialDetails?: unknown;
+  resultDetails?: unknown;
+  subagent?: SubagentViewModel;
+  subagentKey?: string;
+}
+
+export interface BashDisplayItem extends DisplayItemBase {
+  kind: "bash";
+  command: string;
+  output: string;
+  exitCode?: number;
+  cancelled: boolean;
+  excluded: boolean;
+  running?: boolean;
+}
+
 export type DisplayItem =
-  | {
-      id: string;
-      kind: "user" | "assistant" | "thinking" | "custom" | "summary";
-      text: string;
-      label?: string;
-      streaming?: boolean;
-    }
-  | {
-      id: string;
-      kind: "tool";
-      toolCallId: string;
-      name: string;
-      title: string;
-      args: string;
-      result?: string;
-      isError?: boolean;
-      running?: boolean;
-      partialDetails?: unknown;
-      resultDetails?: unknown;
-      subagent?: SubagentViewModel;
-      subagentKey?: string;
-    }
-  | {
-      id: string;
-      kind: "bash";
-      command: string;
-      output: string;
-      exitCode?: number;
-      cancelled: boolean;
-      excluded: boolean;
-      running?: boolean;
-    };
+  | UserDisplayItem
+  | AssistantDisplayItem
+  | ThinkingDisplayItem
+  | CustomDisplayItem
+  | SummaryDisplayItem
+  | ToolDisplayItem
+  | BashDisplayItem;
 
 export interface ActiveTool {
   id: string;
