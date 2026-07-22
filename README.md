@@ -58,6 +58,7 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 - Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
+- Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
 - `!command` and `!!command` shell execution
 
 ## Subagents
@@ -76,12 +77,27 @@ pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 
 See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
 
+## Web tools
+
+pui bundles the application-owned `web_search` and `web_crawl` tools from [`extensions/web/`](extensions/web/). `web_search` uses GPT built-in web search through an authenticated OpenAI Responses or ChatGPT/Codex model. It uses the active model when compatible; otherwise set `WEB_SEARCH_MODEL=provider/model` to a registered, authenticated compatible model. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
+
+Both tools cap returned output at 50KB and Pi's default line limit. `web_crawl` accepts a smaller `max_bytes` limit. When output is truncated, the complete result is saved to a temporary file and its path is returned; `web_search` returns at most 10 source URLs.
+
+Like the bundled subagent, these tools are loaded by pui independently of normal extension discovery. The regular `pi` command does not auto-load them. To use them there, load the extension explicitly:
+
+```sh
+pi -e /absolute/path/to/pui/extensions/web/index.ts
+```
+
+See the [web extension guide](extensions/web/README.md) for the compact configuration reference.
+
 ## Architecture
 
 - `src/index.tsx` owns OpenTUI renderer startup and shutdown.
 - `src/controller.ts` embeds Pi through `AgentSessionRuntime`, rebinds every replaced session, and adapts Pi's `CombinedAutocompleteProvider` to OpenTUI prompt completions.
 - `src/bundled-extensions.ts` registers application-owned extension factories independently of session cwd.
-- `extensions/subagent/` owns the standalone extension, protocol producer, preset, fixtures, and tests.
+- `extensions/subagent/` owns the standalone subagent extension, protocol producer, preset, fixtures, and tests.
+- `extensions/web/` owns the bundled web-search and Firecrawl tools and their provider-facing tests.
 - `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
 - `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.
 - `src/app.tsx` is the Solid/OpenTUI view layer.
@@ -89,6 +105,6 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 - `src/theme.ts` defines the neutral palette and syntax styles.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extension into `dist/pui`.
 
-The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. It emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+The bundled application-owned extensions augment normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.

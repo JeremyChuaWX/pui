@@ -15,27 +15,31 @@ import {
 } from "./bundled-extensions.js";
 import { createPuiRuntime } from "./controller.js";
 
-const bundledSubagentPath = "<inline:pui-subagent>";
+const bundledTools = {
+  "<inline:pui-subagent>": ["subagent"],
+  "<inline:pui-web>": ["web_crawl", "web_search"],
+} as const;
 
-function expectOneBundledSubagent(runtime: AgentSessionRuntime, cwd: string): void {
+function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): void {
   expect(runtime.cwd).toBe(cwd);
   const extensions = runtime.services.resourceLoader.getExtensions();
   expect(extensions.errors).toEqual([]);
-  expect(
-    extensions.extensions.filter((extension) => extension.resolvedPath === bundledSubagentPath),
-  ).toHaveLength(1);
-  expect(runtime.session.getAllTools().filter((tool) => tool.name === "subagent")).toHaveLength(1);
+  for (const [resolvedPath, toolNames] of Object.entries(bundledTools)) {
+    expect(extensions.extensions.filter((extension) => extension.resolvedPath === resolvedPath)).toHaveLength(1);
+    for (const name of toolNames) {
+      expect(runtime.session.getAllTools().filter((tool) => tool.name === name)).toHaveLength(1);
+    }
+  }
 }
 
 describe("bundled extensions", () => {
-  test("exposes the subagent as an inline factory with its standalone source intact", async () => {
-    expect(BUNDLED_EXTENSION_FACTORIES).toHaveLength(1);
-    expect(BUNDLED_EXTENSION_FACTORIES[0]).toMatchObject({ name: "pui-subagent" });
+  test("exposes application-owned tools as named inline factories with the subagent source intact", async () => {
+    expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual(["pui-subagent", "pui-web"]);
     expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);
     expect((await fs.promises.stat(BUNDLED_SUBAGENT_SOURCE_PATH)).isFile()).toBe(true);
   });
 
-  test("the controller runtime factory preserves one subagent tool across session replacement", async () => {
+  test("the controller runtime factory preserves one of each bundled tool across session replacement", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-runtime-replacement-test-"));
     const initialCwd = path.join(temp, "initial-cwd");
     const resumedCwd = path.join(temp, "resumed-cwd");
@@ -54,10 +58,10 @@ describe("bundled extensions", () => {
       sessionManager: SessionManager.inMemory(initialCwd),
     });
     try {
-      expectOneBundledSubagent(runtime, initialCwd);
+      expectOneOfEachBundledTool(runtime, initialCwd);
 
       expect((await runtime.newSession()).cancelled).toBe(false);
-      expectOneBundledSubagent(runtime, initialCwd);
+      expectOneOfEachBundledTool(runtime, initialCwd);
 
       const forkEntryId = runtime.session.sessionManager.appendMessage({
         role: "user",
@@ -65,7 +69,7 @@ describe("bundled extensions", () => {
         timestamp: Date.now(),
       });
       expect((await runtime.fork(forkEntryId)).cancelled).toBe(false);
-      expectOneBundledSubagent(runtime, initialCwd);
+      expectOneOfEachBundledTool(runtime, initialCwd);
 
       const resumedManager = SessionManager.create(resumedCwd, sessionDir);
       resumedManager.appendMessage({
@@ -94,14 +98,14 @@ describe("bundled extensions", () => {
       if (!resumedPath) throw new Error("Expected a persisted session fixture");
 
       expect((await runtime.switchSession(resumedPath)).cancelled).toBe(false);
-      expectOneBundledSubagent(runtime, resumedCwd);
+      expectOneOfEachBundledTool(runtime, resumedCwd);
     } finally {
       await runtime.dispose();
       await fs.promises.rm(temp, { recursive: true, force: true });
     }
   });
 
-  test("loads and reloads one subagent extension without disabling normal discovery", async () => {
+  test("loads and reloads bundled extensions without disabling normal discovery", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-bundled-loader-test-"));
     const cwd = path.join(temp, "session-cwd");
     const agentDir = path.join(temp, "agent-dir");
@@ -140,17 +144,19 @@ describe("bundled extensions", () => {
         await loader.reload();
         const result = loader.getExtensions();
         expect(result.errors).toEqual([]);
-        expect(result.extensions).toHaveLength(3);
+        const bundledToolNames: string[] = [];
+        for (const [resolvedPath, expectedToolNames] of Object.entries(bundledTools)) {
+          const bundled = result.extensions.filter((extension) => extension.resolvedPath === resolvedPath);
+          expect(bundled).toHaveLength(1);
+          const names = [...bundled[0]!.tools.keys()].sort();
+          expect(names).toEqual([...expectedToolNames].sort());
+          bundledToolNames.push(...names);
+        }
+        expect(new Set(bundledToolNames).size).toBe(bundledToolNames.length);
 
-        const bundled = result.extensions.filter(
-          (extension) => extension.resolvedPath === bundledSubagentPath,
-        );
-        expect(bundled).toHaveLength(1);
-        expect([...bundled[0]!.tools.keys()]).toEqual(["subagent"]);
-        expect(result.extensions.flatMap((extension) => [...extension.commands.keys()]).sort()).toEqual([
-          "global-fixture",
-          "project-fixture",
-        ]);
+        const commandNames = result.extensions.flatMap((extension) => [...extension.commands.keys()]);
+        expect(commandNames).toContain("global-fixture");
+        expect(commandNames).toContain("project-fixture");
       }
 
       const extensionDir = path.dirname(BUNDLED_SUBAGENT_SOURCE_PATH);
