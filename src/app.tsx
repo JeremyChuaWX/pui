@@ -49,6 +49,8 @@ type DialogState =
     }
   | { kind: "help" };
 
+const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
+
 const promptKeyBindings: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "kpenter", action: "submit" },
@@ -292,70 +294,56 @@ export function App(props: { controller: PuiController }) {
     if (action === "help") setDialog({ kind: "help" });
   }
 
-  async function openModels(): Promise<void> {
+  async function openAsyncPicker(
+    title: string,
+    placeholder: string,
+    load: () => Promise<PickerItem[]>,
+  ): Promise<void> {
     closePromptCompletions();
     const request = ++dialogRequest;
-    setDialog({
-      kind: "picker",
-      title: "Select model",
-      placeholder: "Search provider or model",
-      loading: true,
-      items: [],
-    });
+    setDialog({ kind: "picker", title, placeholder, loading: true, items: [] });
     try {
-      const choices = await props.controller.listModels();
+      const items = await load();
       if (request !== dialogRequest) return;
       setDialog({
         kind: "picker",
-        title: "Select model",
-        placeholder: "Search provider or model",
-        items: choices.map((choice) => ({
-          label: choice.label,
-          detail: choice.detail,
-          search: choice.search,
+        title,
+        placeholder,
+        items: items.map((item) => ({
+          ...item,
           action: () => {
             setDialog(undefined);
-            void props.controller.selectModel(choice);
+            item.action();
           },
         })),
       });
     } catch (error) {
+      if (request !== dialogRequest) return;
       setDialog(undefined);
       props.controller.notify(error instanceof Error ? error.message : String(error), "error");
     }
   }
 
-  async function openSessions(): Promise<void> {
-    closePromptCompletions();
-    const request = ++dialogRequest;
-    setDialog({
-      kind: "picker",
-      title: "Resume session",
-      placeholder: "Search session history",
-      loading: true,
-      items: [],
-    });
-    try {
-      const choices = await props.controller.listSessions();
-      if (request !== dialogRequest) return;
-      setDialog({
-        kind: "picker",
-        title: "Resume session",
-        placeholder: "Search session history",
-        items: choices.map((choice) => ({
-          label: choice.label,
-          detail: choice.detail,
-          search: choice.search,
-          action: () => {
-            setDialog(undefined);
-            void props.controller.switchSession(choice.path);
-          },
-        })),
-      });
-    } catch (error) {
-      setDialog(undefined);
-      props.controller.notify(error instanceof Error ? error.message : String(error), "error");
-    }
+  function openModels(): Promise<void> {
+    return openAsyncPicker("Select model", "Search provider or model", async () =>
+      (await props.controller.listModels()).map((choice) => ({
+        label: choice.label,
+        detail: choice.detail,
+        search: choice.search,
+        action: () => void props.controller.selectModel(choice),
+      })),
+    );
+  }
+
+  function openSessions(): Promise<void> {
+    return openAsyncPicker("Resume session", "Search session history", async () =>
+      (await props.controller.listSessions()).map((choice) => ({
+        label: choice.label,
+        detail: choice.detail,
+        search: choice.search,
+        action: () => void props.controller.switchSession(choice.path),
+      })),
+    );
   }
 
   function openCommands(): void {
@@ -433,7 +421,7 @@ export function App(props: { controller: PuiController }) {
       }
       const confirm =
         key.name === "tab" ||
-        (!key.shift && !key.ctrl && !key.meta && !key.option && ["return", "enter", "linefeed"].includes(key.name));
+        (!key.shift && !key.ctrl && !key.meta && !key.option && isEnterName(key.name));
       if (confirm) {
         key.preventDefault();
         key.stopPropagation();
@@ -448,7 +436,7 @@ export function App(props: { controller: PuiController }) {
       navigatePromptHistory(key.name === "p" ? "previous" : "next");
       return;
     }
-    if ((key.meta || key.option) && ["return", "enter", "linefeed"].includes(key.name)) {
+    if ((key.meta || key.option) && isEnterName(key.name)) {
       key.preventDefault();
       key.stopPropagation();
       submit("followUp");
@@ -1246,7 +1234,7 @@ function Picker(props: {
       setSelected((value) => cycleIndex(value, 1, filtered().length));
       return;
     }
-    if (["return", "enter", "linefeed"].includes(key.name)) {
+    if (isEnterName(key.name)) {
       key.preventDefault();
       key.stopPropagation();
       choose();
