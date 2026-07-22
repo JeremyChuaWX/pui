@@ -108,6 +108,33 @@ describe("subagent extension integration", () => {
     expect(result.details.run.fullOutputPath).toBeUndefined();
   });
 
+  test("regular Pi renderer shows token and turn usage without monetary cost", async () => {
+    const host = fakePi();
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      invocation: (args) => ({ command: "fake-pi", args }),
+      run: successRun(),
+    });
+    const result = await execute(host.tool, "rendered-call");
+    result.details = {
+      ...result.details,
+      run: {
+        ...result.details.run,
+        usage: { ...result.details.run.usage, turns: 2, totalTokens: 1234, cost: 0.5678 },
+      },
+    };
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+
+    const rendered = host.tool.renderResult(result, { expanded: false }, theme, { isError: false });
+    const text = rendered.render(200).join("\n");
+    expect(text).toContain("2 turns · 1234 tokens");
+    expect(text).not.toContain("$");
+    expect(text).not.toContain("0.5678");
+  });
+
   test("stores full output privately only when model-visible output is truncated", async () => {
     const host = fakePi();
     const output = "😀".repeat(20_000);

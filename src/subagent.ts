@@ -351,7 +351,6 @@ export function compactSubagentUsage(usage: SubagentUsage): string {
   const parts: string[] = [];
   if (usage.turns > 0) parts.push(`${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`);
   if (usage.totalTokens > 0) parts.push(`${compactCount(usage.totalTokens)} tokens`);
-  if (usage.cost > 0) parts.push(`$${usage.cost.toFixed(4)}`);
   return parts.join(" · ");
 }
 

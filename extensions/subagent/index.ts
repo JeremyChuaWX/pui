@@ -147,7 +147,6 @@ function formatUsage(details: SubagentDetailsV1): string {
   const parts: string[] = [];
   if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
   if (usage.totalTokens) parts.push(`${usage.totalTokens} tokens`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   return parts.join(" · ");
 }
 

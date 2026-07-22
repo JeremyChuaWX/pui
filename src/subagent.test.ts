@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   formatElapsed,
+  compactSubagentUsage,
   normalizeSubagentDetails,
   subagentElapsed,
   subagentStatusIcon,
@@ -68,8 +69,10 @@ describe("subagent detail normalization", () => {
     expect(view?.status).toBe("succeeded");
     expect(subagentElapsed(view!, 99_000)).toBe("14s");
     expect(subagentSummary(view!, 99_000)).toBe(
-      "explore · openai/gpt-5.4-mini · 14s · 3 turns · 18k tokens · $0.0123",
+      "explore · openai/gpt-5.4-mini · 14s · 3 turns · 18k tokens",
     );
+    expect(compactSubagentUsage(view!.usage)).toBe("3 turns · 18k tokens");
+    expect(compactSubagentUsage(view!.usage)).not.toContain("$");
   });
 
   test("adapts legacy persisted details", () => {

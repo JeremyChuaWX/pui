@@ -4,9 +4,11 @@ import { For, Index, Match, Show, Switch, createEffect, createMemo, createSignal
 import { createStore, reconcile } from "solid-js/store";
 import { PuiController } from "./controller.js";
 import { editPromptInNvim } from "./external-editor.js";
+import { trapFocus } from "./focus-trap.js";
 import { formatCount } from "./format.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { PromptHistory } from "./prompt-history.js";
+import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
 import {
   isTerminalSubagentStatus,
   subagentCurrentActivity,
@@ -106,6 +108,13 @@ export function App(props: { controller: PuiController }) {
   let completionAbort: AbortController | undefined;
   let externalEditorOpen = false;
   let appliedHistoryText: string | undefined;
+  let releasePromptFocusTrap: (() => void) | undefined;
+
+  function setPromptRef(value: TextareaRenderable): void {
+    releasePromptFocusTrap?.();
+    prompt = value;
+    releasePromptFocusTrap = trapFocus(value, () => !dialog() && !externalEditorOpen && !renderer.isDestroyed);
+  }
 
   let unsubscribe: (() => void) | undefined;
   onMount(() => {
@@ -115,6 +124,7 @@ export function App(props: { controller: PuiController }) {
     dialogRequest += 1;
     completionRequest += 1;
     completionAbort?.abort();
+    releasePromptFocusTrap?.();
     unsubscribe?.();
   });
 
@@ -413,6 +423,12 @@ export function App(props: { controller: PuiController }) {
   }
 
   useKeyboard((key) => {
+    if (isCopyShortcut(key) && renderer.hasSelection) {
+      key.preventDefault();
+      key.stopPropagation();
+      copyCurrentSelection(renderer);
+      return;
+    }
     if (dialog()) return;
 
     const completions = promptCompletions();
@@ -586,7 +602,7 @@ export function App(props: { controller: PuiController }) {
             snapshot={snapshot}
             focused={!dialog()}
             setAnchorRef={(value) => (promptAnchor = value)}
-            setRef={(value) => (prompt = value)}
+            setRef={setPromptRef}
             onChange={handlePromptChange}
             onCursorChange={handlePromptCursorChange}
             onSubmit={() => submit("steer")}
@@ -783,7 +799,6 @@ function SubagentTool(props: {
       `${formatCount(usage.cacheRead)} cache read`,
       `${formatCount(usage.cacheWrite)} cache write`,
       `${formatCount(usage.totalTokens)} total`,
-      `$${usage.cost.toFixed(4)}`,
     ].join(" · ");
   };
 
@@ -1329,6 +1344,7 @@ function Help(props: { width: number; onClose: () => void }) {
       <text fg={theme.muted}>Ctrl+T        reasoning blocks</text>
       <text fg={theme.muted}>Ctrl+B        sidebar</text>
       <text fg={theme.muted}>PageUp/Down   scroll transcript</text>
+      <text fg={theme.muted}>Cmd+C         copy highlighted text</text>
       <text fg={theme.muted}>Ctrl+C/D      abort, clear, or quit</text>
       <text fg={theme.primary}>Slash commands and !shell commands are supported.</text>
       <text fg={theme.muted}>Press Esc or Enter to close.</text>
