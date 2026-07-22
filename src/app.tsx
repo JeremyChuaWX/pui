@@ -23,10 +23,8 @@ import { syntaxStyle, theme } from "./theme.js";
 import type {
   DisplayItem,
   ToolDisplayItem,
-  ModelChoice,
   PuiSnapshot,
   PromptCompletions,
-  SessionChoice,
   ToastMessage,
 } from "./types.js";
 
@@ -34,7 +32,7 @@ interface PickerItem {
   label: string;
   detail?: string;
   search: string;
-  value: string;
+  action: () => void;
 }
 
 interface SubagentDisplayItem extends ToolDisplayItem {
@@ -48,7 +46,6 @@ type DialogState =
       placeholder: string;
       items: PickerItem[];
       loading?: boolean;
-      onSelect: (value: string) => void;
     }
   | { kind: "help" };
 
@@ -304,7 +301,6 @@ export function App(props: { controller: PuiController }) {
       placeholder: "Search provider or model",
       loading: true,
       items: [],
-      onSelect: () => {},
     });
     try {
       const choices = await props.controller.listModels();
@@ -313,17 +309,15 @@ export function App(props: { controller: PuiController }) {
         kind: "picker",
         title: "Select model",
         placeholder: "Search provider or model",
-        items: choices.map((choice, index) => ({
+        items: choices.map((choice) => ({
           label: choice.label,
           detail: choice.detail,
           search: choice.search,
-          value: String(index),
+          action: () => {
+            setDialog(undefined);
+            void props.controller.selectModel(choice);
+          },
         })),
-        onSelect: (value) => {
-          const choice: ModelChoice | undefined = choices[Number(value)];
-          setDialog(undefined);
-          if (choice) void props.controller.selectModel(choice);
-        },
       });
     } catch (error) {
       setDialog(undefined);
@@ -340,7 +334,6 @@ export function App(props: { controller: PuiController }) {
       placeholder: "Search session history",
       loading: true,
       items: [],
-      onSelect: () => {},
     });
     try {
       const choices = await props.controller.listSessions();
@@ -349,17 +342,15 @@ export function App(props: { controller: PuiController }) {
         kind: "picker",
         title: "Resume session",
         placeholder: "Search session history",
-        items: choices.map((choice, index) => ({
+        items: choices.map((choice) => ({
           label: choice.label,
           detail: choice.detail,
           search: choice.search,
-          value: String(index),
+          action: () => {
+            setDialog(undefined);
+            void props.controller.switchSession(choice.path);
+          },
         })),
-        onSelect: (value) => {
-          const choice: SessionChoice | undefined = choices[Number(value)];
-          setDialog(undefined);
-          if (choice) void props.controller.switchSession(choice.path);
-        },
       });
     } catch (error) {
       setDialog(undefined);
@@ -367,63 +358,33 @@ export function App(props: { controller: PuiController }) {
     }
   }
 
-  function runCommand(command: string): void {
-    setDialog(undefined);
-    switch (command) {
-      case "model":
-        void openModels();
-        break;
-      case "sessions":
-        void openSessions();
-        break;
-      case "new":
-        void props.controller.newSession();
-        break;
-      case "compact":
-        void props.controller.compact();
-        break;
-      case "thinking":
-        props.controller.cycleThinking();
-        break;
-      case "tools":
-        setToolsExpanded((value) => !value);
-        break;
-      case "editor":
-        void openExternalEditor();
-        break;
-      case "help":
-        setDialog({ kind: "help" });
-        break;
-      case "quit":
-        props.controller.requestExit();
-        break;
-    }
-  }
-
   function openCommands(): void {
     closePromptCompletions();
-    const items = [
-      ["Models", "Switch the active model", "model"],
-      ["Sessions", "Resume a previous session", "sessions"],
-      ["New session", "Start with a clean conversation", "new"],
-      ["Compact context", "Summarize older conversation history", "compact"],
-      ["Thinking level", "Cycle the current reasoning level", "thinking"],
-      ["Tool details", "Expand or collapse tool output", "tools"],
-      ["Edit in nvim", "Edit the prompt with the last agent response as reference", "editor"],
-      ["Help", "Show keyboard shortcuts", "help"],
-      ["Quit", "Exit pui", "quit"],
-    ];
+    const command = (label: string, detail: string, action: () => void): PickerItem => ({
+      label,
+      detail,
+      search: `${label} ${detail}`.toLowerCase(),
+      action: () => {
+        setDialog(undefined);
+        action();
+      },
+    });
     setDialog({
       kind: "picker",
       title: "Commands",
       placeholder: "Search commands",
-      items: items.map(([label = "", detail = "", value = ""]) => ({
-        label,
-        detail,
-        value,
-        search: `${label} ${detail}`.toLowerCase(),
-      })),
-      onSelect: runCommand,
+      items: [
+        command("Models", "Switch the active model", () => void openModels()),
+        command("Sessions", "Resume a previous session", () => void openSessions()),
+        command("New session", "Start with a clean conversation", () => void props.controller.newSession()),
+        command("Compact context", "Summarize older conversation history", () => void props.controller.compact()),
+        command("Thinking level", "Cycle the current reasoning level", () => props.controller.cycleThinking()),
+        command("Tool details", "Expand or collapse tool output", () => setToolsExpanded((value) => !value)),
+        command("Edit in nvim", "Edit the prompt with the last agent response as reference", () =>
+          void openExternalEditor()),
+        command("Help", "Show keyboard shortcuts", () => setDialog({ kind: "help" })),
+        command("Quit", "Exit pui", () => props.controller.requestExit()),
+      ],
     });
   }
 
@@ -1263,7 +1224,7 @@ function Picker(props: {
 
   function choose(): void {
     const item = filtered()[selected()];
-    if (item) props.state.onSelect(item.value);
+    item?.action();
   }
 
   useKeyboard((key: KeyEvent) => {
@@ -1330,7 +1291,7 @@ function Picker(props: {
                   backgroundColor={entry().index === selected() ? theme.selection : theme.panel}
                   paddingLeft={1}
                   paddingRight={1}
-                  onMouseUp={() => props.state.onSelect(entry().item.value)}
+                  onMouseUp={() => entry().item.action()}
                 >
                   <text fg={entry().index === selected() ? theme.text : theme.subtle} wrapMode="none">
                     {entry().index === selected() ? "› " : "  "}{entry().item.label}
