@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -20,7 +19,7 @@ import {
   type SlashCommand,
 } from "@earendil-works/pi-tui";
 import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
-import { buildDisplayItems, formatCount, formatToolArguments, formatToolTitle } from "./format.js";
+import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
 import {
   reconcileToolExecutions,
@@ -97,23 +96,6 @@ const LOCAL_SLASH_COMMANDS: SlashCommand[] = [
   { name: "quit", description: "Quit" },
 ];
 
-function textFromMessageContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter(
-      (block): block is { type: string; text: string } =>
-        typeof block === "object" &&
-        block !== null &&
-        "type" in block &&
-        block.type === "text" &&
-        "text" in block &&
-        typeof block.text === "string",
-    )
-    .map((block) => block.text)
-    .join("\n");
-}
-
 const OPAQUE_DISPLAY_FIELDS = new Set(["partialDetails", "resultDetails", "subagent"]);
 
 function sameDisplayItem(left: DisplayItem, right: DisplayItem): boolean {
@@ -122,23 +104,6 @@ function sameDisplayItem(left: DisplayItem, right: DisplayItem): boolean {
   const leftKeys = Object.keys(leftRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
   const rightKeys = Object.keys(rightRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(leftRecord[key], rightRecord[key]));
-}
-
-function findExecutable(name: string): string | undefined {
-  const extensions = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = path.join(directory, `${name}${extension}`);
-      try {
-        accessSync(candidate, fsConstants.X_OK);
-        return candidate;
-      } catch {
-        // Continue searching PATH.
-      }
-    }
-  }
-  return undefined;
 }
 
 interface RunningBash {
@@ -236,7 +201,11 @@ export class PuiController {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (!message || message.role !== "assistant") continue;
-      const text = textFromMessageContent(message.content).trimEnd();
+      const text = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trimEnd();
       if (text.trim()) return text;
     }
     return "";
@@ -377,10 +346,7 @@ export class PuiController {
     const runningExecutions = runningToolExecutions(this.toolExecutions);
     const activeTools: ActiveTool[] = runningExecutions.map((execution) => ({
       id: execution.id,
-      name: execution.name,
       title: formatToolTitle(execution.name, execution.args),
-      detail: formatToolArguments(execution.args),
-      startedAt: execution.startedAt,
     }));
     return {
       cwd: this.runtime.cwd,
@@ -480,7 +446,7 @@ export class PuiController {
     this.autocompleteProvider = new CombinedAutocompleteProvider(
       [...localCommands, ...extensionCommands, ...templateCommands, ...skillCommands],
       this.runtime.cwd,
-      findExecutable("fd") ?? findExecutable("fdfind") ?? null,
+      Bun.which("fd") ?? Bun.which("fdfind"),
     );
   }
 

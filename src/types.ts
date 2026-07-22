@@ -37,10 +37,7 @@ export type DisplayItem =
 
 export interface ActiveTool {
   id: string;
-  name: string;
   title: string;
-  detail: string;
-  startedAt: number;
 }
 
 export interface ToastMessage {

@@ -122,6 +122,22 @@ function createController(messages: AgentMessage[]): {
   return { controller, state, emit };
 }
 
+describe("PuiController assistant reference text", () => {
+  test("returns only text blocks from the last assistant message with text", async () => {
+    const mixed = assistantText("unused");
+    if (mixed.role !== "assistant") throw new Error("Expected assistant fixture");
+    mixed.content = [
+      { type: "text", text: "First" },
+      { type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
+      { type: "text", text: "Second\n\n" },
+    ];
+    const { controller } = createController([assistantText("Older"), mixed, assistantCalls(["latest-tool-only"])]);
+
+    expect(controller.getLastAssistantText()).toBe("First\nSecond");
+    await controller.dispose();
+  });
+});
+
 describe("PuiController tool event path", () => {
   test("transports partial subagent snapshots and preserves a running sibling", async () => {
     const ids = ["slow", "fast"];
