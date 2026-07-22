@@ -57,7 +57,7 @@ Every partial and final `details` value uses the versioned renderer-neutral prot
 - only currently executing child tools in `activeTools`
 - aggregate finalized-assistant usage, final status, preview, and diagnostic metadata
 
-Unknown future versions should be rendered as generic tools. Protocol details contain no raw child transcript or unbounded stdout/stderr. The final assistant text remains the ordinary model-visible tool `content` and final details are stored in the parent session's tool result.
+Unknown future versions should be rendered as generic tools. The extension does not implement regular-Pi rendering; regular Pi uses its documented generic tool fallback. Protocol details contain no raw child transcript or unbounded stdout/stderr. The final assistant text remains the ordinary model-visible tool `content` and final details are stored in the parent session's tool result.
 
 When an execution throws, the extension temporarily retains terminal details by tool call ID and restores them in Pi's `tool_result` hook before session persistence.
 

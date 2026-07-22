@@ -111,23 +111,6 @@ describe("subagent extension integration", () => {
     const metadata = [host.tool.description, host.tool.promptSnippet, ...host.tool.promptGuidelines].join("\n");
     expect(metadata).toContain("Omitting agent uses no bundled agent prompt or model");
     expect(metadata).toContain("instead of bash launching headless Pi");
-
-    const theme = {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    };
-    const complete = host.tool.renderCall(
-      { prompt: "Implement the target", cwd: extensionCwd },
-      theme,
-      { argsComplete: true },
-    ).render(200).join("\n");
-    const streaming = host.tool.renderCall(
-      { prompt: "Implement the target", cwd: extensionCwd },
-      theme,
-      { argsComplete: false },
-    ).render(200).join("\n");
-    expect(complete).toContain("subagent generic");
-    expect(streaming).toContain("subagent ...");
   });
 
   test("allows an explicit model without adding a prompt to an omitted-agent call", async () => {
@@ -264,34 +247,7 @@ describe("subagent extension integration", () => {
     expect(argumentAfter(invocations[1]!, "--model")).toBe("fixture/explicit-model");
   });
 
-  test("regular Pi renderer shows token and turn usage without monetary cost", async () => {
-    const host = fakePi();
-    registerSubagentExtension(host.pi, {
-      semaphore: new AbortableSemaphore(1),
-      invocation: (args) => ({ command: "fake-pi", args }),
-      run: successRun(),
-    });
-    const result = await execute(host.tool, "rendered-call");
-    result.details = {
-      ...result.details,
-      run: {
-        ...result.details.run,
-        usage: { ...result.details.run.usage, turns: 2, totalTokens: 1234, cost: 0.5678 },
-      },
-    };
-    const theme = {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    };
-
-    const rendered = host.tool.renderResult(result, { expanded: false }, theme, { isError: false });
-    const text = rendered.render(200).join("\n");
-    expect(text).toContain("2 turns · 1234 tokens");
-    expect(text).not.toContain("$");
-    expect(text).not.toContain("0.5678");
-  });
-
-  test("keeps active child tool calls out of regular Pi status lines", async () => {
+  test("keeps lifecycle content renderer-neutral while child tools are active", async () => {
     const host = fakePi();
     registerSubagentExtension(host.pi, {
       semaphore: new AbortableSemaphore(1),
@@ -324,25 +280,6 @@ describe("subagent extension integration", () => {
     const runningUpdate = updates.find((update) => update.details.run.activeTools.length > 0);
     expect(runningUpdate.content[0].text).toBe("explore subagent is running...");
 
-    const theme = {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    };
-    const collapsed = host.tool.renderResult(
-      runningUpdate,
-      { expanded: false },
-      theme,
-      { isError: false },
-    ).render(200).join("\n");
-    const expanded = host.tool.renderResult(
-      runningUpdate,
-      { expanded: true },
-      theme,
-      { isError: false },
-    ).render(200).join("\n");
-
-    expect(collapsed).not.toContain("read src/controller.ts");
-    expect(expanded).toContain("read src/controller.ts");
   });
 
   test("stores full output privately only when model-visible output is truncated", async () => {

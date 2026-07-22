@@ -5,13 +5,11 @@ import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   appendSubagentActivity,
   createInitialSubagentDetails,
   createTerminalSubagentDetails,
-  isSubagentDetailsV1,
   isTerminalSubagentStatus,
   truncateUtf8,
   updateSubagentDetails,
@@ -162,21 +160,6 @@ function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function formatUsage(details: SubagentDetailsV1): string {
-  const usage = details.run.usage;
-  const parts: string[] = [];
-  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
-  if (usage.totalTokens) parts.push(`${usage.totalTokens} tokens`);
-  return parts.join(" · ");
-}
-
-function statusIcon(status: SubagentStatus): string {
-  if (status === "queued") return "◌";
-  if (status === "starting" || status === "running") return "◐";
-  if (status === "succeeded") return "✓";
-  return "✗";
 }
 
 export { getPiInvocation } from "./runner.js";
@@ -374,42 +357,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
       } finally {
         release?.();
       }
-    },
-
-    renderCall(args, theme, context) {
-      const agent = typeof args.agent === "string" ? args.agent : context.argsComplete ? UNGUIDED_AGENT_NAME : "...";
-      const prompt = typeof args.prompt === "string" ? args.prompt : "...";
-      const preview = truncateUtf8(prompt.replace(/\s+/g, " "), 160).content;
-      let text = `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", agent)}`;
-      if (typeof args.cwd === "string") text += theme.fg("muted", ` in ${args.cwd}`);
-      text += `\n${theme.fg("dim", preview)}`;
-      return new Text(text, 0, 0);
-    },
-
-    renderResult(result, { expanded }, theme, context) {
-      if (!isSubagentDetailsV1(result.details)) {
-        const content = result.content.find((item) => item.type === "text");
-        return new Text(content?.type === "text" ? content.text : "(no output)", 0, 0);
-      }
-
-      const details = result.details;
-      const { run } = details;
-      const iconColor = run.status === "succeeded" ? "success" : isTerminalSubagentStatus(run.status) ? "error" : "warning";
-      let text = `${theme.fg(iconColor, statusIcon(run.status))} ${theme.fg("toolTitle", run.agent)}`;
-      text += theme.fg("dim", ` · ${run.model} · ${run.status}`);
-      const usage = formatUsage(details);
-      if (usage) text += `\n${theme.fg("dim", usage)}`;
-
-      if (expanded && run.recentActivity.length) {
-        text += `\n${run.recentActivity.map((item) => theme.fg(item.isError ? "error" : "muted", item.title)).join("\n")}`;
-      }
-      if (run.error) text += `\n\n${theme.fg("error", run.error)}`;
-      const content = result.content.find((item) => item.type === "text");
-      if (content?.type === "text" && expanded && !context.isError) {
-        text += `\n\n${theme.fg("toolOutput", content.text)}`;
-      }
-      if (run.fullOutputPath) text += `\n${theme.fg("dim", `Full output: ${run.fullOutputPath}`)}`;
-      return new Text(text, 0, 0);
     },
   });
 }
