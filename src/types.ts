@@ -43,8 +43,6 @@ export interface ToolDisplayItem extends DisplayItemBase {
   result?: string;
   isError?: boolean;
   running?: boolean;
-  partialDetails?: unknown;
-  resultDetails?: unknown;
   subagent?: SubagentViewModel;
   subagentKey?: string;
 }

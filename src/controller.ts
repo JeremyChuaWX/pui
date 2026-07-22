@@ -19,7 +19,7 @@ import {
   type SlashCommand,
 } from "@earendil-works/pi-tui";
 import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
-import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
+import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
 import {
   reconcileToolExecutions,
@@ -95,16 +95,6 @@ const LOCAL_SLASH_COMMANDS: SlashCommand[] = [
   { name: "hotkeys", description: "Show keyboard shortcuts" },
   { name: "quit", description: "Quit" },
 ];
-
-const OPAQUE_DISPLAY_FIELDS = new Set(["partialDetails", "resultDetails", "subagent"]);
-
-function sameDisplayItem(left: DisplayItem, right: DisplayItem): boolean {
-  const leftRecord = left as unknown as Record<string, unknown>;
-  const rightRecord = right as unknown as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
-  const rightKeys = Object.keys(rightRecord).filter((key) => !OPAQUE_DISPLAY_FIELDS.has(key));
-  return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(leftRecord[key], rightRecord[key]));
-}
 
 interface RunningBash {
   command: string;
@@ -286,27 +276,6 @@ export class PuiController {
     this.refresh();
   }
 
-  private reconcileDisplayItems(nextItems: DisplayItem[]): DisplayItem[] {
-    const previousById = new Map(this.displayItems.map((item) => [item.id, item]));
-    const reconciled = nextItems.map((item) => {
-      const previous = previousById.get(item.id);
-      if (!previous || !sameDisplayItem(previous, item)) return item;
-      if (previous.kind === "tool" && item.kind === "tool") {
-        previous.partialDetails = item.partialDetails;
-        previous.resultDetails = item.resultDetails;
-      }
-      return previous;
-    });
-    if (
-      reconciled.length === this.displayItems.length &&
-      reconciled.every((item, index) => item === this.displayItems[index])
-    ) {
-      return this.displayItems;
-    }
-    this.displayItems = reconciled;
-    return reconciled;
-  }
-
   private persistedToolCallIds(): Set<string> {
     return new Set(
       this.runtime.session.messages
@@ -342,7 +311,8 @@ export class PuiController {
       });
     }
 
-    const stableDisplay = this.reconcileDisplayItems(display);
+    const stableDisplay = reconcileDisplayItems(this.displayItems, display);
+    this.displayItems = stableDisplay;
     const runningExecutions = runningToolExecutions(this.toolExecutions);
     const activeTools: ActiveTool[] = runningExecutions.map((execution) => ({
       id: execution.id,

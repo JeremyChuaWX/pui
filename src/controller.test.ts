@@ -237,7 +237,7 @@ describe("PuiController tool event path", () => {
       expect.objectContaining({ running: false, isError: false, subagent: expect.objectContaining({ status: "succeeded" }) }),
     );
     expect(failedFast).toEqual(
-      expect.objectContaining({ resultDetails: expect.objectContaining({ schema: "pi.subagent" }) }),
+      expect.objectContaining({ subagent: expect.objectContaining({ status: "failed" }) }),
     );
 
     state.messages.push({

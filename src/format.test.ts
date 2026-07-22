@@ -101,7 +101,6 @@ describe("pui formatting", () => {
       expect.objectContaining({
         kind: "tool",
         running: true,
-        partialDetails: details,
         subagent: expect.objectContaining({ status: "running", prompt: "Inspect the reducer" }),
       }),
     );
@@ -116,8 +115,77 @@ describe("pui formatting", () => {
         kind: "tool",
         running: false,
         isError: true,
-        resultDetails: expect.objectContaining({ schema: "pi.subagent", version: 1 }),
         subagent: expect.objectContaining({ id: "resume-1", status: "timed_out" }),
+      }),
+    );
+  });
+
+  test("falls back to partial details when persisted result details are undefined", () => {
+    const messages = toolMessages("persisted-fallback-1", undefined, true);
+    const legacy = {
+      agent: "explore",
+      model: "test/model",
+      toolCalls: ["read README.md"],
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0 },
+    };
+    const item = buildDisplayItems(messages, undefined, {
+      toolExecutions: new Map([
+        [
+          "persisted-fallback-1",
+          {
+            id: "persisted-fallback-1",
+            name: "delegator",
+            args: { agent: "explore", prompt: "Inspect the repository", cwd: "/repo" },
+            status: "ended",
+            startedAt: 10,
+            updatedAt: 30,
+            partialResult: { details: legacy },
+            finalResult: { content: [{ type: "text", text: "delegated output" }] },
+            isError: true,
+          },
+        ],
+      ]),
+    })[0];
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        running: false,
+        isError: true,
+        subagent: expect.objectContaining({ source: "legacy", status: "failed" }),
+      }),
+    );
+  });
+
+  test("falls back to partial details when a final result has no details", () => {
+    const [call] = toolMessages("fallback-1", undefined, false);
+    const item = buildDisplayItems([call], undefined, {
+      toolExecutions: new Map([
+        [
+          "fallback-1",
+          {
+            id: "fallback-1",
+            name: "delegator",
+            args: { agent: "explore", prompt: "Inspect the repository", cwd: "/repo" },
+            status: "ended",
+            startedAt: 10,
+            updatedAt: 30,
+            partialResult: {
+              content: [{ type: "text", text: "running" }],
+              details: subagentDetails("fallback-1", "running"),
+            },
+            finalResult: { content: [{ type: "text", text: "done" }] },
+            isError: false,
+          },
+        ],
+      ]),
+    })[0];
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        running: false,
+        subagent: expect.objectContaining({ id: "fallback-1", status: "running" }),
       }),
     );
   });

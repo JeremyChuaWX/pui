@@ -48,7 +48,7 @@ function recordArgs(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function resultDetails(value: unknown): unknown {
+function toolResultDetails(value: unknown): unknown {
   return typeof value === "object" && value !== null && "details" in value
     ? (value as { details?: unknown }).details
     : undefined;
@@ -62,15 +62,11 @@ function resultContent(value: unknown): string {
 
 function applySubagentPresentation(
   item: ToolDisplayItem,
+  details: unknown,
   args: Record<string, unknown>,
   timestamp?: number,
 ): void {
-  const preferredDetails = item.running
-    ? item.partialDetails ?? item.resultDetails
-    : item.resultDetails !== undefined
-      ? item.resultDetails
-      : item.partialDetails;
-  const subagent = normalizeSubagentDetails(preferredDetails, {
+  const subagent = normalizeSubagentDetails(details, {
     toolCallId: item.toolCallId,
     args,
     running: item.running,
@@ -112,6 +108,14 @@ export function formatCount(value: number | null | undefined): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
+function executionDetails(execution?: ToolExecution): unknown {
+  const partialDetails = toolResultDetails(execution?.partialResult);
+  const finalDetails = toolResultDetails(execution?.finalResult);
+  return execution?.status === "running"
+    ? partialDetails !== undefined ? partialDetails : finalDetails
+    : finalDetails !== undefined ? finalDetails : partialDetails;
+}
+
 function buildToolDisplayItem(
   id: string,
   toolCallId: string,
@@ -121,6 +125,7 @@ function buildToolDisplayItem(
   timestamp?: number,
 ): ToolDisplayItem {
   const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
+  const details = executionDetails(execution);
   const item: ToolDisplayItem = {
     id,
     kind: "tool",
@@ -129,12 +134,10 @@ function buildToolDisplayItem(
     title: formatToolTitle(name, args),
     args: formatToolArguments(args),
     running: execution?.status === "running",
-    ...(execution?.partialResult === undefined ? {} : { partialDetails: resultDetails(execution.partialResult) }),
-    ...(execution?.finalResult === undefined ? {} : { resultDetails: resultDetails(execution.finalResult) }),
     ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
     ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
   };
-  applySubagentPresentation(item, args, execution?.updatedAt ?? timestamp);
+  applySubagentPresentation(item, details, args, execution?.updatedAt ?? timestamp);
   return item;
 }
 
@@ -149,6 +152,7 @@ export function buildDisplayItems(
   const result: DisplayItem[] = [];
   const toolById = new Map<string, ToolDisplayItem>();
   const argsById = new Map<string, Record<string, unknown>>();
+  const detailsById = new Map<string, unknown>();
   const executions = options.toolExecutions ?? new Map();
 
   source.forEach((message, messageIndex) => {
@@ -189,6 +193,7 @@ export function buildDisplayItems(
             result.push(item);
             toolById.set(part.id, item);
             argsById.set(part.id, args);
+            detailsById.set(part.id, executionDetails(executions.get(part.id)));
           }
         });
         if (message.errorMessage) {
@@ -203,15 +208,14 @@ export function buildDisplayItems(
           existing.result = output;
           existing.isError = message.isError;
           existing.running = false;
-          existing.resultDetails = message.details;
-          applySubagentPresentation(existing, argsById.get(message.toolCallId) ?? {}, message.timestamp);
+          const details = message.details !== undefined ? message.details : detailsById.get(message.toolCallId);
+          applySubagentPresentation(existing, details, argsById.get(message.toolCallId) ?? {}, message.timestamp);
         } else {
           const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
           item.result = output;
           item.isError = message.isError;
           item.running = false;
-          item.resultDetails = message.details;
-          applySubagentPresentation(item, {}, message.timestamp);
+          applySubagentPresentation(item, message.details, {}, message.timestamp);
           result.push(item);
           toolById.set(message.toolCallId, item);
         }
@@ -255,4 +259,40 @@ export function buildDisplayItems(
   }
 
   return result;
+}
+
+function sameDisplayPresentation(left: DisplayItem, right: DisplayItem): boolean {
+  if (left.kind !== right.kind || left.id !== right.id) return false;
+  switch (left.kind) {
+    case "user":
+      return right.kind === "user" && left.text === right.text;
+    case "assistant":
+      return right.kind === "assistant" && left.text === right.text && left.streaming === right.streaming;
+    case "thinking":
+      return right.kind === "thinking" && left.text === right.text && left.streaming === right.streaming;
+    case "custom":
+    case "summary":
+      return right.kind === left.kind && left.text === right.text && left.label === right.label;
+    case "tool":
+      return right.kind === "tool" &&
+        left.toolCallId === right.toolCallId && left.name === right.name && left.title === right.title &&
+        left.args === right.args && left.result === right.result && left.isError === right.isError &&
+        left.running === right.running && left.subagentKey === right.subagentKey;
+    case "bash":
+      return right.kind === "bash" && left.command === right.command && left.output === right.output &&
+        left.exitCode === right.exitCode && left.cancelled === right.cancelled && left.excluded === right.excluded &&
+        left.running === right.running;
+  }
+}
+
+/** Reuse prior display identities when their bounded presentation is unchanged. */
+export function reconcileDisplayItems(previous: DisplayItem[], next: DisplayItem[]): DisplayItem[] {
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  const reconciled = next.map((item) => {
+    const prior = previousById.get(item.id);
+    return prior && sameDisplayPresentation(prior, item) ? prior : item;
+  });
+  return reconciled.length === previous.length && reconciled.every((item, index) => item === previous[index])
+    ? previous
+    : reconciled;
 }
