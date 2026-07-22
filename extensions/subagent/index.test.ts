@@ -80,7 +80,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 describe("subagent extension integration", () => {
-  test("defaults omitted agents to the full-intensity minimal worker", async () => {
+  test("runs omitted agents without a bundled prompt or model", async () => {
     const host = fakePi();
     let runnerOptions: any;
     registerSubagentExtension(host.pi, {
@@ -93,26 +93,23 @@ describe("subagent extension integration", () => {
       },
     });
 
-    const result = await execute(host.tool, "default-worker", {
+    const result = await execute(host.tool, "default-call", {
       params: { prompt: "Implement the target", cwd: extensionCwd },
     });
 
     expect(host.tool.parameters.required).toEqual(["prompt", "cwd"]);
     expect(host.tool.parameters.properties.agent.enum).toEqual(["worker", "explore"]);
-    expect(result.details.run.agent).toBe("worker");
-    expect(result.details.run.model).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(result.details.run.agent).toBe("generic");
+    expect(result.details.run.model).toBe("default");
     expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
-    expect(runnerOptions.args).toContain("--append-system-prompt");
-    const workerPrompt = argumentAfter(runnerOptions.args, "--append-system-prompt") ?? "";
-    expect(workerPrompt).toContain("Lazy means efficient, not careless.");
-    expect(workerPrompt).toContain("Bug fix = root cause, not symptom");
-    expect(workerPrompt.toLowerCase()).not.toContain("ponytail");
+    expect(runnerOptions.args).not.toContain("--append-system-prompt");
     expect(runnerOptions.args).not.toContain("--system-prompt");
-    expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(runnerOptions.args).not.toContain("--model");
+    expect(runnerOptions.args.at(-1)).toBe("Implement the target");
     expect(runnerOptions.timeoutMs).toBe(600_000);
 
     const metadata = [host.tool.description, host.tool.promptSnippet, ...host.tool.promptGuidelines].join("\n");
-    expect(metadata).toContain("Omitting agent selects worker");
+    expect(metadata).toContain("Omitting agent uses no bundled agent prompt or model");
     expect(metadata).toContain("instead of bash launching headless Pi");
 
     const theme = {
@@ -129,8 +126,32 @@ describe("subagent extension integration", () => {
       theme,
       { argsComplete: false },
     ).render(200).join("\n");
-    expect(complete).toContain("subagent worker");
+    expect(complete).toContain("subagent generic");
     expect(streaming).toContain("subagent ...");
+  });
+
+  test("allows an explicit model without adding a prompt to an omitted-agent call", async () => {
+    const host = fakePi();
+    let runnerOptions: any;
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      environment: { PI_WORKER_MODEL: "fixture/ignored-worker-model" },
+      invocation: (args) => ({ command: "fake-pi", args }),
+      run: async (options) => {
+        runnerOptions = options;
+        return successRun()(options);
+      },
+    });
+
+    const result = await execute(host.tool, "default-explicit-model", {
+      params: { prompt: "Implement the target", cwd: extensionCwd, model: "fixture/default-model" },
+    });
+
+    expect(result.details.run.agent).toBe("generic");
+    expect(result.details.run.model).toBe("fixture/default-model");
+    expect(argumentAfter(runnerOptions.args, "--model")).toBe("fixture/default-model");
+    expect(runnerOptions.args).not.toContain("--append-system-prompt");
+    expect(runnerOptions.args).not.toContain("--system-prompt");
   });
 
   test("preserves explicit explore behavior, outer id, isolation flags, and lifecycle snapshots", async () => {
@@ -181,6 +202,36 @@ describe("subagent extension integration", () => {
     expect(runnerOptions.timeoutMs).toBe(120_000);
     expect(runnerOptions.args.at(-1)).toBe("Inspect the target");
     expect(result.details.run.fullOutputPath).toBeUndefined();
+  });
+
+  test("uses bundled guidance for an explicit worker", async () => {
+    const host = fakePi();
+    let runnerOptions: any;
+    registerSubagentExtension(host.pi, {
+      semaphore: new AbortableSemaphore(1),
+      environment: {},
+      invocation: (args) => ({ command: "fake-pi", args }),
+      run: async (options) => {
+        runnerOptions = options;
+        return successRun()(options);
+      },
+    });
+
+    const result = await execute(host.tool, "explicit-worker", {
+      params: { agent: "worker", prompt: "Implement the target", cwd: extensionCwd },
+    });
+
+    expect(result.details.run.agent).toBe("worker");
+    expect(result.details.run.model).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
+    expect(runnerOptions.args).toContain("--append-system-prompt");
+    const workerPrompt = argumentAfter(runnerOptions.args, "--append-system-prompt") ?? "";
+    expect(workerPrompt).toContain("Lazy means efficient, not careless.");
+    expect(workerPrompt).toContain("Bug fix = root cause, not symptom");
+    expect(workerPrompt.toLowerCase()).not.toContain("ponytail");
+    expect(runnerOptions.args).not.toContain("--system-prompt");
+    expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.6-sol:low");
+    expect(runnerOptions.timeoutMs).toBe(600_000);
   });
 
   test("resolves worker models from explicit input, then PI_WORKER_MODEL", async () => {

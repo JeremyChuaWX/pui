@@ -212,7 +212,7 @@ test("installed AgentSession transports parallel updates and persists success an
     expect(persistedSuccess.isError).toBe(false);
     expect(isSubagentDetailsV1(persistedSuccess.details)).toBe(true);
     expect((persistedSuccess.details as any).run.status).toBe("succeeded");
-    expect((persistedSuccess.details as any).run.agent).toBe("worker");
+    expect((persistedSuccess.details as any).run.agent).toBe("generic");
     expect(persistedSuccess.content[0]).toEqual({ type: "text", text: "SDK delegated output" });
     expect(persistedFailure.isError).toBe(true);
     expect(isSubagentDetailsV1(persistedFailure.details)).toBe(true);
@@ -229,7 +229,7 @@ test("installed AgentSession transports parallel updates and persists success an
       .map((entry) => entry.message)
       .filter((message) => message.role === "toolResult");
     for (const [id, status, agent] of [
-      ["outer-sdk-success", "succeeded", "worker"],
+      ["outer-sdk-success", "succeeded", "generic"],
       ["outer-sdk-failure", "failed", "explore"],
     ] as const) {
       const resumed = resumedResults.find((message) => message.toolCallId === id);

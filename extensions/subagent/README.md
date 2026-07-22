@@ -4,7 +4,7 @@ This extension supplies the `subagent` tool. Subagents are **not a Pi core featu
 
 ## Tool shape
 
-Omit `agent` for the default general-purpose worker:
+Omit `agent` for a generic write-capable child with no bundled agent prompt:
 
 ```ts
 {
@@ -25,20 +25,23 @@ Select the read-only explorer explicitly:
 }
 ```
 
-| Preset | Capabilities | Prompt | Default model | Timeout |
+| Mode | Capabilities | Prompt | Default model | Timeout |
 | --- | --- | --- | --- | --- |
-| `worker` (default) | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Pi's normal coding prompt plus bundled worker and [Ponytail](https://ponytail.dev/) minimal-coding standards | `openai-codex/gpt-5.6-sol:low` | 10 minutes |
+| agent omitted | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Pi's normal coding prompt with no bundled agent guidance; the input `prompt` steers the child | Child Pi's configured/default model | 10 minutes |
+| `worker` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Pi's normal coding prompt plus bundled worker and [Ponytail](https://ponytail.dev/) minimal-coding standards | `openai-codex/gpt-5.6-sol:low` | 10 minutes |
 | `explore` | `read`, `grep`, `find`, `ls` | Dedicated read-only exploration prompt | `openai-codex/gpt-5.4-mini:off` | 120 seconds |
 
-The worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`agents/worker-guidance.LICENSE`](./agents/worker-guidance.LICENSE).
+The omitted-agent mode adds no replacement or appended agent prompt and passes no model flag unless the call supplies `model`. Use it when the input task should be the only extra steering beyond Pi's normal coding context.
 
-Both presets disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt therefore tells the child to discover `AGENTS.md` and contribution documentation before editing. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
+The explicit worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`agents/worker-guidance.LICENSE`](./agents/worker-guidance.LICENSE).
+
+All modes disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt tells the child to discover `AGENTS.md` and contribution documentation before editing; omitted-agent calls receive no equivalent bundled instruction. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
 
 Relative working directories resolve from the parent session's working directory. `~`, `~/...`, and the accidental leading `@` commonly produced by models are normalized before the directory is canonicalized.
 
 ## Security boundary
 
-> **The worker is write-capable and not sandboxed.** It can edit files and execute arbitrary shell commands. The child inherits the parent process environment, `cwd` is only its starting directory, and process/context isolation does not confine filesystem or operating-system access. Use worker delegation only in trusted repositories.
+> **Omitted-agent and worker calls are write-capable and not sandboxed.** They can edit files and execute arbitrary shell commands. The child inherits the parent process environment, `cwd` is only its starting directory, and process/context isolation does not confine filesystem or operating-system access. Use write-capable delegation only in trusted repositories.
 
 The explorer's Pi tool allowlist is read-only, but it is likewise not an operating-system sandbox and does not confine reads to `cwd` or scrub the inherited environment.
 
@@ -65,12 +68,12 @@ When an execution throws, the extension temporarily retains terminal details by 
 | `PI_SUBAGENT_MAX_CONCURRENCY` | `4` | Process-wide child limit (valid range 1–64) |
 | `PI_WORKER_MODEL` | `openai-codex/gpt-5.6-sol:low` | Model for the `worker` preset |
 | `PI_EXPLORE_MODEL` | `openai-codex/gpt-5.4-mini:off` | Model for the `explore` preset |
-| Worker timeout | 10 minutes | Sends SIGTERM, then SIGKILL after a grace period |
+| Omitted-agent/worker timeout | 10 minutes | Sends SIGTERM, then SIGKILL after a grace period |
 | Explore timeout | 120 seconds | Sends SIGTERM, then SIGKILL after a grace period |
 | Activity history | 20 entries | Bounds persisted progress metadata |
 | Model-visible output | 50 KB or 2000 lines | Pi's normal tool-output limits |
 
-A call's non-empty `model` value overrides its preset environment variable. Without either value, worker uses GPT-5.6 Sol with low thinking and explore uses its bundled fallback.
+A call's non-empty `model` value always overrides model selection. With no explicit agent, omitting `model` passes no model flag and lets child Pi select its configured/default model. Explicit worker and explorer calls next consult `PI_WORKER_MODEL` or `PI_EXPLORE_MODEL`, then use their bundled fallback.
 
 Sibling outer tool calls are the concurrency unit. Additional calls stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
 
