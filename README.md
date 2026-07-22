@@ -40,7 +40,7 @@ bun run start -- --no-session
 bun run check
 ```
 
-`bun run check` type-checks, tests, builds, and smoke-tests the final executable.
+`bun run check` runs Biome, type-checks, tests, builds, and smoke-tests the final executable. Use `bun run format` to format the project with Biome.
 
 ## Clipboard
 

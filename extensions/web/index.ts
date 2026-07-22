@@ -6,8 +6,8 @@ export type WebExtensionDependencies = WebSearchDependencies & WebCrawlDependenc
 
 /** Registers the application-owned web discovery and extraction tools. */
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
-  registerSearch(pi, dependencies);
-  registerCrawl(pi, dependencies);
+    registerSearch(pi, dependencies);
+    registerCrawl(pi, dependencies);
 }
 
 export default registerWebExtension;

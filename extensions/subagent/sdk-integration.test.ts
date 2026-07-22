@@ -5,244 +5,244 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
+    createAgentSession,
+    DefaultResourceLoader,
+    ModelRuntime,
+    SessionManager,
+    SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "./index.ts";
 import { createTerminalSubagentDetails, isSubagentDetailsV1, updateSubagentDetails } from "./protocol.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const usage = {
-  input: 1,
-  output: 1,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 2,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
 function parentMessage(content: any[], stopReason: "toolUse" | "stop") {
-  return {
-    role: "assistant" as const,
-    content,
-    api: "fixture-api",
-    provider: "fixture-parent",
-    model: "fixture-parent-model",
-    usage,
-    stopReason,
-    timestamp: Date.now(),
-  };
+    return {
+        role: "assistant" as const,
+        content,
+        api: "fixture-api",
+        provider: "fixture-parent",
+        model: "fixture-parent-model",
+        usage,
+        stopReason,
+        timestamp: Date.now(),
+    };
 }
 
 test("installed resource loader can load the extension source and its local modules", async () => {
-  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-loader-test-"));
-  try {
-    const loader = new DefaultResourceLoader({
-      cwd: temp,
-      agentDir: temp,
-      settingsManager: SettingsManager.inMemory(),
-      additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-    });
-    await loader.reload();
-    expect(loader.getExtensions().errors).toEqual([]);
-    expect(loader.getExtensions().extensions).toHaveLength(1);
-  } finally {
-    await fs.promises.rm(temp, { recursive: true, force: true });
-  }
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-loader-test-"));
+    try {
+        const loader = new DefaultResourceLoader({
+            cwd: temp,
+            agentDir: temp,
+            settingsManager: SettingsManager.inMemory(),
+            additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+        });
+        await loader.reload();
+        expect(loader.getExtensions().errors).toEqual([]);
+        expect(loader.getExtensions().extensions).toHaveLength(1);
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
 });
 
 test("installed AgentSession transports parallel updates and persists success and failure details", async () => {
-  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-sdk-test-"));
-  const sessionDir = path.join(temp, "sessions");
-  const settings = SettingsManager.inMemory({
-    compaction: { enabled: false },
-    retry: { enabled: false },
-  });
-  const modelRuntime = await ModelRuntime.create({
-    authPath: path.join(temp, "auth.json"),
-    modelsPath: null,
-    allowModelNetwork: false,
-  });
-  let parentTurn = 0;
-  modelRuntime.registerProvider("fixture-parent", {
-    api: "fixture-api",
-    baseUrl: "http://fixture.invalid",
-    apiKey: "fixture-key",
-    models: [
-      {
-        id: "fixture-parent-model",
-        name: "Fixture Parent Model",
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-sdk-test-"));
+    const sessionDir = path.join(temp, "sessions");
+    const settings = SettingsManager.inMemory({
+        compaction: { enabled: false },
+        retry: { enabled: false },
+    });
+    const modelRuntime = await ModelRuntime.create({
+        authPath: path.join(temp, "auth.json"),
+        modelsPath: null,
+        allowModelNetwork: false,
+    });
+    let parentTurn = 0;
+    modelRuntime.registerProvider("fixture-parent", {
         api: "fixture-api",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 16_000,
-        maxTokens: 1_000,
-      },
-    ],
-    streamSimple: () => {
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => {
-        const message =
-          parentTurn++ === 0
-            ? parentMessage(
-                [
-                  {
-                    type: "toolCall",
-                    id: "outer-sdk-success",
-                    name: "subagent",
-                    arguments: {
-                      prompt: "Implement the successful SDK fixture",
-                      cwd: temp,
-                    },
-                  },
-                  {
-                    type: "toolCall",
-                    id: "outer-sdk-failure",
-                    name: "subagent",
-                    arguments: {
-                      agent: "explore",
-                      prompt: "Inspect the failing SDK fixture",
-                      cwd: temp,
-                    },
-                  },
-                ],
-                "toolUse",
-              )
-            : parentMessage([{ type: "text", text: "Parent received the delegated result." }], "stop");
-        stream.push({ type: "start", partial: message });
-        stream.push({ type: "done", reason: message.stopReason, message });
-      });
-      return stream;
-    },
-  });
-  const model = modelRuntime.getModel("fixture-parent", "fixture-parent-model");
-  if (!model) throw new Error("Fixture model was not registered");
-
-  const loader = new DefaultResourceLoader({
-    cwd: temp,
-    agentDir: temp,
-    settingsManager: settings,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    systemPrompt: "Use the subagent tool once.",
-    extensionFactories: [
-      {
-        name: "subagent-sdk-fixture",
-        factory: (pi) =>
-          registerSubagentExtension(pi, {
-            semaphore: new AbortableSemaphore(4),
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-              const shouldFail = options.details.run.id === "outer-sdk-failure";
-              let details = updateSubagentDetails(options.details, {
-                status: "running",
-                phase: "thinking",
-                startedAt: options.details.run.startedAt ?? Date.now(),
-              });
-              options.onSnapshot?.(details);
-              await Bun.sleep(shouldFail ? 5 : 20);
-              details = createTerminalSubagentDetails(
-                details,
-                shouldFail
-                  ? { status: "failed", error: "SDK delegated failure" }
-                  : { status: "succeeded", outputPreview: "SDK delegated output" },
-              );
-              options.onSnapshot?.(details);
-              return {
-                details,
-                output: shouldFail ? "" : "SDK delegated output",
-                stderr: shouldFail ? "SDK fixture stderr" : "",
-                exitCode: shouldFail ? 9 : 0,
-                signal: null,
-              };
+        baseUrl: "http://fixture.invalid",
+        apiKey: "fixture-key",
+        models: [
+            {
+                id: "fixture-parent-model",
+                name: "Fixture Parent Model",
+                api: "fixture-api",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 16_000,
+                maxTokens: 1_000,
             },
-          }),
-      },
-    ],
-  });
-  await loader.reload();
-  expect(loader.getExtensions().errors).toEqual([]);
+        ],
+        streamSimple: () => {
+            const stream = createAssistantMessageEventStream();
+            queueMicrotask(() => {
+                const message =
+                    parentTurn++ === 0
+                        ? parentMessage(
+                              [
+                                  {
+                                      type: "toolCall",
+                                      id: "outer-sdk-success",
+                                      name: "subagent",
+                                      arguments: {
+                                          prompt: "Implement the successful SDK fixture",
+                                          cwd: temp,
+                                      },
+                                  },
+                                  {
+                                      type: "toolCall",
+                                      id: "outer-sdk-failure",
+                                      name: "subagent",
+                                      arguments: {
+                                          agent: "explore",
+                                          prompt: "Inspect the failing SDK fixture",
+                                          cwd: temp,
+                                      },
+                                  },
+                              ],
+                              "toolUse",
+                          )
+                        : parentMessage([{ type: "text", text: "Parent received the delegated result." }], "stop");
+                stream.push({ type: "start", partial: message });
+                stream.push({ type: "done", reason: message.stopReason, message });
+            });
+            return stream;
+        },
+    });
+    const model = modelRuntime.getModel("fixture-parent", "fixture-parent-model");
+    if (!model) throw new Error("Fixture model was not registered");
 
-  const manager = SessionManager.create(temp, sessionDir);
-  const { session } = await createAgentSession({
-    cwd: temp,
-    agentDir: temp,
-    model,
-    modelRuntime,
-    resourceLoader: loader,
-    settingsManager: settings,
-    sessionManager: manager,
-    tools: ["subagent"],
-  });
-  const statuses = new Map<string, string[]>();
-  session.subscribe((event) => {
-    if (event.type !== "tool_execution_update") return;
-    const details = event.partialResult?.details;
-    if (!isSubagentDetailsV1(details)) return;
-    const items = statuses.get(details.run.id) ?? [];
-    items.push(details.run.status);
-    statuses.set(details.run.id, items);
-  });
+    const loader = new DefaultResourceLoader({
+        cwd: temp,
+        agentDir: temp,
+        settingsManager: settings,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        systemPrompt: "Use the subagent tool once.",
+        extensionFactories: [
+            {
+                name: "subagent-sdk-fixture",
+                factory: (pi) =>
+                    registerSubagentExtension(pi, {
+                        semaphore: new AbortableSemaphore(4),
+                        invocation: (args) => ({ command: "fake-pi", args }),
+                        run: async (options) => {
+                            const shouldFail = options.details.run.id === "outer-sdk-failure";
+                            let details = updateSubagentDetails(options.details, {
+                                status: "running",
+                                phase: "thinking",
+                                startedAt: options.details.run.startedAt ?? Date.now(),
+                            });
+                            options.onSnapshot?.(details);
+                            await Bun.sleep(shouldFail ? 5 : 20);
+                            details = createTerminalSubagentDetails(
+                                details,
+                                shouldFail
+                                    ? { status: "failed", error: "SDK delegated failure" }
+                                    : { status: "succeeded", outputPreview: "SDK delegated output" },
+                            );
+                            options.onSnapshot?.(details);
+                            return {
+                                details,
+                                output: shouldFail ? "" : "SDK delegated output",
+                                stderr: shouldFail ? "SDK fixture stderr" : "",
+                                exitCode: shouldFail ? 9 : 0,
+                                signal: null,
+                            };
+                        },
+                    }),
+            },
+        ],
+    });
+    await loader.reload();
+    expect(loader.getExtensions().errors).toEqual([]);
 
-  try {
-    await session.prompt("Delegate these tasks.");
-    expect(statuses.get("outer-sdk-success")).toEqual(["queued", "starting", "running", "succeeded"]);
-    expect(statuses.get("outer-sdk-failure")).toEqual(["queued", "starting", "running", "failed"]);
+    const manager = SessionManager.create(temp, sessionDir);
+    const { session } = await createAgentSession({
+        cwd: temp,
+        agentDir: temp,
+        model,
+        modelRuntime,
+        resourceLoader: loader,
+        settingsManager: settings,
+        sessionManager: manager,
+        tools: ["subagent"],
+    });
+    const statuses = new Map<string, string[]>();
+    session.subscribe((event) => {
+        if (event.type !== "tool_execution_update") return;
+        const details = event.partialResult?.details;
+        if (!isSubagentDetailsV1(details)) return;
+        const items = statuses.get(details.run.id) ?? [];
+        items.push(details.run.status);
+        statuses.set(details.run.id, items);
+    });
 
-    const persistedResults = manager
-      .getBranch()
-      .filter((entry) => entry.type === "message")
-      .map((entry) => entry.message)
-      .filter((message) => message.role === "toolResult");
-    const persistedSuccess = persistedResults.find((message) => message.toolCallId === "outer-sdk-success");
-    const persistedFailure = persistedResults.find((message) => message.toolCallId === "outer-sdk-failure");
-    if (persistedSuccess?.role !== "toolResult" || persistedFailure?.role !== "toolResult") {
-      throw new Error("Missing persisted subagent tool results");
+    try {
+        await session.prompt("Delegate these tasks.");
+        expect(statuses.get("outer-sdk-success")).toEqual(["queued", "starting", "running", "succeeded"]);
+        expect(statuses.get("outer-sdk-failure")).toEqual(["queued", "starting", "running", "failed"]);
+
+        const persistedResults = manager
+            .getBranch()
+            .filter((entry) => entry.type === "message")
+            .map((entry) => entry.message)
+            .filter((message) => message.role === "toolResult");
+        const persistedSuccess = persistedResults.find((message) => message.toolCallId === "outer-sdk-success");
+        const persistedFailure = persistedResults.find((message) => message.toolCallId === "outer-sdk-failure");
+        if (persistedSuccess?.role !== "toolResult" || persistedFailure?.role !== "toolResult") {
+            throw new Error("Missing persisted subagent tool results");
+        }
+        expect(persistedSuccess.isError).toBe(false);
+        expect(isSubagentDetailsV1(persistedSuccess.details)).toBe(true);
+        expect((persistedSuccess.details as any).run.status).toBe("succeeded");
+        expect((persistedSuccess.details as any).run.agent).toBe("generic");
+        expect(persistedSuccess.content[0]).toEqual({ type: "text", text: "SDK delegated output" });
+        expect(persistedFailure.isError).toBe(true);
+        expect(isSubagentDetailsV1(persistedFailure.details)).toBe(true);
+        expect((persistedFailure.details as any).run.status).toBe("failed");
+        expect((persistedFailure.details as any).run.agent).toBe("explore");
+        expect((persistedFailure.details as any).run.error).toBe("SDK delegated failure");
+
+        const sessionFile = manager.getSessionFile();
+        if (!sessionFile) throw new Error("Expected a persisted session file");
+        const reopened = SessionManager.open(sessionFile, sessionDir);
+        const resumedResults = reopened
+            .getBranch()
+            .filter((entry) => entry.type === "message")
+            .map((entry) => entry.message)
+            .filter((message) => message.role === "toolResult");
+        for (const [id, status, agent] of [
+            ["outer-sdk-success", "succeeded", "generic"],
+            ["outer-sdk-failure", "failed", "explore"],
+        ] as const) {
+            const resumed = resumedResults.find((message) => message.toolCallId === id);
+            expect(resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)).toBe(true);
+            if (resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)) {
+                expect(resumed.details.run.status).toBe(status);
+                expect(resumed.details.run.agent).toBe(agent);
+                expect(resumed.details.run.id).toBe(id);
+            }
+        }
+    } finally {
+        session.dispose();
+        await settings.flush();
+        await fs.promises.rm(temp, { recursive: true, force: true });
     }
-    expect(persistedSuccess.isError).toBe(false);
-    expect(isSubagentDetailsV1(persistedSuccess.details)).toBe(true);
-    expect((persistedSuccess.details as any).run.status).toBe("succeeded");
-    expect((persistedSuccess.details as any).run.agent).toBe("generic");
-    expect(persistedSuccess.content[0]).toEqual({ type: "text", text: "SDK delegated output" });
-    expect(persistedFailure.isError).toBe(true);
-    expect(isSubagentDetailsV1(persistedFailure.details)).toBe(true);
-    expect((persistedFailure.details as any).run.status).toBe("failed");
-    expect((persistedFailure.details as any).run.agent).toBe("explore");
-    expect((persistedFailure.details as any).run.error).toBe("SDK delegated failure");
-
-    const sessionFile = manager.getSessionFile();
-    if (!sessionFile) throw new Error("Expected a persisted session file");
-    const reopened = SessionManager.open(sessionFile, sessionDir);
-    const resumedResults = reopened
-      .getBranch()
-      .filter((entry) => entry.type === "message")
-      .map((entry) => entry.message)
-      .filter((message) => message.role === "toolResult");
-    for (const [id, status, agent] of [
-      ["outer-sdk-success", "succeeded", "generic"],
-      ["outer-sdk-failure", "failed", "explore"],
-    ] as const) {
-      const resumed = resumedResults.find((message) => message.toolCallId === id);
-      expect(resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)).toBe(true);
-      if (resumed?.role === "toolResult" && isSubagentDetailsV1(resumed.details)) {
-        expect(resumed.details.run.status).toBe(status);
-        expect(resumed.details.run.agent).toBe(agent);
-        expect(resumed.details.run.id).toBe(id);
-      }
-    }
-  } finally {
-    session.dispose();
-    await settings.flush();
-    await fs.promises.rm(temp, { recursive: true, force: true });
-  }
 });

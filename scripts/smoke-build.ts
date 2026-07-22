@@ -7,15 +7,15 @@ const distDir = path.join(projectDir, "dist");
 const executablePath = path.join(distDir, executableName);
 const artifacts = await fs.promises.readdir(distDir);
 if (artifacts.length !== 1 || artifacts[0] !== executableName) {
-  throw new Error(`Expected only dist/${executableName}, found: ${artifacts.join(", ") || "nothing"}`);
+    throw new Error(`Expected only dist/${executableName}, found: ${artifacts.join(", ") || "nothing"}`);
 }
 
 const result = Bun.spawnSync([executablePath, "--help"], {
-  cwd: projectDir,
-  stdout: "ignore",
-  stderr: "inherit",
+    cwd: projectDir,
+    stdout: "ignore",
+    stderr: "inherit",
 });
 
 if (result.exitCode !== 0) {
-  throw new Error(`Standalone executable smoke test failed with exit code ${result.exitCode}`);
+    throw new Error(`Standalone executable smoke test failed with exit code ${result.exitCode}`);
 }
