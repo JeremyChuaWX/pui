@@ -1,41 +1,44 @@
 import { describe, expect, test } from "bun:test";
-import { copyCurrentSelection, isCopyShortcut, type SelectionClipboard } from "./selection-copy.js";
+import { copyCurrentSelection, isCopyShortcut, type SelectionSource } from "./selection-copy.js";
 
 describe("selection copying", () => {
-  test("reading/highlighting a selection does not copy it", () => {
-    let copies = 0;
-    const renderer = {
+  test("reading/highlighting a selection does not copy it", async () => {
+    let copiedText = "";
+    const source = {
       getSelection: () => ({ getSelectedText: () => "selected text" }),
-      copyToClipboardOSC52: () => {
-        copies += 1;
-        return true;
-      },
-    } as unknown as SelectionClipboard;
+    } as unknown as SelectionSource;
+    const writeClipboard = (text: string) => {
+      copiedText = text;
+    };
 
-    renderer.getSelection();
-    expect(copies).toBe(0);
-    expect(copyCurrentSelection(renderer)).toBe(true);
-    expect(copies).toBe(1);
+    source.getSelection();
+    expect(copiedText).toBe("");
+    expect(await copyCurrentSelection(source, writeClipboard)).toBe(true);
+    expect(copiedText).toBe("selected text");
   });
 
-  test("does not write an empty selection to the clipboard", () => {
+  test("does not write an empty selection to the clipboard", async () => {
     let copies = 0;
-    const renderer = {
+    const source = {
       getSelection: () => ({ getSelectedText: () => "" }),
-      copyToClipboardOSC52: () => {
-        copies += 1;
-        return true;
-      },
-    } as unknown as SelectionClipboard;
+    } as unknown as SelectionSource;
 
-    expect(copyCurrentSelection(renderer)).toBe(false);
+    expect(
+      await copyCurrentSelection(source, () => {
+        copies += 1;
+      }),
+    ).toBe(false);
     expect(copies).toBe(0);
   });
 
-  test("recognizes Command-C without treating Alt-C as copy", () => {
-    expect(isCopyShortcut({ name: "c", super: true })).toBe(true);
-    expect(isCopyShortcut({ name: "C", super: true })).toBe(true);
-    expect(isCopyShortcut({ name: "c", super: false })).toBe(false);
-    expect(isCopyShortcut({ name: "x", super: true })).toBe(false);
+  test("recognizes only Ctrl-Shift-C", () => {
+    const commandC = { name: "c", ctrl: false, shift: false, super: true };
+
+    expect(isCopyShortcut({ name: "c", ctrl: true, shift: true })).toBe(true);
+    expect(isCopyShortcut({ name: "C", ctrl: true, shift: true })).toBe(true);
+    expect(isCopyShortcut(commandC)).toBe(false);
+    expect(isCopyShortcut({ name: "c", ctrl: true, shift: false })).toBe(false);
+    expect(isCopyShortcut({ name: "c", ctrl: false, shift: true })).toBe(false);
+    expect(isCopyShortcut({ name: "x", ctrl: true, shift: true })).toBe(false);
   });
 });

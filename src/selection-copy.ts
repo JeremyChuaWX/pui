@@ -1,16 +1,23 @@
+import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import type { KeyEvent, Selection } from "@opentui/core";
 
-export interface SelectionClipboard {
+export interface SelectionSource {
   getSelection(): Selection | null;
-  copyToClipboardOSC52(text: string): boolean;
 }
 
-/** Copy the current OpenTUI selection, but only when called by an explicit shortcut. */
-export function copyCurrentSelection(renderer: SelectionClipboard): boolean {
-  const text = renderer.getSelection()?.getSelectedText() ?? "";
-  return text.length > 0 && renderer.copyToClipboardOSC52(text);
+type ClipboardWriter = (text: string) => void | Promise<void>;
+
+/** Copy the current OpenTUI selection through the native clipboard with OSC 52 fallback. */
+export async function copyCurrentSelection(
+  source: SelectionSource,
+  writeClipboard: ClipboardWriter = copyToClipboard,
+): Promise<boolean> {
+  const text = source.getSelection()?.getSelectedText() ?? "";
+  if (text.length === 0) return false;
+  await writeClipboard(text);
+  return true;
 }
 
-export function isCopyShortcut(key: Pick<KeyEvent, "name" | "super">): boolean {
-  return key.name.toLowerCase() === "c" && key.super === true;
+export function isCopyShortcut(key: Pick<KeyEvent, "name" | "ctrl" | "shift">): boolean {
+  return key.name.toLowerCase() === "c" && key.ctrl && key.shift;
 }

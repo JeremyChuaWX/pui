@@ -35,6 +35,10 @@ npm start -- --no-session
 npm run check
 ```
 
+## Clipboard
+
+Highlight text inside pui, then press the terminal-safe shortcut `Ctrl+Shift+C` to copy it.
+
 ## Included
 
 - Stable streaming Markdown and syntax-colored code blocks

@@ -427,7 +427,13 @@ export function App(props: { controller: PuiController }) {
     if (isCopyShortcut(key) && renderer.hasSelection) {
       key.preventDefault();
       key.stopPropagation();
-      copyCurrentSelection(renderer);
+      void copyCurrentSelection(renderer)
+        .then((copied) => {
+          if (copied) props.controller.notify("Copied highlighted text", "success");
+        })
+        .catch((error: unknown) =>
+          props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+        );
       return;
     }
     if (dialog()) return;
@@ -1345,7 +1351,7 @@ function Help(props: { width: number; onClose: () => void }) {
       <text fg={theme.muted}>Ctrl+T        reasoning blocks</text>
       <text fg={theme.muted}>Ctrl+B        sidebar</text>
       <text fg={theme.muted}>PageUp/Down   scroll transcript</text>
-      <text fg={theme.muted}>Cmd+C         copy highlighted text</text>
+      <text fg={theme.muted}>Ctrl+Shift+C  copy highlighted text</text>
       <text fg={theme.muted}>Ctrl+C/D      abort, clear, or quit</text>
       <text fg={theme.primary}>Slash commands and !shell commands are supported.</text>
       <text fg={theme.muted}>Press Esc or Enter to close.</text>
