@@ -991,19 +991,26 @@ function Prompt(props: {
   const border = () => (props.snapshot.isStreaming ? theme.warning : theme.primary);
   return (
     <box ref={props.setAnchorRef} flexShrink={0}>
-      <box border={["left"]} borderColor={border()} backgroundColor={theme.panel} minHeight={4} paddingLeft={2} paddingRight={1}>
+      <box
+        border={["left"]}
+        borderColor={border()}
+        backgroundColor={theme.userBackground}
+        minHeight={1}
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        paddingRight={2}
+      >
         <textarea
           ref={props.setRef}
           focused={props.focused}
-          placeholder={props.snapshot.isStreaming ? "Steer the agent…" : "Ask Pi anything…"}
-          placeholderColor={theme.muted}
           textColor={theme.text}
           focusedTextColor={theme.text}
-          backgroundColor={theme.panel}
-          focusedBackgroundColor={theme.panel}
+          backgroundColor={theme.userBackground}
+          focusedBackgroundColor={theme.userBackground}
           cursorColor={theme.primary}
           selectionBg={theme.selection}
-          minHeight={2}
+          minHeight={1}
           maxHeight={8}
           keyBindings={promptKeyBindings}
           onContentChange={(value: unknown) => {
@@ -1013,11 +1020,11 @@ function Prompt(props: {
           onSubmit={props.onSubmit}
         />
       </box>
-      <box height={1} flexDirection="row" paddingLeft={1} paddingRight={1}>
+      <box height={1} flexDirection="row" marginTop={1} paddingLeft={1} paddingRight={1}>
         <text fg={theme.muted}>{props.snapshot.compactCwd}</text>
         <Show when={props.snapshot.gitBranch}>
           <text fg={theme.border}>  ·  </text>
-          <text fg={theme.muted}> {props.snapshot.gitBranch}</text>
+          <text fg={theme.muted}>{props.snapshot.gitBranch}</text>
         </Show>
         <box flexGrow={1} />
         <text fg={theme.muted}>{formatCount(props.snapshot.contextTokens)}</text>
