@@ -73,7 +73,7 @@ The repository previously kept completed subagent implementation plans. Their du
 6. Keep [`src/bundled-extensions.ts`](../src/bundled-extensions.ts) as the tested registration seam.
 7. Do not combine dependency upgrades with structural refactors.
 8. Do not edit generated or vendored code under `node_modules`.
-9. Keep every task independently reviewable and leave `npm run check` green.
+9. Keep every task independently reviewable and leave `bun run check` green.
 
 ## 5. Work packages
 
@@ -110,7 +110,7 @@ Acceptance:
 - CLI parsing can be imported without starting the TUI.
 - No test reaches a private controller method through a cast.
 - All source and test TypeScript files pass the configured typecheck.
-- `npm run check` passes.
+- `bun run check` passes.
 
 ### SIM-02 — Make the snapshot and display model explicit
 
@@ -147,7 +147,7 @@ Acceptance:
 - Tool display-item construction has one implementation.
 - Reconciliation does not enumerate arbitrary object fields or carry opaque extension payloads into the reactive store.
 - Streaming identity, partial tool updates, persisted results, legacy subagents, and generic fallback retain coverage.
-- `npm run check` passes.
+- `bun run check` passes.
 
 ### SIM-03 — Decompose the OpenTUI view layer
 
@@ -224,7 +224,7 @@ Acceptance:
 - Unknown and extension commands still reach Pi normally.
 - Model, session, reload, compact, shell, and abort behavior is unchanged.
 - The controller no longer owns pure command or autocomplete policy.
-- `npm run check` passes.
+- `bun run check` passes.
 
 ### SIM-05 — Separate subagent event projection from process supervision
 
@@ -262,7 +262,7 @@ Acceptance:
 - Spawn failure, malformed JSONL, missing final output, nonzero exit, abort, and process-group cleanup retain coverage.
 - No progress is emitted after settlement.
 - Regular Pi and pui continue to consume the same protocol.
-- `npm run check` passes.
+- `bun run check` passes.
 
 ### SIM-06 — Final repository and documentation pass
 
@@ -291,7 +291,7 @@ Acceptance:
 
 - Current documentation describes the code that exists rather than completed migration steps.
 - No stale paths, duplicate verification instructions, or historical implementation checklists remain in active docs.
-- A clean install and `npm run check` pass.
+- A clean install and `bun run check` pass.
 - Launcher help works without entering OpenTUI.
 
 ## 6. Execution order
@@ -314,7 +314,7 @@ Each work package should be one reviewable pull request or a short sequence of b
 Run after every work package:
 
 ```bash
-npm run check
+bun run check
 ```
 
 Run focused extension checks during SIM-05:

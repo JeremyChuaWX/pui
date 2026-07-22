@@ -60,7 +60,7 @@ If final output exceeds the model-visible limit, the extension writes the comple
 From the repository root:
 
 ```bash
-npm run check
+bun run check
 ```
 
 For a focused extension run, use `bun test extensions/subagent`. Tests use `fixtures/fake-child.mjs` and do not call a model or the network.

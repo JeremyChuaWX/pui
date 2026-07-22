@@ -20,7 +20,7 @@ if ! command -v bun >/dev/null 2>&1; then
   exit 1
 fi
 if [ ! -f "$preload" ]; then
-  echo "pui: dependencies are missing; run 'npm ci' in $project_dir" >&2
+  echo "pui: dependencies are missing; run 'bun install --frozen-lockfile --ignore-scripts' in $project_dir" >&2
   exit 1
 fi
 

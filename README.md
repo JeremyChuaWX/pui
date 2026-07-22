@@ -12,8 +12,8 @@ An OpenCode-inspired, full-screen OpenTUI/Solid client backed by Pi's SDK. It us
 
 ```sh
 cd ~/dev/pui
-npm ci --ignore-scripts
-npm run install:local
+bun install --frozen-lockfile --ignore-scripts
+bun run install:local
 ```
 
 This links `pui` into `~/.local/bin`. Make sure that directory is on `PATH`.
@@ -31,8 +31,8 @@ Run `pui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
 For development, run directly from the project:
 
 ```sh
-npm start -- --no-session
-npm run check
+bun run start -- --no-session
+bun run check
 ```
 
 ## Clipboard
