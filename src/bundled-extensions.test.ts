@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   type AgentSessionRuntime,
   createAgentSessionRuntime,
@@ -11,46 +9,30 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
+import {
+  BUNDLED_EXTENSION_FACTORIES,
+  BUNDLED_SUBAGENT_SOURCE_PATH,
+} from "./bundled-extensions.js";
 import { createPuiRuntime } from "./controller.js";
 
-const bundledSubagentPath = BUNDLED_EXTENSION_PATHS[0];
-
-if (!bundledSubagentPath) throw new Error("The bundled subagent extension path is not configured");
+const bundledSubagentPath = "<inline:pui-subagent>";
 
 function expectOneBundledSubagent(runtime: AgentSessionRuntime, cwd: string): void {
   expect(runtime.cwd).toBe(cwd);
   const extensions = runtime.services.resourceLoader.getExtensions();
   expect(extensions.errors).toEqual([]);
   expect(
-    extensions.extensions.filter(
-      (extension) => path.resolve(extension.resolvedPath) === path.resolve(bundledSubagentPath),
-    ),
+    extensions.extensions.filter((extension) => extension.resolvedPath === bundledSubagentPath),
   ).toHaveLength(1);
   expect(runtime.session.getAllTools().filter((tool) => tool.name === "subagent")).toHaveLength(1);
 }
 
 describe("bundled extensions", () => {
-  test("resolves the subagent entry point absolutely and independently of process cwd", async () => {
-    expect(BUNDLED_EXTENSION_PATHS).toHaveLength(1);
-    expect(path.isAbsolute(bundledSubagentPath)).toBe(true);
-    expect((await fs.promises.stat(bundledSubagentPath)).isFile()).toBe(true);
-
-    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-bundled-path-test-"));
-    try {
-      const moduleUrl = pathToFileURL(path.join(import.meta.dir, "bundled-extensions.ts")).href;
-      const output = execFileSync(
-        process.execPath,
-        [
-          "--eval",
-          `const { BUNDLED_EXTENSION_PATHS } = await import(${JSON.stringify(moduleUrl)}); process.stdout.write(JSON.stringify(BUNDLED_EXTENSION_PATHS));`,
-        ],
-        { cwd: temp, encoding: "utf8" },
-      );
-      expect(JSON.parse(output)).toEqual(BUNDLED_EXTENSION_PATHS);
-    } finally {
-      await fs.promises.rm(temp, { recursive: true, force: true });
-    }
+  test("exposes the subagent as an inline factory with its standalone source intact", async () => {
+    expect(BUNDLED_EXTENSION_FACTORIES).toHaveLength(1);
+    expect(BUNDLED_EXTENSION_FACTORIES[0]).toMatchObject({ name: "pui-subagent" });
+    expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);
+    expect((await fs.promises.stat(BUNDLED_SUBAGENT_SOURCE_PATH)).isFile()).toBe(true);
   });
 
   test("the controller runtime factory preserves one subagent tool across session replacement", async () => {
@@ -147,7 +129,7 @@ describe("bundled extensions", () => {
         cwd,
         agentDir,
         settingsManager,
-        additionalExtensionPaths: BUNDLED_EXTENSION_PATHS,
+        extensionFactories: BUNDLED_EXTENSION_FACTORIES,
         noSkills: true,
         noPromptTemplates: true,
         noThemes: true,
@@ -161,7 +143,7 @@ describe("bundled extensions", () => {
         expect(result.extensions).toHaveLength(3);
 
         const bundled = result.extensions.filter(
-          (extension) => path.resolve(extension.resolvedPath) === path.resolve(bundledSubagentPath),
+          (extension) => extension.resolvedPath === bundledSubagentPath,
         );
         expect(bundled).toHaveLength(1);
         expect([...bundled[0]!.tools.keys()]).toEqual(["subagent"]);
@@ -171,7 +153,7 @@ describe("bundled extensions", () => {
         ]);
       }
 
-      const extensionDir = path.dirname(bundledSubagentPath);
+      const extensionDir = path.dirname(BUNDLED_SUBAGENT_SOURCE_PATH);
       for (const relativePath of [
         "protocol.ts",
         "runner.ts",

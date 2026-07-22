@@ -4,14 +4,12 @@
   "private": true,
   "description": "An OpenCode-inspired OpenTUI client for Pi",
   "type": "module",
-  "bin": {
-    "pui": "bin/pui"
-  },
   "scripts": {
+    "build": "bun scripts/build.ts",
     "start": "bun --preload @opentui/solid/preload src/index.tsx",
     "test": "bun test src extensions/subagent",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun run test",
+    "check": "bun run typecheck && bun run test && bun run build && bun scripts/smoke-build.ts",
     "install:local": "./scripts/install-local.sh"
   },
   "dependencies": {

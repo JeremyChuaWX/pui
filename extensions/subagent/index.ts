@@ -1,7 +1,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
@@ -18,6 +17,8 @@ import {
 } from "./protocol.js";
 import { getPiInvocation, runSubagent, type RunSubagentOptions, type SubagentRunResult } from "./runner.js";
 import { AbortableSemaphore, configuredSubagentConcurrency, type SemaphoreRelease } from "./semaphore.js";
+import explorePrompt from "./agents/explore.md" with { type: "text" };
+import workerPrompt from "./agents/worker.md" with { type: "text" };
 
 const AGENT_NAMES = ["worker", "explore"] as const;
 const UNGUIDED_AGENT_NAME = "generic" as const;
@@ -29,12 +30,11 @@ type AgentPreset = {
   tools: readonly string[];
   defaultModel?: string;
   modelEnv?: string;
-  promptPath?: string;
+  prompt?: string;
   promptFlag?: "--system-prompt" | "--append-system-prompt";
   timeoutMs: number;
 };
 
-const extensionDir = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS: Record<ResolvedAgentName, AgentPreset> = {
   generic: {
     description: "general coding without bundled agent guidance",
@@ -46,7 +46,7 @@ const AGENTS: Record<ResolvedAgentName, AgentPreset> = {
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     defaultModel: "openai-codex/gpt-5.6-sol:low",
     modelEnv: "PI_WORKER_MODEL",
-    promptPath: path.join(extensionDir, "agents", "worker.md"),
+    prompt: workerPrompt,
     promptFlag: "--append-system-prompt",
     timeoutMs: 600_000,
   },
@@ -55,7 +55,7 @@ const AGENTS: Record<ResolvedAgentName, AgentPreset> = {
     tools: ["read", "grep", "find", "ls"],
     defaultModel: "openai-codex/gpt-5.4-mini:off",
     modelEnv: "PI_EXPLORE_MODEL",
-    promptPath: path.join(extensionDir, "agents", "explore.md"),
+    prompt: explorePrompt,
     promptFlag: "--system-prompt",
     timeoutMs: 120_000,
   },
@@ -257,16 +257,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         );
         publish(details);
 
-        let agentPrompt: string | undefined;
-        if (agent.promptPath) {
-          try {
-            agentPrompt = await fs.promises.readFile(agent.promptPath, "utf8");
-          } catch (error) {
-            settleSetupFailure("failed", `Unable to load the ${agentName} preset: ${errorMessage(error)}`);
-            throw error;
-          }
-        }
-
         try {
           release = await semaphore.acquire(combinedSignal);
         } catch (error) {
@@ -303,7 +293,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
           agent.tools.join(","),
         ];
         if (model) args.push("--model", model);
-        if (agent.promptFlag && agentPrompt !== undefined) args.push(agent.promptFlag, agentPrompt);
+        if (agent.promptFlag && agent.prompt !== undefined) args.push(agent.promptFlag, agent.prompt);
         args.push(params.prompt);
         const invocation = resolveInvocation(args);
         const execution = await run({

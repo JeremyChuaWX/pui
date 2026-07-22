@@ -4,19 +4,24 @@ An OpenCode-inspired, full-screen OpenTUI/Solid client backed by Pi's SDK. It us
 
 ## Requirements
 
-- [Bun](https://bun.sh/) 1.3 or newer
 - The `pi` command installed and configured
+- [Bun](https://bun.sh/) 1.3 or newer (build only)
 - `fd` for fuzzy `@` file completion (optional, but recommended)
 
 ## Install
 
+On macOS and Linux:
+
 ```sh
 cd ~/dev/pui
 bun install --frozen-lockfile --ignore-scripts
+bun run build
 bun run install:local
 ```
 
-This links `pui` into `~/.local/bin`. Make sure that directory is on `PATH`.
+`bun run build` creates a minified native executable with embedded source maps for the current platform. The output is `dist/pui` on macOS and Linux or `dist/pui.exe` on Windows. Running it does not require Bun or this project's `node_modules`.
+
+On macOS and Linux, `install:local` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
 
 ## Run
 
@@ -28,12 +33,14 @@ pui "review this repository"
 
 Run `pui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
 
-For development, run directly from the project:
+For development, run the source directly from the project:
 
 ```sh
 bun run start -- --no-session
 bun run check
 ```
+
+`bun run check` type-checks, tests, builds, and smoke-tests the final executable.
 
 ## Clipboard
 
@@ -73,14 +80,14 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 
 - `src/index.tsx` owns OpenTUI renderer startup and shutdown.
 - `src/controller.ts` embeds Pi through `AgentSessionRuntime`, rebinds every replaced session, and adapts Pi's `CombinedAutocompleteProvider` to OpenTUI prompt completions.
-- `src/bundled-extensions.ts` resolves application-owned extension entry points independently of session cwd.
+- `src/bundled-extensions.ts` registers application-owned extension factories independently of session cwd.
 - `extensions/subagent/` owns the standalone extension, protocol producer, preset, fixtures, and tests.
 - `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
 - `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.
 - `src/app.tsx` is the Solid/OpenTUI view layer.
 - `src/format.ts` projects Pi messages and live tool executions into explicit display variants and preserves identity when their presentation is unchanged.
 - `src/theme.ts` defines the neutral palette and syntax styles.
-- `bin/pui` is the standalone launcher.
+- `scripts/build.ts` compiles the Solid application and embeds the bundled extension into `dist/pui`.
 
 The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. It emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 

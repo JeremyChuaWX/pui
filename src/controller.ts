@@ -18,7 +18,7 @@ import {
   type AutocompleteItem,
   type SlashCommand,
 } from "@earendil-works/pi-tui";
-import { BUNDLED_EXTENSION_PATHS } from "./bundled-extensions.js";
+import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
 import {
@@ -57,7 +57,7 @@ export const createPuiRuntime: CreateAgentSessionRuntimeFactory = async ({
     cwd,
     agentDir,
     resourceLoaderOptions: {
-      additionalExtensionPaths: BUNDLED_EXTENSION_PATHS,
+      extensionFactories: BUNDLED_EXTENSION_FACTORIES,
     },
   });
   return {
