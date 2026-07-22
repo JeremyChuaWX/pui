@@ -6,6 +6,7 @@ import { PuiController } from "./controller.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { formatCount } from "./format.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
+import { PromptHistory } from "./prompt-history.js";
 import {
   isTerminalSubagentStatus,
   subagentCurrentActivity,
@@ -52,8 +53,6 @@ const promptKeyBindings: KeyBinding[] = [
   { name: "linefeed", action: "submit" },
   { name: "return", shift: true, action: "newline" },
   { name: "return", meta: true, action: "submit" },
-  { name: "p", ctrl: true, action: "move-up" },
-  { name: "n", ctrl: true, action: "move-down" },
 ];
 
 function progressBar(percent: number | null | undefined, width = 14): string {
@@ -98,6 +97,7 @@ export function App(props: { controller: PuiController }) {
   const [toolsExpanded, setToolsExpanded] = createSignal(false);
   const [thinkingExpanded, setThinkingExpanded] = createSignal(false);
   const [elapsedNow, setElapsedNow] = createSignal(Date.now());
+  const promptHistory = new PromptHistory();
   let prompt: TextareaRenderable | undefined;
   let promptAnchor: BoxRenderable | undefined;
   let transcript: ScrollBoxRenderable | undefined;
@@ -105,6 +105,7 @@ export function App(props: { controller: PuiController }) {
   let completionRequest = 0;
   let completionAbort: AbortController | undefined;
   let externalEditorOpen = false;
+  let appliedHistoryText: string | undefined;
 
   let unsubscribe: (() => void) | undefined;
   onMount(() => {
@@ -170,6 +171,8 @@ export function App(props: { controller: PuiController }) {
   }
 
   function handlePromptChange(value: string): void {
+    if (value === appliedHistoryText) appliedHistoryText = undefined;
+    else promptHistory.resetBrowsing();
     setPromptText(value);
     const cursorOffset = prompt?.cursorOffset ?? value.length;
     void updatePromptCompletions(value, cursorOffset);
@@ -197,6 +200,7 @@ export function App(props: { controller: PuiController }) {
     if (!applied) return;
 
     closePromptCompletions();
+    promptHistory.resetBrowsing();
     input.setText(applied.text);
     input.cursorOffset = applied.cursorOffset;
     setPromptText(applied.text);
@@ -208,8 +212,23 @@ export function App(props: { controller: PuiController }) {
 
   function clearPrompt(): void {
     closePromptCompletions();
+    promptHistory.resetBrowsing();
+    appliedHistoryText = undefined;
     prompt?.clear();
     setPromptText("");
+  }
+
+  function navigatePromptHistory(direction: "previous" | "next"): void {
+    const value = direction === "previous"
+      ? promptHistory.previous(prompt?.plainText ?? promptText())
+      : promptHistory.next();
+    if (value === undefined || !prompt || prompt.isDestroyed) return;
+
+    closePromptCompletions();
+    appliedHistoryText = value;
+    prompt.setText(value);
+    prompt.cursorOffset = value.length;
+    setPromptText(value);
   }
 
   async function openExternalEditor(): Promise<void> {
@@ -228,6 +247,7 @@ export function App(props: { controller: PuiController }) {
       process.stdout.write("Launching nvim. pui will resume when the editor exits.\n");
       const edited = await editPromptInNvim(draft, reference, snapshot.cwd);
       if (edited !== undefined && prompt && !prompt.isDestroyed) {
+        promptHistory.resetBrowsing();
         prompt.setText(edited);
         prompt.cursorOffset = edited.length;
         setPromptText(edited);
@@ -251,6 +271,7 @@ export function App(props: { controller: PuiController }) {
   function submit(delivery: "steer" | "followUp" = "steer"): void {
     const value = prompt?.plainText ?? promptText();
     if (!value.trim()) return;
+    promptHistory.add(value);
     const action = props.controller.handlePrompt(value, delivery);
     clearPrompt();
     if (action === "models") void openModels();
@@ -425,6 +446,12 @@ export function App(props: { controller: PuiController }) {
       }
     }
 
+    if (key.ctrl && (key.name === "p" || key.name === "n")) {
+      key.preventDefault();
+      key.stopPropagation();
+      navigatePromptHistory(key.name === "p" ? "previous" : "next");
+      return;
+    }
     if ((key.meta || key.option) && ["return", "enter", "linefeed"].includes(key.name)) {
       key.preventDefault();
       key.stopPropagation();
@@ -1283,6 +1310,7 @@ function Help(props: { width: number; onClose: () => void }) {
       <text fg={theme.muted}>Enter         send / steer while working</text>
       <text fg={theme.muted}>Shift+Enter   insert a new line</text>
       <text fg={theme.muted}>Alt+Enter     queue a follow-up</text>
+      <text fg={theme.muted}>Ctrl+P / Ctrl+N prompt history</text>
       <text fg={theme.muted}>Ctrl+G        edit in nvim with last agent response</text>
       <text fg={theme.muted}>Escape        abort the current operation</text>
       <text fg={theme.muted}>Shift+Tab     cycle thinking level</text>
