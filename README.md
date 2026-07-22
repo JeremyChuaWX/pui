@@ -85,7 +85,3 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 The bundled subagent extension augments normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. It emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.
-
-## Development documentation
-
-- [Codebase simplification plan](docs/codebase-simplification-plan.md)
