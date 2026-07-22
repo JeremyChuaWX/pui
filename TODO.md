@@ -1,1 +1,3 @@
-- [ ] Support multiple independent conversation threads.
+- [ ] Support multiple independent conversation threads
+  - [ ] worktrees and branches
+  - [ ] different architecture of worktree, i want to be able to spin up worktrees quickly, with low overhead, like google drive experience but for agents
