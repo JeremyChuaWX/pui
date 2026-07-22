@@ -114,8 +114,8 @@ export function getPiInvocation(
     currentScript = process.argv[1],
     execPath = process.execPath,
 ): { command: string; args: string[] } {
-    // Reuse argv[1] only when the host is Pi's own CLI. SDK hosts have their own
-    // entrypoints and cannot parse Pi CLI flags.
+    // Reuse argv[1] only when the host is Pi's own CLI. Other scripts and
+    // compiled hosts (including pui) cannot parse Pi CLI flags.
     let resolvedScript: string | undefined;
     if (currentScript && !currentScript.startsWith("/$bunfs/root/") && fs.existsSync(currentScript)) {
         try {
@@ -130,7 +130,8 @@ export function getPiInvocation(
     if (isPiCli && currentScript) return { command: execPath, args: [currentScript, ...args] };
 
     const execName = path.basename(execPath).toLowerCase();
-    return /^(node|bun)(\.exe)?$/.test(execName) ? { command: "pi", args } : { command: execPath, args };
+    const isPiExecutable = /^pi(\.exe)?$/.test(execName);
+    return isPiExecutable ? { command: execPath, args } : { command: "pi", args };
 }
 
 function snapshot(details: SubagentDetailsV1): SubagentDetailsV1 {

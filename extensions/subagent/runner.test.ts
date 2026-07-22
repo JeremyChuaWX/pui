@@ -169,6 +169,19 @@ describe("getPiInvocation", () => {
         expect(invocation).toEqual({ command: "pi", args: ["--mode", "json"] });
     });
 
+    test("does not reuse pui's compiled executable", () => {
+        const invocation = getPiInvocation(["--mode", "json"], "/$bunfs/root/pui", "/Users/test/.local/bin/pui");
+        expect(invocation).toEqual({ command: "pi", args: ["--mode", "json"] });
+    });
+
+    test("reuses Pi's standalone executable", () => {
+        const invocation = getPiInvocation(["--mode", "json"], "/$bunfs/root/pi", "/Users/test/.local/bin/pi");
+        expect(invocation).toEqual({
+            command: "/Users/test/.local/bin/pi",
+            args: ["--mode", "json"],
+        });
+    });
+
     test("reuses Pi's own CLI entrypoint", () => {
         const cli = path.join(
             cwd,
