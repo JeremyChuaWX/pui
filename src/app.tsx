@@ -6,6 +6,7 @@ import { PuiController } from "./controller.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
 import { formatCount } from "./format.js";
+import { cycleIndex } from "./list-navigation.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { PromptHistory } from "./prompt-history.js";
 import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
@@ -442,13 +443,13 @@ export function App(props: { controller: PuiController }) {
       if (key.name === "up" || (key.ctrl && key.name === "p")) {
         key.preventDefault();
         key.stopPropagation();
-        setCompletionIndex((index) => Math.max(0, index - 1));
+        setCompletionIndex((index) => cycleIndex(index, -1, completions.items.length));
         return;
       }
       if (key.name === "down" || (key.ctrl && key.name === "n")) {
         key.preventDefault();
         key.stopPropagation();
-        setCompletionIndex((index) => Math.min(completions.items.length - 1, index + 1));
+        setCompletionIndex((index) => cycleIndex(index, 1, completions.items.length));
         return;
       }
       const confirm =
@@ -1242,13 +1243,13 @@ function Picker(props: {
     if (key.name === "up" || (key.ctrl && key.name === "p")) {
       key.preventDefault();
       key.stopPropagation();
-      setSelected((value) => Math.max(0, value - 1));
+      setSelected((value) => cycleIndex(value, -1, filtered().length));
       return;
     }
     if (key.name === "down" || (key.ctrl && key.name === "n")) {
       key.preventDefault();
       key.stopPropagation();
-      setSelected((value) => Math.min(Math.max(0, filtered().length - 1), value + 1));
+      setSelected((value) => cycleIndex(value, 1, filtered().length));
       return;
     }
     if (["return", "enter", "linefeed"].includes(key.name)) {
