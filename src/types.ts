@@ -5,30 +5,30 @@ interface DisplayItemBase {
   id: string;
 }
 
-export interface UserDisplayItem extends DisplayItemBase {
+interface UserDisplayItem extends DisplayItemBase {
   kind: "user";
   text: string;
 }
 
-export interface AssistantDisplayItem extends DisplayItemBase {
+interface AssistantDisplayItem extends DisplayItemBase {
   kind: "assistant";
   text: string;
   streaming?: boolean;
 }
 
-export interface ThinkingDisplayItem extends DisplayItemBase {
+interface ThinkingDisplayItem extends DisplayItemBase {
   kind: "thinking";
   text: string;
   streaming?: boolean;
 }
 
-export interface CustomDisplayItem extends DisplayItemBase {
+interface CustomDisplayItem extends DisplayItemBase {
   kind: "custom";
   text: string;
   label?: string;
 }
 
-export interface SummaryDisplayItem extends DisplayItemBase {
+interface SummaryDisplayItem extends DisplayItemBase {
   kind: "summary";
   text: string;
   label?: string;
@@ -47,7 +47,7 @@ export interface ToolDisplayItem extends DisplayItemBase {
   subagentKey?: string;
 }
 
-export interface BashDisplayItem extends DisplayItemBase {
+interface BashDisplayItem extends DisplayItemBase {
   kind: "bash";
   command: string;
   output: string;
