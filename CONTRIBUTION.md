@@ -1,1 +1,6 @@
 - use conventional commits
+- run `bun run check` before opening a pull request
+- complete the pull request template with a summary and validation notes
+- wait for the Bun test workflow and automated CodeRabbit and Sourcery reviews
+- address each actionable automated finding or dismiss it with a rationale
+- require human review for correctness, security, and maintainability; AI review is advisory
