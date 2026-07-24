@@ -9,6 +9,8 @@ import { runFileSearch } from "./process.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-search.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
+// Leave enough time for slower CI runners to start the fixture and report its descendant PID.
+const descendantStartupGraceMs = 1_000;
 const retained: string[] = [];
 afterEach(async () =>
     Promise.all(retained.splice(0).map((item) => rm(path.dirname(item), { recursive: true, force: true }))),
@@ -110,7 +112,7 @@ describe("runFileSearch", () => {
     test.skipIf(process.platform === "win32")(
         "kills descendants in the detached process group on timeout",
         async () => {
-            const result = await run("descendant", { timeoutMs: 30 });
+            const result = await run("descendant", { timeoutMs: descendantStartupGraceMs });
             expect(result.status).toBe("timed_out");
             await expectDescendantStopped(Number(result.stderr.match(/descendant:(\d+)/)?.[1]));
         },
@@ -120,7 +122,7 @@ describe("runFileSearch", () => {
         "kills descendants in the detached process group on cancellation",
         async () => {
             const controller = new AbortController();
-            setTimeout(() => controller.abort(), 30);
+            setTimeout(() => controller.abort(), descendantStartupGraceMs);
             const result = await run("descendant", { signal: controller.signal });
             expect(result.status).toBe("cancelled");
             await expectDescendantStopped(Number(result.stderr.match(/descendant:(\d+)/)?.[1]));
