@@ -1214,13 +1214,6 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                                 <text fg={theme.muted} wrapMode="none">
                                     {job.model} · {subagentStatusLabel(job.status)} · {subagentElapsed(job, props.now)}
                                 </text>
-                                <Show when={job.activeTools[0]}>
-                                    {(tool) => (
-                                        <text fg={theme.warning} wrapMode="none">
-                                            ◌ {tool().title}
-                                        </text>
-                                    )}
-                                </Show>
                                 <Show when={compactSubagentUsage(job.usage)}>
                                     {(usage) => (
                                         <text fg={theme.muted} wrapMode="none">
