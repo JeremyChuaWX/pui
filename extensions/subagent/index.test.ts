@@ -12,10 +12,12 @@ type Handler = (event: any, ctx?: any) => any;
 
 function fakePi() {
     let tool: any;
+    const tools = new Map<string, any>();
     const handlers = new Map<string, Handler[]>();
     const pi = {
         registerTool(definition: any) {
             tool = definition;
+            tools.set(definition.name, definition);
         },
         on(name: string, handler: Handler) {
             handlers.set(name, [...(handlers.get(name) ?? []), handler]);
@@ -26,6 +28,7 @@ function fakePi() {
         get tool() {
             return tool;
         },
+        tools,
         handler(name: string) {
             const found = handlers.get(name)?.[0];
             if (!found) throw new Error(`Missing ${name} handler`);
@@ -389,6 +392,41 @@ describe("subagent extension integration", () => {
         expect(statuses).toEqual(["queued", "cancelled"]);
         const patch = await host.handler("tool_result")({ toolCallId: "queued-cancel" });
         expect(patch.details.run.status).toBe("cancelled");
+    });
+
+    test("blocking and background jobs share the same process semaphore", async () => {
+        const host = fakePi();
+        const semaphore = new AbortableSemaphore(1);
+        let releaseBackground: (() => void) | undefined;
+        registerSubagentExtension(host.pi, {
+            semaphore,
+            invocation: (args) => ({ command: "fake-pi", args }),
+            run: async (options) => {
+                let details = updateSubagentDetails(options.details, { status: "running", phase: "thinking" });
+                options.onSnapshot?.(details);
+                if (options.details.run.id !== "blocking-after-background") {
+                    await new Promise<void>((resolve) => {
+                        releaseBackground = resolve;
+                    });
+                }
+                details = createTerminalSubagentDetails(details, { status: "succeeded", outputPreview: "done" });
+                options.onSnapshot?.(details);
+                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+
+        const spawned = await host.tools
+            .get("subagent_spawn")
+            .execute("spawn-call", { prompt: "Background work", cwd: extensionCwd }, undefined, undefined, {
+                cwd: extensionCwd,
+            });
+        await waitUntil(() => semaphore.active === 1);
+        const blocking = execute(host.tool, "blocking-after-background");
+        await waitUntil(() => semaphore.queued === 1);
+        expect(spawned.content[0].text).toContain("Started background subagent");
+        releaseBackground?.();
+        await blocking;
+        expect(semaphore.active).toBe(0);
     });
 
     test("session shutdown aborts running work and leaves no saved failure state", async () => {

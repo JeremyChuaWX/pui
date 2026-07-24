@@ -5,8 +5,25 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import explorePrompt from "./agents/explore.md" with { type: "text" };
-import workerPrompt from "./agents/worker.md" with { type: "text" };
+import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
+import {
+    BACKGROUND_SUBAGENT_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+    BACKGROUND_SUBAGENT_SCHEMA,
+    BACKGROUND_SUBAGENT_VERSION,
+    type BackgroundSubagentJobV1,
+    parseBackgroundSubagentControl,
+} from "./background-protocol.js";
+import {
+    AGENT_NAMES,
+    AGENT_SUMMARY,
+    AGENTS,
+    childArgs,
+    type ResolvedAgentName,
+    resolveModel,
+    resolveWorkingDirectory,
+    workingDirectoryCandidate,
+} from "./presets.js";
 import {
     appendSubagentActivity,
     createInitialSubagentDetails,
@@ -20,53 +37,18 @@ import {
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
 import { AbortableSemaphore, configuredSubagentConcurrency, type SemaphoreRelease } from "./semaphore.js";
 
-const AGENT_NAMES = ["worker", "explore"] as const;
 const UNGUIDED_AGENT_NAME = "generic" as const;
-type AgentName = (typeof AGENT_NAMES)[number];
-type ResolvedAgentName = AgentName | typeof UNGUIDED_AGENT_NAME;
 
-type AgentPreset = {
-    description: string;
-    tools: readonly string[];
-    defaultModel?: string;
-    modelEnv?: string;
-    prompt?: string;
-    promptFlag?: "--system-prompt" | "--append-system-prompt";
-    timeoutMs: number;
-};
-
-const AGENTS: Record<ResolvedAgentName, AgentPreset> = {
-    generic: {
-        description: "general coding without bundled agent guidance",
-        tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-        timeoutMs: 600_000,
-    },
-    worker: {
-        description: "general coding with Ponytail standards",
-        tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-        defaultModel: "openai-codex/gpt-5.6-sol:low",
-        modelEnv: "PI_WORKER_MODEL",
-        prompt: workerPrompt,
-        promptFlag: "--append-system-prompt",
-        timeoutMs: 600_000,
-    },
-    explore: {
-        description: "read-only codebase exploration",
-        tools: ["read", "grep", "find", "ls"],
-        defaultModel: "openai-codex/gpt-5.4-mini:off",
-        modelEnv: "PI_EXPLORE_MODEL",
-        prompt: explorePrompt,
-        promptFlag: "--system-prompt",
-        timeoutMs: 120_000,
-    },
-};
-
-const AGENT_SUMMARY = [UNGUIDED_AGENT_NAME, ...AGENT_NAMES]
-    .map((name) => {
-        const agent = AGENTS[name];
-        return `${name} (${agent.description}; tools: ${agent.tools.join(", ")}; default model: ${agent.defaultModel ?? "child Pi default"})`;
-    })
-    .join("; ");
+const BackgroundSpawnParams = Type.Object({
+    prompt: Type.String(),
+    cwd: Type.String(),
+    agent: Type.Optional(StringEnum(AGENT_NAMES)),
+    model: Type.Optional(Type.String()),
+    name: Type.Optional(Type.String()),
+});
+const BackgroundIdsParams = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }) });
+const BackgroundCheckParams = Type.Object({ id: Type.String() });
+const BackgroundListParams = Type.Object({});
 
 const SubagentParams = Type.Object({
     agent: Type.Optional(
@@ -103,38 +85,6 @@ export interface SubagentExtensionDependencies {
     invocation?: typeof getPiInvocation;
     now?: () => number;
     environment?: NodeJS.ProcessEnv;
-}
-
-function resolveModel(
-    agent: AgentPreset,
-    override: string | undefined,
-    environment: NodeJS.ProcessEnv,
-): string | undefined {
-    const explicit = override?.trim();
-    if (explicit) return explicit;
-    const configured = agent.modelEnv ? environment[agent.modelEnv]?.trim() : undefined;
-    return configured || agent.defaultModel;
-}
-
-function workingDirectoryCandidate(input: string, parentCwd: string): string {
-    let value = input.trim().replace(/^@/, "");
-    if (!value) return path.resolve(parentCwd);
-    if (value === "~") value = os.homedir();
-    else if (value.startsWith("~/")) value = path.join(os.homedir(), value.slice(2));
-    return path.resolve(parentCwd, value);
-}
-
-async function resolveWorkingDirectory(input: string, parentCwd: string): Promise<string> {
-    if (!input.trim().replace(/^@/, "")) throw new Error("Subagent cwd must not be empty.");
-    const resolved = workingDirectoryCandidate(input, parentCwd);
-    let stats: fs.Stats;
-    try {
-        stats = await fs.promises.stat(resolved);
-    } catch {
-        throw new Error(`Subagent cwd does not exist: ${resolved}`);
-    }
-    if (!stats.isDirectory()) throw new Error(`Subagent cwd is not a directory: ${resolved}`);
-    return fs.promises.realpath(resolved);
 }
 
 async function saveFullOutput(output: string): Promise<string | undefined> {
@@ -177,6 +127,70 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     const shutdownController = new AbortController();
     const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
+    let sessionId = "unbound";
+    const instanceId = crypto.randomUUID();
+    let idle = true;
+    const emitBus = (payload: object) => pi.events?.emit(BACKGROUND_SUBAGENT_CHANNEL, payload);
+    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") => {
+        emitBus({
+            schema: BACKGROUND_SUBAGENT_SCHEMA,
+            version: BACKGROUND_SUBAGENT_VERSION,
+            sessionId,
+            instanceId,
+            type,
+            job,
+        });
+    };
+    const deliver = (result: BackgroundTerminalResult) => {
+        if (shuttingDown) return;
+        const pathNote = result.fullOutputPath ? `\n\nFull output: ${result.fullOutputPath}` : "";
+        pi.sendMessage(
+            {
+                customType: "subagent-result",
+                content: `Background subagent ${result.title} (${result.id}) ${result.status}:\n\n${result.text}${pathNote}`,
+                display: true,
+                details: { id: result.id, title: result.title, status: result.status },
+            },
+            { deliverAs: "followUp", triggerTurn: true },
+        );
+    };
+    const background = new BackgroundSubagentManager({
+        semaphore,
+        run,
+        invocation: resolveInvocation,
+        environment,
+        now,
+        emit,
+        deliver,
+        isIdle: () => idle,
+    });
+    let unsubscribeControl: (() => void) | undefined;
+
+    pi.on("session_start", (_event, ctx) => {
+        sessionId = ctx.sessionManager.getSessionId();
+        idle = ctx.isIdle();
+        unsubscribeControl?.();
+        unsubscribeControl = pi.events?.on(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, (payload) => {
+            const control = parseBackgroundSubagentControl(payload);
+            if (!control || shuttingDown || control.sessionId !== sessionId || control.instanceId !== instanceId)
+                return;
+            void background.cancel([control.jobId]).catch(() => {});
+        });
+        emitBus({
+            schema: BACKGROUND_SUBAGENT_SCHEMA,
+            version: BACKGROUND_SUBAGENT_VERSION,
+            sessionId,
+            instanceId,
+            type: "ready",
+        });
+    });
+    pi.on("agent_start", () => {
+        idle = false;
+    });
+    pi.on("agent_settled", () => {
+        idle = true;
+        background.flushDeferred();
+    });
 
     pi.on("tool_result", (event) => {
         const saved = failedDetails.get(event.toolCallId);
@@ -185,10 +199,113 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         return { details: saved };
     });
 
-    pi.on("session_shutdown", () => {
+    pi.on("session_shutdown", async () => {
         shuttingDown = true;
+        unsubscribeControl?.();
         shutdownController.abort();
         failedDetails.clear();
+        await background.shutdown();
+        emitBus({
+            schema: BACKGROUND_SUBAGENT_SCHEMA,
+            version: BACKGROUND_SUBAGENT_VERSION,
+            sessionId,
+            instanceId,
+            type: "reset",
+        });
+    });
+
+    const renderResults = (results: BackgroundTerminalResult[]) => {
+        const content = results
+            .map(
+                (item) =>
+                    `[${item.id}] ${item.title} — ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
+            )
+            .join("\n\n");
+        const notice =
+            "\n\n[Combined wait output truncated; use the per-job full output paths above or in result details.]";
+        const truncation = truncateHead(content, {
+            maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8"),
+            maxLines: DEFAULT_MAX_LINES - 2,
+        });
+        return truncation.truncated ? `${truncation.content}${notice}` : content;
+    };
+    pi.registerTool({
+        name: "subagent_spawn",
+        label: "Spawn Background Subagent",
+        description: "Start an isolated Pi subagent in the background and return its job id immediately.",
+        promptSnippet: "Start delegated work in the background",
+        promptGuidelines: [
+            "After subagent_spawn, continue useful parent work; use subagent_wait only when progress depends on the result.",
+        ],
+        parameters: BackgroundSpawnParams,
+        async execute(_id, params, signal, _update, ctx) {
+            const job = await background.spawn(params, ctx.cwd, signal);
+            return {
+                content: [{ type: "text", text: `Started background subagent ${job.id} (${job.title}).` }],
+                details: job,
+            };
+        },
+    });
+    pi.registerTool({
+        name: "subagent_wait",
+        label: "Wait for Background Subagents",
+        description: "Wait for background jobs without cancelling them if this wait is aborted.",
+        parameters: BackgroundIdsParams,
+        async execute(_id, params, signal) {
+            const results = await background.wait(params.ids, signal);
+            return { content: [{ type: "text", text: renderResults(results) }], details: { results } };
+        },
+    });
+    pi.registerTool({
+        name: "subagent_check",
+        label: "Check Background Subagent",
+        description: "Inspect one background job without waiting or consuming result delivery.",
+        parameters: BackgroundCheckParams,
+        async execute(_id, params) {
+            const job = background.check(params.id);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `[${job.id}] ${job.title} — ${job.run.status}\n${job.run.outputPreview ?? job.run.error ?? "No output yet."}`,
+                    },
+                ],
+                details: job,
+            };
+        },
+    });
+    pi.registerTool({
+        name: "subagent_cancel",
+        label: "Cancel Background Subagents",
+        description: "Cancel queued or running background jobs and await terminal state.",
+        parameters: BackgroundIdsParams,
+        async execute(_id, params) {
+            const jobs = await background.cancel(params.ids);
+            return {
+                content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.run.status}`).join("\n") }],
+                details: { jobs },
+            };
+        },
+    });
+    pi.registerTool({
+        name: "subagent_list",
+        label: "List Background Subagents",
+        description: "List jobs tracked by this extension instance.",
+        parameters: BackgroundListParams,
+        async execute() {
+            const jobs = background.list();
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: jobs.length
+                            ? jobs.map((job) => `[${job.id}] ${job.title} — ${job.run.status}`).join("\n")
+                            : "No background subagents.",
+                    },
+                ],
+                details: { jobs },
+            };
+        },
     });
 
     pi.registerTool<typeof SubagentParams, SubagentDetailsV1>({
@@ -292,21 +409,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 );
                 publish(details);
 
-                const args = [
-                    "--mode",
-                    "json",
-                    "--no-session",
-                    "--no-extensions",
-                    "--no-skills",
-                    "--no-prompt-templates",
-                    "--no-context-files",
-                    "--tools",
-                    agent.tools.join(","),
-                ];
-                if (model) args.push("--model", model);
-                if (agent.promptFlag && agent.prompt !== undefined) args.push(agent.promptFlag, agent.prompt);
-                args.push(params.prompt);
-                const invocation = resolveInvocation(args);
+                const invocation = resolveInvocation(childArgs(agent, model, params.prompt));
                 const execution = await run({
                     details,
                     command: invocation.command,

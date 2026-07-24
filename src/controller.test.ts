@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AgentSessionEvent, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import { PuiController } from "./controller.js";
 
 function usage() {
@@ -121,6 +121,57 @@ function createController(messages: AgentMessage[]): {
     };
     return { controller, state, emit };
 }
+
+describe("PuiController background event bridge", () => {
+    test("coalesces current-instance updates and clears the bus on disposal", async () => {
+        const bus = createEventBus();
+        const { controller: base } = createController([]);
+        await base.dispose();
+        const runtime = (base as any).runtime as AgentSessionRuntime;
+        const Controller = PuiController as unknown as new (
+            runtime: AgentSessionRuntime,
+            eventBus: ReturnType<typeof createEventBus>,
+        ) => PuiController;
+        const controller = new Controller(runtime, bus);
+        let notifications = 0;
+        controller.subscribe(() => notifications++);
+        const envelope = (type: string, status = "running") => ({
+            schema: "pi.subagent.background",
+            version: 1,
+            sessionId: "fixture-session",
+            instanceId: "live-instance",
+            type,
+            ...(type === "upsert"
+                ? { job: { id: "job", title: "Background", run: details("job", status as any).run } }
+                : {}),
+        });
+        bus.emit("pui.subagent.background", envelope("ready"));
+        bus.emit("pui.subagent.background", envelope("upsert", "queued"));
+        bus.emit("pui.subagent.background", envelope("upsert", "running"));
+        expect(notifications).toBe(1);
+        await Bun.sleep(25);
+        expect(notifications).toBe(2);
+        expect(controller.snapshot().backgroundSubagents).toEqual([
+            expect.objectContaining({ id: "job", title: "Background", status: "running" }),
+        ]);
+        let control: unknown;
+        const unsubscribeControl = bus.on("pui.subagent.background.control", (payload) => (control = payload));
+        expect(controller.cancelBackgroundSubagent("job")).toBe(true);
+        expect(control).toEqual({
+            schema: "pi.subagent.background.control",
+            version: 1,
+            sessionId: "fixture-session",
+            instanceId: "live-instance",
+            type: "cancel",
+            jobId: "job",
+        });
+        expect(controller.cancelBackgroundSubagent("missing")).toBe(false);
+        unsubscribeControl();
+        await controller.dispose();
+        bus.emit("pui.subagent.background", envelope("upsert", "succeeded"));
+        expect(controller.snapshot().backgroundSubagents).toEqual([]);
+    });
+});
 
 describe("PuiController assistant reference text", () => {
     test("returns only text blocks from the last assistant message with text", async () => {

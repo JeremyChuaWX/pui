@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.ts";
-import { compactToolTitle, getPiInvocation, runSubagent } from "./runner.ts";
+import { compactToolTitle, getPiInvocation, resolveSubagentModelLabel, runSubagent } from "./runner.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
@@ -42,6 +42,31 @@ describe("compactToolTitle", () => {
     });
 });
 
+describe("resolveSubagentModelLabel", () => {
+    test("keeps long labels and valid thinking suffixes when short events arrive", () => {
+        expect(resolveSubagentModelLabel("openai-codex/gpt-5.4-mini:off", undefined, "gpt-5.4-mini")).toBe(
+            "openai-codex/gpt-5.4-mini:off",
+        );
+        expect(resolveSubagentModelLabel("openai-codex/gpt-5.4-mini:high", "openai-codex", "gpt-5.4-mini")).toBe(
+            "openai-codex/gpt-5.4-mini:high",
+        );
+    });
+
+    test("preserves every supported thinking suffix for the same canonical model", () => {
+        for (const suffix of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+            const current = `openai-codex/gpt-5.4-mini:${suffix}`;
+            expect(resolveSubagentModelLabel(current, "openai-codex", "gpt-5.4-mini")).toBe(current);
+        }
+    });
+
+    test("promotes default and canonicalizes genuine model changes", () => {
+        expect(resolveSubagentModelLabel("default", "openai-codex", "gpt-5.4-mini")).toBe("openai-codex/gpt-5.4-mini");
+        expect(resolveSubagentModelLabel("openai/old:low", "anthropic", "claude-sonnet-4")).toBe(
+            "anthropic/claude-sonnet-4",
+        );
+    });
+});
+
 describe("runSubagent", () => {
     test("streams fragmented JSONL, tracks parallel tools, and aggregates each assistant once", async () => {
         const { result, snapshots } = await runFixture("success");
@@ -64,6 +89,16 @@ describe("runSubagent", () => {
         ).toBe(true);
         expect(result.details.run.activeTools).toEqual([]);
         expect(snapshots.at(-1)?.run.status).toBe("succeeded");
+    });
+
+    test("keeps the long model label through the final terminal snapshot", async () => {
+        const details = startingDetails();
+        details.run.model = "fixture/model:off";
+        const { result, snapshots } = await runFixture("success", { details });
+
+        expect(snapshots.at(-1)?.run.status).toBe("succeeded");
+        expect(snapshots.at(-1)?.run.model).toBe("fixture/model:off");
+        expect(result.details.run.model).toBe("fixture/model:off");
     });
 
     test("keeps malformed output as a bounded diagnostic without crashing", async () => {

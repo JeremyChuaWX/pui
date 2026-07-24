@@ -11,6 +11,7 @@ import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { PromptHistory } from "./prompt-history.js";
 import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
 import {
+    compactSubagentUsage,
     isTerminalSubagentStatus,
     type SubagentStatus,
     type SubagentViewModel,
@@ -132,7 +133,11 @@ export function App(props: { controller: PuiController }) {
     });
 
     createEffect(() => {
-        if (activeSubagentItems(snapshot.display).length === 0) return;
+        if (
+            activeSubagentItems(snapshot.display).length === 0 &&
+            !snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))
+        )
+            return;
         setElapsedNow(Date.now());
         const timer = setInterval(() => setElapsedNow(Date.now()), 1_000);
         onCleanup(() => clearInterval(timer));
@@ -283,6 +288,7 @@ export function App(props: { controller: PuiController }) {
         clearPrompt();
         if (action === "models") void openModels();
         if (action === "sessions") void openSessions();
+        if (action === "subagents") openSubagents();
         if (action === "commands") openCommands();
         if (action === "help") setDialog({ kind: "help" });
     }
@@ -339,6 +345,37 @@ export function App(props: { controller: PuiController }) {
         );
     }
 
+    function openSubagents(): void {
+        closePromptCompletions();
+        const jobs = [...snapshot.backgroundSubagents].sort((a, b) => b.updatedAt - a.updatedAt);
+        setDialog({
+            kind: "picker",
+            title: "Background subagents",
+            placeholder: "Search title, model, or status",
+            items: jobs.map((job) => {
+                const active = !isTerminalSubagentStatus(job.status);
+                const usage = compactSubagentUsage(job.usage);
+                return {
+                    label: `${subagentStatusIcon(job.status)} ${job.title}`,
+                    detail: `${job.status} · ${job.model}${usage ? ` · ${usage}` : ""}${active ? " · select to cancel" : ""}`,
+                    search: `${job.title} ${job.model} ${job.agent} ${job.status}`.toLowerCase(),
+                    action: () => {
+                        setDialog(undefined);
+                        if (active) {
+                            if (props.controller.cancelBackgroundSubagent(job.id))
+                                props.controller.notify(`Cancelling ${job.title}`, "warning");
+                        } else {
+                            props.controller.notify(
+                                `${job.title} · ${subagentStatusLabel(job.status)} · ${subagentElapsed(job)}`,
+                                job.status === "succeeded" ? "success" : "info",
+                            );
+                        }
+                    },
+                };
+            }),
+        });
+    }
+
     function openCommands(): void {
         closePromptCompletions();
         const command = (label: string, detail: string, action: () => void): PickerItem => ({
@@ -357,6 +394,7 @@ export function App(props: { controller: PuiController }) {
             items: [
                 command("Models", "Switch the active model", () => void openModels()),
                 command("Sessions", "Resume a previous session", () => void openSessions()),
+                command("Subagents", "Inspect or cancel background jobs", openSubagents),
                 command("New session", "Start with a clean conversation", () => void props.controller.newSession()),
                 command(
                     "Compact context",
@@ -771,13 +809,34 @@ function MessageItem(props: {
                 <box
                     marginTop={1}
                     border={["left"]}
-                    borderColor={customItem()?.label === "error" ? theme.error : theme.info}
+                    borderColor={
+                        customItem()?.label === "error"
+                            ? theme.error
+                            : customItem()?.label === "subagent-result"
+                              ? theme.success
+                              : theme.info
+                    }
                     paddingLeft={2}
+                    paddingTop={customItem()?.label === "subagent-result" ? 1 : 0}
+                    paddingBottom={customItem()?.label === "subagent-result" ? 1 : 0}
                 >
                     <text fg={customItem()?.label === "error" ? theme.error : theme.info}>
-                        {customItem()?.label || "message"}
+                        {customItem()?.label === "subagent-result"
+                            ? "✓ Background subagent result"
+                            : customItem()?.label || "message"}
                     </text>
-                    <text fg={theme.text}>{customItem()?.text}</text>
+                    <Show
+                        when={customItem()?.label === "subagent-result"}
+                        fallback={<text fg={theme.text}>{customItem()?.text}</text>}
+                    >
+                        <markdown
+                            syntaxStyle={syntaxStyle}
+                            content={customItem()?.text}
+                            conceal
+                            fg={theme.text}
+                            bg={theme.background}
+                        />
+                    </Show>
                 </box>
             </Match>
         </Switch>
@@ -1075,6 +1134,8 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 .filter((item): item is ToolDisplayItem => item.kind === "tool" && Boolean(item.subagent))
                 .map((item) => item.toolCallId),
         );
+    const backgroundSubagents = () =>
+        props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
     const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
 
     return (
@@ -1130,7 +1191,7 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 </text>
             </box>
 
-            <Show when={subagents().length > 0}>
+            <Show when={subagents().length > 0 || backgroundSubagents().length > 0}>
                 <box marginTop={1}>
                     <text fg={theme.text}>
                         <strong>Subagents</strong>
@@ -1138,10 +1199,36 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                     <For each={subagents()}>
                         {(item) => (
                             <text fg={subagentColor(item.subagent.status)} wrapMode="none">
-                                {subagentStatusIcon(item.subagent.status)} {item.subagent.agent} ·{" "}
-                                {subagentStatusLabel(item.subagent.status)} ·{" "}
+                                {subagentStatusIcon(item.subagent.status)} {item.subagent.agent} · {item.subagent.model}{" "}
+                                · {subagentStatusLabel(item.subagent.status)} ·{" "}
                                 {subagentElapsed(item.subagent, props.now)}
                             </text>
+                        )}
+                    </For>
+                    <For each={backgroundSubagents()}>
+                        {(job) => (
+                            <box marginBottom={1}>
+                                <text fg={subagentColor(job.status)} wrapMode="none">
+                                    {subagentStatusIcon(job.status)} {job.title}
+                                </text>
+                                <text fg={theme.muted} wrapMode="none">
+                                    {job.model} · {subagentStatusLabel(job.status)} · {subagentElapsed(job, props.now)}
+                                </text>
+                                <Show when={job.activeTools[0]}>
+                                    {(tool) => (
+                                        <text fg={theme.warning} wrapMode="none">
+                                            ◌ {tool().title}
+                                        </text>
+                                    )}
+                                </Show>
+                                <Show when={compactSubagentUsage(job.usage)}>
+                                    {(usage) => (
+                                        <text fg={theme.muted} wrapMode="none">
+                                            {usage()}
+                                        </text>
+                                    )}
+                                </Show>
+                            </box>
                         )}
                     </For>
                 </box>

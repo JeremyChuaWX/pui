@@ -13,7 +13,15 @@ import { BUNDLED_EXTENSION_FACTORIES, BUNDLED_SUBAGENT_SOURCE_PATH } from "./bun
 import { createPuiRuntime } from "./controller.js";
 
 const bundledTools = {
-    "<inline:pui-subagent>": ["subagent"],
+    "<inline:pui-file-search>": ["fd", "rg"],
+    "<inline:pui-subagent>": [
+        "subagent",
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_check",
+        "subagent_cancel",
+        "subagent_list",
+    ],
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
@@ -31,7 +39,11 @@ function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): 
 
 describe("bundled extensions", () => {
     test("exposes application-owned tools as named inline factories with the subagent source intact", async () => {
-        expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual(["pui-subagent", "pui-web"]);
+        expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual([
+            "pui-file-search",
+            "pui-subagent",
+            "pui-web",
+        ]);
         expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);
         expect((await fs.promises.stat(BUNDLED_SUBAGENT_SOURCE_PATH)).isFile()).toBe(true);
     });
