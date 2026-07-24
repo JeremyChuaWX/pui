@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerFileSearchExtension } from "./index.ts";
+
+const fixture = fileURLToPath(new URL("./fixtures/fake-search.mjs", import.meta.url));
+const fixtureCwd = path.dirname(fixture);
 
 function setup(overrides: any = {}) {
     const tools = new Map<string, any>();
@@ -53,7 +58,9 @@ describe("file-search extension", () => {
         });
         expect([...tools.keys()]).toEqual(["fd", "rg"]);
         expect((await execute(tools.get("fd"), { pattern: "--help" })).content[0].text).toBe("No matches found.");
-        await execute(tools.get("rg"), { pattern: "--version", fixed_strings: true });
+        expect((await execute(tools.get("rg"), { pattern: "--version", fixed_strings: true })).content[0].text).toBe(
+            "No matches found.",
+        );
         expect(calls[0]).toMatchObject({
             command: "/bin/fd",
             cwd: "/repo",
@@ -70,6 +77,13 @@ describe("file-search extension", () => {
             },
         });
         await expect(execute(missing.tools.get("fd"), {})).rejects.toThrow("Install fd");
+        const spawned = setup({
+            resolveRg: () => ({ command: path.join(fixtureCwd, "missing-rg"), source: "system" }),
+            run: undefined,
+        });
+        await expect(execute(spawned.tools.get("rg"), { pattern: "x" })).rejects.toThrow(
+            /ENOENT.*missing-rg|missing-rg.*ENOENT/,
+        );
         for (const [status, message] of [
             ["timed_out", "narrow the path"],
             ["cancelled", "cancelled"],

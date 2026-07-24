@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.ts";
+import {
+    createInitialSubagentDetails,
+    isSubagentDetailsV1,
+    MAX_SUBAGENT_ACTIVE_TOOLS,
+    type SubagentDetailsV1,
+    updateSubagentDetails,
+} from "./protocol.ts";
 import { compactToolTitle, getPiInvocation, resolveSubagentModelLabel, runSubagent } from "./runner.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
@@ -89,6 +95,26 @@ describe("runSubagent", () => {
         ).toBe(true);
         expect(result.details.run.activeTools).toEqual([]);
         expect(snapshots.at(-1)?.run.status).toBe("succeeded");
+    });
+
+    test("bounds snapshots while retaining omitted tools through their end events", async () => {
+        const { result, snapshots } = await runFixture("tool-overflow", { throttleMs: 0 });
+        const full = snapshots.find((item) => item.run.activeTools.at(-1)?.id === "tool-64");
+
+        expect(snapshots.every(isSubagentDetailsV1)).toBe(true);
+        expect(snapshots.every((item) => item.run.activeTools.length <= MAX_SUBAGENT_ACTIVE_TOOLS)).toBe(true);
+        expect(full?.run.activeTools[0]?.id).toBe("tool-1");
+        expect(full?.run.activeTools.at(-1)?.id).toBe("tool-64");
+        expect(
+            snapshots.some(
+                (item) =>
+                    item.run.recentActivity.at(-1)?.kind === "tool_end" &&
+                    item.run.activeTools.length === MAX_SUBAGENT_ACTIVE_TOOLS &&
+                    item.run.phase === "tool",
+            ),
+        ).toBe(true);
+        expect(result.details.run.status).toBe("succeeded");
+        expect(result.details.run.activeTools).toEqual([]);
     });
 
     test("keeps the long model label through the final terminal snapshot", async () => {

@@ -63,6 +63,26 @@ describe("pui formatting", () => {
         expect(completed).toEqual(expect.objectContaining({ kind: "assistant", streaming: false }));
     });
 
+    test("projects a resumed background result to its dedicated custom display", () => {
+        const [item] = buildDisplayItems([
+            {
+                role: "custom",
+                customType: "subagent-result",
+                content: "Background subagent fixture succeeded.",
+                display: true,
+                details: { id: "job-1", title: "fixture", status: "succeeded" },
+                timestamp: 1,
+            },
+        ] as AgentMessage[]);
+
+        expect(item).toEqual({
+            id: "0:1",
+            kind: "custom",
+            label: "subagent-result",
+            text: "Background subagent fixture succeeded.",
+        });
+    });
+
     test("formats compact token counts and tool labels", () => {
         expect(formatCount(1_250)).toBe("1.3k");
         expect(formatToolTitle("bash", { command: "git status" })).toBe("bash  git status");

@@ -55,6 +55,21 @@ describe("background subagent host protocol", () => {
         expect(parsed.job.activeTools[0]?.name).toBe("read");
     });
 
+    test("keeps background envelopes parseable at the producer active-tool maximum", () => {
+        const payload = event("upsert");
+        const run = (payload.job as any).run as any;
+        run.activeTools = Array.from({ length: 64 }, (_, index) => ({
+            id: `tool-${index}`,
+            name: "read",
+            title: `read ${index}`,
+            startedAt: index + 1,
+        }));
+        expect(parseBackgroundSubagentEvent(payload)).toBeDefined();
+
+        run.activeTools.push({ id: "tool-64", name: "read", title: "read 64", startedAt: 65 });
+        expect(parseBackgroundSubagentEvent(payload)).toBeUndefined();
+    });
+
     test("rejects malformed fields, mismatched ids, and unknown versions/types", () => {
         expect(parseBackgroundSubagentEvent(null)).toBeUndefined();
         expect(parseBackgroundSubagentEvent(event("ready", { version: 2 }))).toBeUndefined();

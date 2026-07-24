@@ -100,6 +100,13 @@ export async function runFileSearch(options: RunFileSearchOptions): Promise<File
     options.signal?.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => terminate("timed_out"), Math.max(0, options.timeoutMs ?? DEFAULT_TIMEOUT_MS));
 
+    const closeTask = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
+        let spawnError: Error | undefined;
+        child.once("error", (error) => {
+            spawnError = error;
+        });
+        child.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
+    });
     const stdoutTask = (async () => {
         for await (const chunk of child.stdout as Readable) await capture.write(chunk as Buffer);
     })();
@@ -112,22 +119,17 @@ export async function runFileSearch(options: RunFileSearchOptions): Promise<File
             stderrBytes += kept.length;
         }
     })();
-    const closeTask = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
-        let spawnError: Error | undefined;
-        child.once("error", (error) => {
-            spawnError = error;
-        });
-        child.once("close", (code, signal) => resolve({ code, signal, error: spawnError }));
-    });
 
     try {
         const closedResult = await closeTask;
         // A direct child may exit on SIGTERM while a descendant ignores it.
         if (reason && killTimer) sendSignal("SIGKILL");
         closed = true;
-        await Promise.all([stdoutTask, stderrTask]);
-        const output = await capture.finish();
+        const readers = await Promise.allSettled([stdoutTask, stderrTask]);
         if (closedResult.error) throw closedResult.error;
+        const readerError = readers.find((reader) => reader.status === "rejected");
+        if (readerError?.status === "rejected") throw readerError.reason;
+        const output = await capture.finish();
         const noMatches =
             (options.tool === "rg" || isRipgrepCommand(options.command)) &&
             closedResult.code === 1 &&

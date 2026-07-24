@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { MAX_SUBAGENT_ACTIVE_TOOLS as PRODUCER_MAX_ACTIVE_TOOLS } from "../extensions/subagent/protocol.ts";
 import {
     compactSubagentUsage,
     formatElapsed,
+    MAX_SUBAGENT_ACTIVE_TOOLS,
     normalizeSubagentDetails,
     subagentElapsed,
     subagentStatusIcon,
@@ -55,6 +57,19 @@ describe("subagent detail normalization", () => {
             "explore · openai/gpt-5.4-mini · running · 12s · 1 turn · 60 tokens",
         );
         expect(subagentSummary(view!, 13_000)).not.toContain("read src/controller.ts");
+    });
+
+    test("accepts the producer maximum and rejects oversized active-tool snapshots", () => {
+        expect(MAX_SUBAGENT_ACTIVE_TOOLS).toBe(PRODUCER_MAX_ACTIVE_TOOLS);
+        const tools = Array.from({ length: MAX_SUBAGENT_ACTIVE_TOOLS + 1 }, (_, index) => ({
+            id: `tool-${index}`,
+            name: "read",
+            title: `read ${index}`,
+            startedAt: index + 1,
+        }));
+
+        expect(normalizeSubagentDetails(protocolDetails({ activeTools: tools.slice(1) }))).toBeDefined();
+        expect(normalizeSubagentDetails(protocolDetails({ activeTools: tools }))).toBeUndefined();
     });
 
     test("recreates terminal protocol state and uses stable elapsed time", () => {

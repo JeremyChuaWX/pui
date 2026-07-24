@@ -1,6 +1,8 @@
 # File-search tools
 
-This application-owned extension registers `fd` for file discovery and `rg` for content search. pui bundles it automatically; regular `pi` does not. For standalone use:
+This application-owned extension registers `fd` for file discovery and `rg` for content search. pui bundles it automatically; regular `pi` does not. Tool-name conflicts follow Pi's normal load semantics: global and trusted project extensions load before pui's inline bundled extensions, the first registration of a name is the single active definition, and Pi reports later registrations as conflicts. Thus a discovered extension that registers `fd` or `rg` owns that name; pui still loads the bundled extension and all unrelated tools. `@` file completion remains host-owned and uses pui's system `fd`/`fdfind` resolver independently of which extension owns a model-facing tool name.
+
+For standalone use:
 
 ```sh
 pi -e /absolute/path/to/pui/extensions/file-search/index.ts

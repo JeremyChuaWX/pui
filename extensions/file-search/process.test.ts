@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { access, readFile, rm, stat } from "node:fs/promises";
+import { access, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
@@ -22,6 +23,23 @@ function run(scenario: string, options: Partial<Parameters<typeof runFileSearch>
         killGraceMs: 20,
         ...options,
     });
+}
+
+async function spillDirectories() {
+    return new Set((await readdir(tmpdir())).filter((entry) => entry.startsWith("pui-file-search-")));
+}
+
+async function expectDescendantStopped(pid: number) {
+    expect(pid).toBeGreaterThan(0);
+    for (let attempt = 0; attempt < 50; attempt++) {
+        try {
+            process.kill(pid, 0);
+            await Bun.sleep(10);
+        } catch {
+            return;
+        }
+    }
+    throw new Error(`descendant ${pid} remained alive`);
 }
 
 describe("FileSearchOutput", () => {
@@ -51,6 +69,23 @@ describe("runFileSearch", () => {
         expect(Buffer.byteLength(result.stderr)).toBe(64 * 1024);
     });
 
+    test.each([
+        ["missing executable", { command: path.join(cwd, "definitely-missing-search-command") }, "ENOENT"],
+        ["invalid cwd", { cwd: path.join(cwd, "definitely-missing-directory") }, "ENOENT"],
+    ] as const)("preserves the underlying spawn error and cleans its spill for %s", async (_name, options, code) => {
+        const before = await spillDirectories();
+        let error: NodeJS.ErrnoException | undefined;
+        try {
+            await run("small", options);
+        } catch (value) {
+            error = value as NodeJS.ErrnoException;
+        }
+        expect(error?.code).toBe(code);
+        expect(error?.message).toContain(code);
+        expect(error?.message).not.toContain("Premature close");
+        expect(await spillDirectories()).toEqual(before);
+    });
+
     test.each(["bytes", "lines"])("truncates %s output and retains the complete private spill", async (scenario) => {
         const result = await run(scenario);
         expect(result.truncated).toBe(true);
@@ -72,19 +107,23 @@ describe("runFileSearch", () => {
         expect((await run("hang", { signal: controller.signal })).status).toBe("cancelled");
     });
 
-    test.skipIf(process.platform === "win32")("kills descendants in the detached process group", async () => {
-        const result = await run("descendant", { timeoutMs: 30 });
-        const pid = Number(result.stderr.match(/descendant:(\d+)/)?.[1]);
-        expect(pid).toBeGreaterThan(0);
-        let alive = true;
-        for (let attempt = 0; attempt < 50 && alive; attempt++) {
-            try {
-                process.kill(pid, 0);
-                await Bun.sleep(10);
-            } catch {
-                alive = false;
-            }
-        }
-        expect(alive).toBe(false);
-    });
+    test.skipIf(process.platform === "win32")(
+        "kills descendants in the detached process group on timeout",
+        async () => {
+            const result = await run("descendant", { timeoutMs: 30 });
+            expect(result.status).toBe("timed_out");
+            await expectDescendantStopped(Number(result.stderr.match(/descendant:(\d+)/)?.[1]));
+        },
+    );
+
+    test.skipIf(process.platform === "win32")(
+        "kills descendants in the detached process group on cancellation",
+        async () => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 30);
+            const result = await run("descendant", { signal: controller.signal });
+            expect(result.status).toBe("cancelled");
+            await expectDescendantStopped(Number(result.stderr.match(/descendant:(\d+)/)?.[1]));
+        },
+    );
 });

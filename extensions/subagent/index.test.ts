@@ -2,6 +2,11 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+    BACKGROUND_SUBAGENT_VERSION,
+} from "./background-protocol.ts";
 import { registerSubagentExtension } from "./index.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
@@ -14,7 +19,23 @@ function fakePi() {
     let tool: any;
     const tools = new Map<string, any>();
     const handlers = new Map<string, Handler[]>();
+    const busHandlers = new Map<string, Set<(payload: any) => void>>();
+    const emitted: Array<{ channel: string; payload: any }> = [];
+    const events = {
+        emit(channel: string, payload: any) {
+            emitted.push({ channel, payload });
+            for (const handler of busHandlers.get(channel) ?? []) handler(payload);
+        },
+        on(channel: string, handler: (payload: any) => void) {
+            const listeners = busHandlers.get(channel) ?? new Set();
+            listeners.add(handler);
+            busHandlers.set(channel, listeners);
+            return () => listeners.delete(handler);
+        },
+    };
     const pi = {
+        events,
+        sendMessage() {},
         registerTool(definition: any) {
             tool = definition;
             tools.set(definition.name, definition);
@@ -29,6 +50,11 @@ function fakePi() {
             return tool;
         },
         tools,
+        events,
+        emitted,
+        listenerCount(channel: string) {
+            return busHandlers.get(channel)?.size ?? 0;
+        },
         handler(name: string) {
             const found = handlers.get(name)?.[0];
             if (!found) throw new Error(`Missing ${name} handler`);
@@ -427,6 +453,83 @@ describe("subagent extension integration", () => {
         releaseBackground?.();
         await blocking;
         expect(semaphore.active).toBe(0);
+    });
+
+    test("background controls reject stale or malformed envelopes and unsubscribe on shutdown", async () => {
+        const host = fakePi();
+        const running = new Map<string, AbortSignal>();
+        registerSubagentExtension(host.pi, {
+            semaphore: new AbortableSemaphore(8),
+            invocation: (args) => ({ command: "fake-pi", args }),
+            run: async (options) => {
+                running.set(options.details.run.id, options.signal!);
+                await new Promise<void>((resolve) =>
+                    options.signal!.addEventListener("abort", () => resolve(), { once: true }),
+                );
+                return {
+                    details: createTerminalSubagentDetails(options.details, {
+                        status: "cancelled",
+                        error: "control cancellation",
+                    }),
+                    output: "",
+                    stderr: "",
+                    exitCode: null,
+                    signal: "SIGTERM",
+                };
+            },
+        });
+        await host.handler("session_start")(
+            {},
+            {
+                sessionManager: { getSessionId: () => "current-session" },
+                isIdle: () => false,
+            },
+        );
+        const ready = host.emitted.find(({ payload }) => payload.type === "ready")!.payload;
+        const spawn = async (name: string) => {
+            const result = await host.tools
+                .get("subagent_spawn")
+                .execute(`spawn-${name}`, { prompt: name, cwd: extensionCwd }, undefined, undefined, {
+                    cwd: extensionCwd,
+                });
+            await waitUntil(() => running.has(result.details.id));
+            return result.details.id as string;
+        };
+        const control = (jobId: string, overrides: Record<string, unknown> = {}) => ({
+            schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+            version: BACKGROUND_SUBAGENT_VERSION,
+            sessionId: ready.sessionId,
+            instanceId: ready.instanceId,
+            type: "cancel",
+            jobId,
+            ...overrides,
+        });
+
+        const validId = await spawn("valid");
+        host.events.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, control(validId));
+        await waitUntil(() => running.get(validId)?.aborted === true);
+        await waitUntil(() =>
+            host.emitted.some(({ payload }) => payload.job?.id === validId && payload.job.run.status === "cancelled"),
+        );
+        expect((await host.tools.get("subagent_check").execute("check", { id: validId })).details.run.status).toBe(
+            "cancelled",
+        );
+
+        const rejected = [
+            { id: await spawn("stale session"), override: { sessionId: "stale-session" } },
+            { id: await spawn("stale instance"), override: { instanceId: "stale-instance" } },
+            { id: await spawn("malformed id"), override: { jobId: "" } },
+            { id: await spawn("unknown version"), override: { version: 2 } },
+        ];
+        for (const { id, override } of rejected)
+            host.events.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, control(id, override));
+        await Bun.sleep(10);
+        expect(rejected.map(({ id }) => running.get(id)?.aborted)).toEqual([false, false, false, false]);
+        expect(host.listenerCount(BACKGROUND_SUBAGENT_CONTROL_CHANNEL)).toBe(1);
+
+        await host.handler("session_shutdown")({ type: "session_shutdown", reason: "quit" });
+        expect(host.listenerCount(BACKGROUND_SUBAGENT_CONTROL_CHANNEL)).toBe(0);
+        for (const { id } of rejected) expect(running.get(id)?.aborted).toBe(true);
     });
 
     test("session shutdown aborts running work and leaves no saved failure state", async () => {

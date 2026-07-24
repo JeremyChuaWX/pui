@@ -37,6 +37,17 @@ if (scenario === "success") {
         offset = cut;
         await sleep(8);
     }
+} else if (scenario === "tool-overflow") {
+    for (let index = 0; index < 65; index++) {
+        process.stdout.write(
+            `${JSON.stringify({ type: "tool_execution_start", toolCallId: `tool-${index}`, toolName: "read", args: { path: String(index) }, timestamp: index + 1 })}\n`,
+        );
+    }
+    // tool-0 is omitted from the newest-64 wire view but must remain tracked internally.
+    process.stdout.write(
+        `${JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-0", toolName: "read", timestamp: 66 })}\n`,
+    );
+    process.stdout.write(finalEvent("overflow complete"));
 } else if (scenario === "malformed-success") {
     process.stdout.write("not-json\n");
     process.stdout.write(finalEvent("recovered output"));
@@ -56,6 +67,13 @@ if (scenario === "success") {
     const descendant = spawn(process.execPath, ["-e", 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {
         stdio: "ignore",
     });
+    if (process.argv[3]) {
+        const fs = await import("node:fs/promises");
+        const pidPath = process.argv[3];
+        const temporaryPath = `${pidPath}.${process.pid}.tmp`;
+        await fs.writeFile(temporaryPath, `${process.pid}:${descendant.pid}`);
+        await fs.rename(temporaryPath, pidPath);
+    }
     process.stderr.write(`descendant:${descendant.pid}\n`);
     setInterval(() => {}, 1000);
 } else if (scenario === "large-stderr-failure") {

@@ -15,7 +15,9 @@ describe("background subagent control protocol", () => {
         expect(parseBackgroundSubagentControl(valid)).toEqual(valid);
         expect(parseBackgroundSubagentControl({ ...valid, version: 2 })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, type: "steer" })).toBeUndefined();
+        expect(parseBackgroundSubagentControl({ ...valid, jobId: "" })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, jobId: "x".repeat(257) })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, sessionId: "" })).toBeUndefined();
+        expect(parseBackgroundSubagentControl({ ...valid, instanceId: null })).toBeUndefined();
     });
 });

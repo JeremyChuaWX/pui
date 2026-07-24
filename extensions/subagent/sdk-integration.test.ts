@@ -58,6 +58,179 @@ test("installed resource loader can load the extension source and its local modu
     }
 });
 
+test("background delivery persists once on resume and wait consumption suppresses delivery", async () => {
+    for (const consumeWithWait of [false, true]) {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-background-sdk-test-"));
+        const sessionDir = path.join(temp, "sessions");
+        const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+        const modelRuntime = await ModelRuntime.create({
+            authPath: path.join(temp, "auth.json"),
+            modelsPath: null,
+            allowModelNetwork: false,
+        });
+        let turn = 0;
+        const requestedTitle = "T".repeat(200);
+        modelRuntime.registerProvider("fixture-background", {
+            api: "fixture-api",
+            baseUrl: "http://fixture.invalid",
+            apiKey: "fixture-key",
+            models: [
+                {
+                    id: "fixture-background-model",
+                    name: "Fixture Background Model",
+                    api: "fixture-api",
+                    reasoning: false,
+                    input: ["text"],
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 64_000,
+                    maxTokens: 1_000,
+                },
+            ],
+            streamSimple: (_model, context) => {
+                const stream = createAssistantMessageEventStream();
+                const currentTurn = turn++;
+                void (async () => {
+                    let content: any[];
+                    let stopReason: "toolUse" | "stop";
+                    if (currentTurn === 0) {
+                        content = [
+                            {
+                                type: "toolCall",
+                                id: "spawn-background",
+                                name: "subagent_spawn",
+                                arguments: { prompt: "Produce the large fixture", cwd: temp, name: requestedTitle },
+                            },
+                        ];
+                        stopReason = "toolUse";
+                    } else if (consumeWithWait && currentTurn === 1) {
+                        const spawnResult = context.messages.find(
+                            (message) => message.role === "toolResult" && message.toolCallId === "spawn-background",
+                        );
+                        const text =
+                            spawnResult?.role === "toolResult" && spawnResult.content[0]?.type === "text"
+                                ? spawnResult.content[0].text
+                                : "";
+                        const id = text.match(/[0-9a-f]{8}-[0-9a-f-]{27}/i)?.[0];
+                        if (!id) throw new Error("Missing background id in spawn result");
+                        content = [
+                            {
+                                type: "toolCall",
+                                id: "wait-background",
+                                name: "subagent_wait",
+                                arguments: { ids: [id] },
+                            },
+                        ];
+                        stopReason = "toolUse";
+                    } else {
+                        // Keep the parent active long enough to exercise deferred delivery.
+                        if (!consumeWithWait && currentTurn === 1) await Bun.sleep(40);
+                        content = [{ type: "text", text: "Parent settled." }];
+                        stopReason = "stop";
+                    }
+                    const message = parentMessage(content, stopReason);
+                    stream.push({ type: "start", partial: message });
+                    stream.push({ type: "done", reason: stopReason, message });
+                })();
+                return stream;
+            },
+        });
+        const model = modelRuntime.getModel("fixture-background", "fixture-background-model");
+        if (!model) throw new Error("Fixture model was not registered");
+        const fullOutput = `${"background output\n".repeat(1_000)}tail marker`;
+        const loader = new DefaultResourceLoader({
+            cwd: temp,
+            agentDir: temp,
+            settingsManager: settings,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+            extensionFactories: [
+                {
+                    name: "subagent-background-sdk-fixture",
+                    factory: (pi) =>
+                        registerSubagentExtension(pi, {
+                            semaphore: new AbortableSemaphore(1),
+                            invocation: (args) => ({ command: "fake-pi", args }),
+                            run: async (options) => {
+                                await Bun.sleep(20);
+                                const details = createTerminalSubagentDetails(options.details, {
+                                    status: "succeeded",
+                                    outputPreview: "background output",
+                                });
+                                options.onSnapshot?.(details);
+                                return { details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
+                            },
+                        }),
+                },
+            ],
+        });
+        await loader.reload();
+        const manager = SessionManager.create(temp, sessionDir);
+        const { session } = await createAgentSession({
+            cwd: temp,
+            agentDir: temp,
+            model,
+            modelRuntime,
+            resourceLoader: loader,
+            settingsManager: settings,
+            sessionManager: manager,
+            tools: ["subagent_spawn", "subagent_wait"],
+        });
+        let outputDirectory: string | undefined;
+        try {
+            await session.prompt("Start the background fixture.");
+            await session.agent.waitForIdle();
+            const sessionFile = manager.getSessionFile();
+            if (!sessionFile) throw new Error("Expected a persisted session file");
+            const reopened = SessionManager.open(sessionFile, sessionDir);
+            const branch = reopened.getBranch();
+            const results = branch.filter(
+                (entry) => entry.type === "custom_message" && entry.customType === "subagent-result",
+            );
+            expect(results).toHaveLength(consumeWithWait ? 0 : 1);
+            if (consumeWithWait) {
+                const waitEntry = branch.find(
+                    (entry) =>
+                        entry.type === "message" &&
+                        entry.message.role === "toolResult" &&
+                        entry.message.toolCallId === "wait-background",
+                );
+                const outputPath =
+                    waitEntry?.type === "message" && waitEntry.message.role === "toolResult"
+                        ? (waitEntry.message.details as any)?.results?.[0]?.fullOutputPath
+                        : undefined;
+                expect(outputPath).toBeString();
+                if (typeof outputPath === "string") {
+                    outputDirectory = path.dirname(outputPath);
+                    expect(await fs.promises.readFile(outputPath, "utf8")).toBe(fullOutput);
+                }
+            } else {
+                const result = results[0];
+                if (result?.type !== "custom_message") throw new Error("Missing resumed background result");
+                expect(result.display).toBe(true);
+                expect(result.details).toEqual({
+                    id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+                    title: "T".repeat(160),
+                    status: "succeeded",
+                });
+                expect(result.content).toContain("Output truncated for delivery");
+                const outputPath = String(result.content).match(/Full output: ([^\]\n]+)/)?.[1];
+                expect(outputPath).toBeTruthy();
+                if (outputPath) {
+                    outputDirectory = path.dirname(outputPath);
+                    expect(await fs.promises.readFile(outputPath, "utf8")).toBe(fullOutput);
+                }
+            }
+        } finally {
+            session.dispose();
+            await settings.flush();
+            if (outputDirectory) await fs.promises.rm(outputDirectory, { recursive: true, force: true });
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    }
+});
+
 test("installed AgentSession transports parallel updates and persists success and failure details", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-sdk-test-"));
     const sessionDir = path.join(temp, "sessions");
