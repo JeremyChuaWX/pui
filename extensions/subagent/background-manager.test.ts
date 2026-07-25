@@ -338,6 +338,64 @@ describe("BackgroundSubagentManager", () => {
         await manager.shutdown(500);
     });
 
+    test("does not prune a terminal snapshot before its result is ready", async () => {
+        let runCount = 0;
+        let releaseSave!: () => void;
+        let saveStarted = false;
+        const deliveries: any[] = [];
+        const semaphore = new AbortableSemaphore(64);
+        const manager = new BackgroundSubagentManager({
+            semaphore,
+            emit: () => {},
+            deliver: (value) => deliveries.push(value),
+            isIdle: () => true,
+            invocation: (args) => ({ command: "fake", args }),
+            outputStore: {
+                save: async () => {
+                    saveStarted = true;
+                    await new Promise<void>((resolve) => (releaseSave = resolve));
+                    return "/tmp/full-output";
+                },
+                cleanup: async () => {},
+            },
+            run: async (options) => {
+                const index = runCount++;
+                if (index > 0)
+                    await new Promise<void>((resolve) =>
+                        options.signal?.addEventListener("abort", () => resolve(), { once: true }),
+                    );
+                const details = createTerminalSubagentDetails(options.details, {
+                    status: options.signal?.aborted ? "cancelled" : "succeeded",
+                });
+                return {
+                    details,
+                    output: index === 0 ? "x".repeat(20_000) : "ok",
+                    stderr: "",
+                    exitCode: 0,
+                    signal: null,
+                };
+            },
+        });
+        try {
+            const first = await manager.spawn({ prompt: "spill", cwd }, cwd);
+            await waitUntil(() => saveStarted);
+            for (let index = 0; index < 63; index++) await manager.spawn({ prompt: `active ${index}`, cwd }, cwd);
+            await waitUntil(() => semaphore.active === 63);
+
+            await expect(manager.spawn({ prompt: "must not prune spill", cwd }, cwd)).rejects.toThrow("more than 64");
+            expect(manager.check(first.id).run.status).toBe("succeeded");
+            expect(semaphore.active).toBe(63);
+            const waiting = manager.wait([first.id]);
+            releaseSave();
+            expect((await waiting).map((result) => result.id)).toEqual([first.id]);
+            manager.flushDeferred();
+            expect(deliveries).toHaveLength(0);
+        } finally {
+            releaseSave?.();
+            await manager.shutdown();
+        }
+    });
+
     test("prunes oldest terminal jobs above 64", async () => {
         const deliveries: any[] = [];
         const manager = new BackgroundSubagentManager({

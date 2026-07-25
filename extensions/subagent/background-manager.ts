@@ -46,6 +46,7 @@ export interface BackgroundManagerOptions {
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
     deliver: (result: BackgroundTerminalResult) => void;
     isIdle?: () => boolean;
+    outputStore?: Pick<SessionOutputStore, "save" | "cleanup">;
 }
 export interface BackgroundTerminalResult {
     id: string;
@@ -113,9 +114,11 @@ export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
-    private readonly outputStore = new SessionOutputStore();
+    private readonly outputStore: Pick<SessionOutputStore, "save" | "cleanup">;
     private shuttingDown = false;
-    constructor(private readonly options: BackgroundManagerOptions) {}
+    constructor(private readonly options: BackgroundManagerOptions) {
+        this.outputStore = options.outputStore ?? new SessionOutputStore();
+    }
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {
         if (this.shuttingDown) throw new Error("Background subagent manager is shutting down.");
@@ -356,7 +359,7 @@ export class BackgroundSubagentManager {
         while (this.jobs.size > limit) {
             const oldest = [...this.jobs.values()].find(
                 (job) =>
-                    isTerminalSubagentStatus(job.snapshot.run.status) &&
+                    job.terminal !== undefined &&
                     !this.deferred.has(job.snapshot.id) &&
                     (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
             );
