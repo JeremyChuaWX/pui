@@ -172,10 +172,17 @@ describe("file-search extension", () => {
     test("cleans output that finishes after session shutdown", async () => {
         let cleaned = false;
         let finish!: (value: any) => void;
+        let signalRunStarted!: () => void;
+        const runStarted = new Promise<void>((resolve) => (signalRunStarted = resolve));
         const { tools, handlers } = setup({
-            run: () => new Promise((resolve) => (finish = resolve)),
+            run: () =>
+                new Promise((resolve) => {
+                    finish = resolve;
+                    signalRunStarted();
+                }),
         });
         const execution = execute(tools.get("rg"), { pattern: "x" });
+        await runStarted;
         await handlers.get("session_shutdown")!();
         finish({
             status: "succeeded",

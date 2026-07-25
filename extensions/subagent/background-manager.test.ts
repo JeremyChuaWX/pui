@@ -94,7 +94,7 @@ describe("BackgroundSubagentManager", () => {
         await fixture.manager.wait([job.id]);
     });
 
-    test("a wait aborted as the job becomes terminal does not suppress delivery", async () => {
+    test("a wait aborted during terminal spill delivers exactly once", async () => {
         const abort = new AbortController();
         const deliveries: any[] = [];
         let finish!: () => void;
@@ -110,7 +110,7 @@ describe("BackgroundSubagentManager", () => {
                 await new Promise<void>((resolve) => (finish = resolve));
                 const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
                 options.onSnapshot?.(details);
-                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+                return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ prompt: "race", cwd }, cwd);
@@ -120,7 +120,12 @@ describe("BackgroundSubagentManager", () => {
         await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
         await waitUntil(() => deliveries.length === 1);
         expect(deliveries.map((result) => result.id)).toEqual([job.id]);
+        expect(deliveries[0].fullOutputPath).toBeString();
+        expect(await manager.wait([job.id])).toEqual([]);
+        manager.flushDeferred();
+        expect(deliveries).toHaveLength(1);
         expect(manager.check(job.id).run.status).toBe("succeeded");
+        await manager.shutdown();
     });
 
     test("multiple successful waiters consume one terminal result without automatic delivery", async () => {
@@ -258,10 +263,12 @@ describe("BackgroundSubagentManager", () => {
     });
 
     test("keeps settlement successful when host delivery throws", async () => {
+        let deliveryAttempts = 0;
         const manager = new BackgroundSubagentManager({
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: () => {
+                deliveryAttempts++;
                 throw new Error("host unavailable");
             },
             isIdle: () => true,
@@ -272,9 +279,13 @@ describe("BackgroundSubagentManager", () => {
             },
         });
         const job = await manager.spawn({ prompt: "deliver", cwd }, cwd);
-        await expect(manager.wait([job.id])).resolves.toEqual([
-            expect.objectContaining({ id: job.id, status: "succeeded" }),
+        await waitUntil(() => deliveryAttempts === 1);
+        await expect(manager.cancel([job.id])).resolves.toEqual([
+            expect.objectContaining({ id: job.id, run: expect.objectContaining({ status: "succeeded" }) }),
         ]);
+        expect(() => manager.flushDeferred()).not.toThrow();
+        await expect(manager.wait([job.id])).resolves.toEqual([]);
+        expect(deliveryAttempts).toBe(1);
     });
 
     test("host emit exceptions cannot reject settlement, cancellation, shutdown, or pruning", async () => {

@@ -42,7 +42,14 @@ const RgParams = Type.Object({
     fixed_strings: Type.Optional(Type.Boolean({ description: "Treat pattern literally instead of as a regex." })),
     hidden: Type.Optional(Type.Boolean()),
     context: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
-    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000, default: 100 })),
+    limit: Type.Optional(
+        Type.Integer({
+            minimum: 1,
+            maximum: 1000,
+            default: 100,
+            description: "Maximum matches per file (rg --max-count).",
+        }),
+    ),
 });
 
 function result(binary: SystemBinary, execution: FileSearchProcessResult) {

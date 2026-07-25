@@ -590,7 +590,7 @@ describe("subagent extension integration", () => {
             .get("subagent_wait")
             .execute("wait-late", { ids: [spawned.details.id] }, controller.signal);
         controller.abort();
-        await expect(waiting).rejects.toThrow();
+        await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
 
         finish?.();
         await waitUntil(() => host.sent.some(({ message }) => message.details?.id === spawned.details.id));

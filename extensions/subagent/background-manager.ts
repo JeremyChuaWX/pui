@@ -60,6 +60,7 @@ interface Job {
     settlement: Promise<void>;
     output: string;
     terminal?: BackgroundTerminalResult;
+    terminalConsumed: boolean;
 }
 
 function titleFor(input: SpawnInput): string {
@@ -147,6 +148,7 @@ export class BackgroundSubagentManager {
             controller,
             settlement: Promise.resolve(),
             output: "",
+            terminalConsumed: false,
         };
         this.jobs.set(id, job);
         this.emit(job);
@@ -165,7 +167,10 @@ export class BackgroundSubagentManager {
     }
 
     async wait(ids: string[], signal?: AbortSignal): Promise<BackgroundTerminalResult[]> {
-        const jobs = [...new Set(ids)].map((id) => this.require(id));
+        const requested = [...new Set(ids)].map((id) => this.require(id));
+        // Waiters already present when a result settles share ownership. A wait begun
+        // after automatic or explicit delivery must not replay that result.
+        const jobs = requested.filter((job) => !job.terminalConsumed);
         for (const job of jobs)
             this.waitInterest.set(job.snapshot.id, (this.waitInterest.get(job.snapshot.id) ?? 0) + 1);
         let abortListener: (() => void) | undefined;
@@ -190,6 +195,7 @@ export class BackgroundSubagentManager {
             return jobs.map((job) => {
                 this.deferred.delete(job.snapshot.id);
                 if (!job.terminal) throw new Error(`Background subagent ${job.snapshot.id} did not settle correctly.`);
+                job.terminalConsumed = true;
                 const result = boundedResult(job.terminal, Math.min(WAIT_JOB_BYTES, remaining));
                 remaining -= Buffer.byteLength(result.text);
                 return result;
@@ -203,7 +209,7 @@ export class BackgroundSubagentManager {
                     this.waitInterest.delete(job.snapshot.id);
                     if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle?.()) {
                         this.deferred.delete(job.snapshot.id);
-                        this.deliver(job.terminal);
+                        this.consumeAndDeliver(job);
                     }
                 }
             }
@@ -219,14 +225,10 @@ export class BackgroundSubagentManager {
 
     flushDeferred(): void {
         if (this.shuttingDown) return;
-        for (const [id, result] of this.deferred) {
+        for (const [id] of this.deferred) {
             if ((this.waitInterest.get(id) ?? 0) > 0) continue;
             this.deferred.delete(id);
-            try {
-                this.options.deliver(boundedResult(result, AUTO_RESULT_BYTES));
-            } catch {
-                // Host delivery failures must not reject or duplicate settled jobs.
-            }
+            this.consumeAndDeliver(this.require(id));
         }
     }
 
@@ -263,9 +265,11 @@ export class BackgroundSubagentManager {
             // Host UI failures must not affect job lifecycle promises.
         }
     }
-    private deliver(result: BackgroundTerminalResult): void {
+    private consumeAndDeliver(job: Job): void {
+        if (!job.terminal || job.terminalConsumed) return;
+        job.terminalConsumed = true;
         try {
-            this.options.deliver(boundedResult(result, AUTO_RESULT_BYTES));
+            this.options.deliver(boundedResult(job.terminal, AUTO_RESULT_BYTES));
         } catch {
             // Host delivery failures must not reject or duplicate settled jobs.
         }
@@ -343,7 +347,7 @@ export class BackgroundSubagentManager {
         });
         if (!this.shuttingDown) {
             if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
-            else if (this.options.isIdle?.()) this.deliver(job.terminal);
+            else if (this.options.isIdle?.()) this.consumeAndDeliver(job);
             else this.deferred.set(job.snapshot.id, job.terminal);
         }
         this.prune();
