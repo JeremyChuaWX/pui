@@ -39,22 +39,29 @@ function boundedStderr(chunks: Buffer[]): string {
     return kept.join("");
 }
 
+function cancelledResult(): FileSearchProcessResult {
+    return {
+        status: "cancelled",
+        output: "",
+        count: 0,
+        totalBytes: 0,
+        truncated: false,
+        stderr: "",
+        exitCode: null,
+        signal: null,
+    };
+}
+
 /** Execute a search binary directly, with bounded capture and process-tree termination. */
 export async function runFileSearch(options: RunFileSearchOptions): Promise<FileSearchProcessResult> {
-    if (options.signal?.aborted) {
-        return {
-            status: "cancelled",
-            output: "",
-            count: 0,
-            totalBytes: 0,
-            truncated: false,
-            stderr: "",
-            exitCode: null,
-            signal: null,
-        };
-    }
+    if (options.signal?.aborted) return cancelledResult();
 
     const capture = await FileSearchOutput.create();
+    if (options.signal?.aborted) {
+        await capture.discard();
+        return cancelledResult();
+    }
+
     let child: ReturnType<typeof nodeSpawn>;
     try {
         child = nodeSpawn(options.command, [...options.args], {

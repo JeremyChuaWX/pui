@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { access, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -107,6 +107,24 @@ describe("runFileSearch", () => {
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 20);
         expect((await run("hang", { signal: controller.signal })).status).toBe("cancelled");
+    });
+
+    test("handles abort while creating the output capture", async () => {
+        const before = await spillDirectories();
+        const controller = new AbortController();
+        const originalCreate = FileSearchOutput.create;
+        const create = spyOn(FileSearchOutput, "create").mockImplementation(async () => {
+            const capture = await originalCreate.call(FileSearchOutput);
+            controller.abort();
+            return capture;
+        });
+
+        try {
+            expect((await run("hang", { signal: controller.signal, timeoutMs: 20 })).status).toBe("cancelled");
+            expect(await spillDirectories()).toEqual(before);
+        } finally {
+            create.mockRestore();
+        }
     });
 
     test.skipIf(process.platform === "win32")(
