@@ -1,0 +1,12 @@
+# Sourcery analyzes supported source languages by default. Exclude the
+# repository's non-code file types so PR reviews stay focused on source files.
+ignore:
+  - .git/
+  - dist/
+  - node_modules/
+  - '*.json'
+  - '*.lock'
+  - '*.md'
+  - '*.toml'
+  - '*.yaml'
+  - '*.yml'

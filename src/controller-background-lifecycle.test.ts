@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -22,7 +23,7 @@ async function waitUntil(predicate: () => boolean, description: string): Promise
     const deadline = Date.now() + 10_000;
     while (!predicate()) {
         if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        await Bun.sleep(5);
     }
 }
 
@@ -46,7 +47,7 @@ async function createHarness(temp: string) {
     const bus = createEventBus();
     const lifecycleEvents: any[] = [];
     bus.on("pui.subagent.background", (event) => lifecycleEvents.push(event));
-    let run = 0;
+    const pidPaths: string[] = [];
     const factory = async ({ cwd: runtimeCwd, sessionManager, sessionStartEvent }: any) => {
         const services = await createAgentSessionServices({
             cwd: runtimeCwd,
@@ -59,10 +60,14 @@ async function createHarness(temp: string) {
                         factory: (pi: any) =>
                             registerSubagentExtension(pi, {
                                 semaphore: new AbortableSemaphore(1),
-                                invocation: () => ({
-                                    command: process.execPath,
-                                    args: [fixtureChild, "descendant-hang", path.join(temp, `descendant-${run++}.pid`)],
-                                }),
+                                invocation: () => {
+                                    const pidPath = path.join(temp, `descendant-${randomUUID()}.pid`);
+                                    pidPaths.push(pidPath);
+                                    return {
+                                        command: process.execPath,
+                                        args: [fixtureChild, "descendant-hang", pidPath],
+                                    };
+                                },
                             }),
                     },
                 ],
@@ -90,7 +95,7 @@ async function createHarness(temp: string) {
     await (controller as unknown as { bindSession(session: typeof runtime.session): Promise<void> }).bindSession(
         runtime.session,
     );
-    return { bus, controller, cwd, lifecycleEvents, runtime };
+    return { bus, controller, cwd, lifecycleEvents, pidPaths, runtime };
 }
 
 function backgroundMessages(session: AgentSessionRuntime["session"]): unknown[] {
@@ -106,8 +111,6 @@ describe("controller background runtime lifecycle", () => {
             const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-background-lifecycle-"));
             const harness = await createHarness(temp);
             const { bus, controller, lifecycleEvents, runtime } = harness;
-            let spawnIndex = 0;
-
             const exercise = async (transition: () => Promise<unknown>) => {
                 const oldSession = runtime.session;
                 const ready = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
@@ -115,13 +118,14 @@ describe("controller background runtime lifecycle", () => {
                 const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "subagent_spawn");
                 if (!spawn) throw new Error("Missing background spawn tool");
                 const result = await spawn.execute(
-                    `spawn-${spawnIndex}`,
-                    { prompt: `active child ${spawnIndex}`, cwd: harness.cwd },
+                    `spawn-${randomUUID()}`,
+                    { prompt: "active child", cwd: harness.cwd },
                     new AbortController().signal,
                     undefined,
                 );
                 const jobId = (result.details as any).id as string;
-                const pidPath = path.join(temp, `descendant-${spawnIndex++}.pid`);
+                const pidPath = harness.pidPaths.at(-1);
+                if (!pidPath) throw new Error("Missing recorded descendant pid path");
                 await waitUntil(() => fs.existsSync(pidPath), "descendant pid file");
                 const [childPid, descendantPid] = (await fs.promises.readFile(pidPath, "utf8")).split(":").map(Number);
                 expect(isAlive(childPid!)).toBe(true);
@@ -209,7 +213,8 @@ describe("controller background runtime lifecycle", () => {
                     new AbortController().signal,
                     undefined,
                 );
-                const pidPath = path.join(temp, `descendant-${spawnIndex}.pid`);
+                const pidPath = harness.pidPaths.at(-1);
+                if (!pidPath) throw new Error("Missing recorded final descendant pid path");
                 await waitUntil(() => fs.existsSync(pidPath), "final descendant pid file");
                 const [childPid, descendantPid] = (await fs.promises.readFile(pidPath, "utf8")).split(":").map(Number);
                 expect(isAlive(childPid!)).toBe(true);

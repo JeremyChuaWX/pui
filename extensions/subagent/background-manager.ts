@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
+import { SessionOutputStore } from "./output-store.js";
 import {
     AGENTS,
     type AgentName,
@@ -98,17 +96,6 @@ function copyJob(job: Job): BackgroundSubagentJobV1 {
     }));
     return snapshot;
 }
-async function saveOutput(output: string): Promise<string | undefined> {
-    try {
-        const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-        await fs.promises.chmod(directory, 0o700);
-        const file = path.join(directory, "output.md");
-        await fs.promises.writeFile(file, output, { encoding: "utf8", mode: 0o600 });
-        return file;
-    } catch {
-        return undefined;
-    }
-}
 function boundedResult(result: BackgroundTerminalResult, bytes: number): BackgroundTerminalResult {
     const cap = Math.max(0, bytes);
     const truncation = truncateUtf8(result.text, cap);
@@ -125,6 +112,7 @@ export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
+    private readonly outputStore = new SessionOutputStore();
     private shuttingDown = false;
     constructor(private readonly options: BackgroundManagerOptions) {}
 
@@ -161,7 +149,7 @@ export class BackgroundSubagentManager {
             output: "",
         };
         this.jobs.set(id, job);
-        this.options.emit(copyJob(job));
+        this.emit(job);
         this.prune();
         // Deliberately detach only after all synchronous/async validation succeeds.
         job.settlement = this.execute(job, input.prompt, agentName, model, cwd);
@@ -181,6 +169,7 @@ export class BackgroundSubagentManager {
         for (const job of jobs)
             this.waitInterest.set(job.snapshot.id, (this.waitInterest.get(job.snapshot.id) ?? 0) + 1);
         let abortListener: (() => void) | undefined;
+        let consumed = false;
         try {
             const settlement = Promise.all(jobs.map((job) => job.settlement));
             if (signal) {
@@ -197,6 +186,7 @@ export class BackgroundSubagentManager {
                 await settlement;
             }
             let remaining = WAIT_TOTAL_BYTES;
+            consumed = true;
             return jobs.map((job) => {
                 this.deferred.delete(job.snapshot.id);
                 if (!job.terminal) throw new Error(`Background subagent ${job.snapshot.id} did not settle correctly.`);
@@ -209,7 +199,13 @@ export class BackgroundSubagentManager {
             for (const job of jobs) {
                 const count = (this.waitInterest.get(job.snapshot.id) ?? 1) - 1;
                 if (count > 0) this.waitInterest.set(job.snapshot.id, count);
-                else this.waitInterest.delete(job.snapshot.id);
+                else {
+                    this.waitInterest.delete(job.snapshot.id);
+                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle?.()) {
+                        this.deferred.delete(job.snapshot.id);
+                        this.deliver(job.terminal);
+                    }
+                }
             }
         }
     }
@@ -224,6 +220,7 @@ export class BackgroundSubagentManager {
     flushDeferred(): void {
         if (this.shuttingDown) return;
         for (const [id, result] of this.deferred) {
+            if ((this.waitInterest.get(id) ?? 0) > 0) continue;
             this.deferred.delete(id);
             try {
                 this.options.deliver(boundedResult(result, AUTO_RESULT_BYTES));
@@ -250,6 +247,7 @@ export class BackgroundSubagentManager {
         ]);
         if (timer) clearTimeout(timer);
         this.deferred.clear();
+        await this.outputStore.cleanup();
     }
 
     private require(id: string): Job {
@@ -257,9 +255,24 @@ export class BackgroundSubagentManager {
         if (!job) throw new Error(`Unknown background subagent job: ${id}`);
         return job;
     }
+    private emit(job: Job, type?: "upsert" | "remove"): void {
+        if (this.shuttingDown) return;
+        try {
+            this.options.emit(copyJob(job), type);
+        } catch {
+            // Host UI failures must not affect job lifecycle promises.
+        }
+    }
+    private deliver(result: BackgroundTerminalResult): void {
+        try {
+            this.options.deliver(boundedResult(result, AUTO_RESULT_BYTES));
+        } catch {
+            // Host delivery failures must not reject or duplicate settled jobs.
+        }
+    }
     private publish(job: Job, details: SubagentDetailsV1): void {
         job.snapshot = { ...job.snapshot, run: details.run };
-        if (!this.shuttingDown) this.options.emit(copyJob(job));
+        this.emit(job);
     }
     private async execute(
         job: Job,
@@ -316,7 +329,7 @@ export class BackgroundSubagentManager {
         const hard = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DELIVERY_MAX_LINES });
         const needsDeliverySpill = hard.truncated || truncateUtf8(output, AUTO_RESULT_BYTES).truncated;
         const fullOutputPath =
-            (needsDeliverySpill ? await saveOutput(output) : undefined) ?? details.run.fullOutputPath;
+            (needsDeliverySpill ? await this.outputStore.save(output) : undefined) ?? details.run.fullOutputPath;
         if (fullOutputPath) {
             details = updateSubagentDetails(details, { fullOutputPath }, (this.options.now ?? Date.now)());
             this.publish(job, details);
@@ -328,25 +341,24 @@ export class BackgroundSubagentManager {
             text: hard.content,
             ...(fullOutputPath ? { fullOutputPath } : {}),
         });
-        if (!this.shuttingDown && (this.waitInterest.get(job.snapshot.id) ?? 0) === 0) {
-            if (this.options.isIdle?.()) {
-                try {
-                    this.options.deliver(boundedResult(job.terminal, AUTO_RESULT_BYTES));
-                } catch {
-                    // Host delivery failures must not reject or duplicate settled jobs.
-                }
-            } else this.deferred.set(job.snapshot.id, job.terminal);
+        if (!this.shuttingDown) {
+            if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
+            else if (this.options.isIdle?.()) this.deliver(job.terminal);
+            else this.deferred.set(job.snapshot.id, job.terminal);
         }
         this.prune();
     }
     private prune(limit = MAX_JOBS): void {
         while (this.jobs.size > limit) {
             const oldest = [...this.jobs.values()].find(
-                (job) => isTerminalSubagentStatus(job.snapshot.run.status) && !this.deferred.has(job.snapshot.id),
+                (job) =>
+                    isTerminalSubagentStatus(job.snapshot.run.status) &&
+                    !this.deferred.has(job.snapshot.id) &&
+                    (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
             );
             if (!oldest) break;
             this.jobs.delete(oldest.snapshot.id);
-            if (!this.shuttingDown) this.options.emit(copyJob(oldest), "remove");
+            this.emit(oldest, "remove");
         }
     }
 }

@@ -5,7 +5,7 @@
     "triggerOnDrafts": false,
     "includeBranches": ["main"],
     "excludeAuthors": ["dependabot[bot]", "renovate[bot]"],
-    "ignorePatterns": "dist/**\nnode_modules/**\nbun.lock",
+    "ignorePatterns": "*\n!*/\n!*.ts\n!*.tsx\n!*.js\n!*.jsx\n!*.mts\n!*.cts\n!*.mjs\n!*.cjs\n!*.sh\ndist/**\nnode_modules/**",
     "shouldUpdateDescription": false,
     "statusCheck": true,
     "statusCommentsEnabled": true,

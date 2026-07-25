@@ -47,7 +47,7 @@ Background completion is delivered exactly once as a persisted `subagent-result`
 
 The extension emits complete version-1 snapshots on `pui.subagent.background` through `pi.events`. Envelopes use schema `pi.subagent.background` and include the current `sessionId` and a fresh extension `instanceId`; jobs include bounded title, prompt, activity, preview, diagnostics, paths, and the existing `SubagentRunV1`. At most 64 jobs are tracked, pruning the oldest terminal entries first. Hosts may explicitly cancel a job with a bounded version-1 `pi.subagent.background.control` message on `pui.subagent.background.control`; controls are accepted only when both session and extension instance match, and the listener is removed during shutdown.
 
-Reload, session replacement, fork, and quit abort all queued/running background jobs. Shutdown waits concurrently for settlement with a bounded teardown, clears deferred results, emits `reset`, and never sends stale result messages. Jobs are intentionally not restored or reattached.
+Reload, session replacement, fork, and quit abort all queued/running background jobs. Shutdown waits concurrently for settlement with a bounded teardown, clears deferred results, removes full-output directories created by this extension, emits `reset`, and never sends stale result messages or writes a late spill. Jobs are intentionally not restored or reattached.
 
 ## Security boundary
 
@@ -87,7 +87,7 @@ A call's non-empty `model` value always overrides model selection. With no expli
 
 Sibling outer tool calls are the concurrency unit. Additional calls stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
 
-If final output exceeds the model-visible limit, the extension writes the complete assistant output to a mode-`0600` file in a private temporary directory and includes its path in the result. No file is created for untruncated output.
+If final output exceeds the model-visible limit, the extension writes the complete assistant output to a mode-`0600` file in a private temporary directory and includes its path in the result. The file remains available for inspection during the active session and is removed at session shutdown. Paths supplied by the child runner remain externally owned and are not removed. No file is created for untruncated output.
 
 ## Troubleshooting
 

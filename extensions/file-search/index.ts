@@ -83,6 +83,26 @@ export function registerFileSearchExtension(
     dependencies: FileSearchExtensionDependencies = {},
 ): void {
     const run = dependencies.run ?? runFileSearch;
+    const retainedOutputCleanups = new Set<() => Promise<void>>();
+    let fdBinary: SystemBinary | undefined;
+    let rgBinary: SystemBinary | undefined;
+    let shuttingDown = false;
+    const retainOutput = async (execution: FileSearchProcessResult) => {
+        if (!execution.cleanup) return;
+        if (!shuttingDown) {
+            retainedOutputCleanups.add(execution.cleanup);
+            return;
+        }
+        await execution.cleanup().catch(() => {});
+    };
+
+    pi.on("session_shutdown", async () => {
+        shuttingDown = true;
+        const cleanups = [...retainedOutputCleanups];
+        retainedOutputCleanups.clear();
+        await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
+    });
+
     pi.registerTool({
         name: "fd",
         label: "Find files",
@@ -91,17 +111,16 @@ export function registerFileSearchExtension(
         promptGuidelines: ["Prefer fd for discovering files by name, extension, or glob."],
         parameters: FdParams,
         async execute(_id, params, signal, _onUpdate, ctx) {
-            const binary = (dependencies.resolveFd ?? resolveFdBinary)();
-            return result(
-                binary,
-                await run({
-                    command: binary.command,
-                    args: buildFdArgs(params as FdArgs),
-                    tool: "fd",
-                    cwd: ctx.cwd,
-                    signal,
-                }),
-            );
+            if (!fdBinary) fdBinary = (dependencies.resolveFd ?? resolveFdBinary)();
+            const execution = await run({
+                command: fdBinary.command,
+                args: buildFdArgs(params as FdArgs),
+                tool: "fd",
+                cwd: ctx.cwd,
+                signal,
+            });
+            await retainOutput(execution);
+            return result(fdBinary, execution);
         },
     });
     pi.registerTool({
@@ -117,17 +136,16 @@ export function registerFileSearchExtension(
         ],
         parameters: RgParams,
         async execute(_id, params, signal, _onUpdate, ctx) {
-            const binary = (dependencies.resolveRg ?? resolveRgBinary)();
-            return result(
-                binary,
-                await run({
-                    command: binary.command,
-                    args: buildRgArgs(params as RgArgs),
-                    tool: "rg",
-                    cwd: ctx.cwd,
-                    signal,
-                }),
-            );
+            if (!rgBinary) rgBinary = (dependencies.resolveRg ?? resolveRgBinary)();
+            const execution = await run({
+                command: rgBinary.command,
+                args: buildRgArgs(params as RgArgs),
+                tool: "rg",
+                cwd: ctx.cwd,
+                signal,
+            });
+            await retainOutput(execution);
+            return result(rgBinary, execution);
         },
     });
 }

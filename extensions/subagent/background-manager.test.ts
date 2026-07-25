@@ -94,6 +94,76 @@ describe("BackgroundSubagentManager", () => {
         await fixture.manager.wait([job.id]);
     });
 
+    test("a wait aborted as the job becomes terminal does not suppress delivery", async () => {
+        const abort = new AbortController();
+        const deliveries: any[] = [];
+        let finish!: () => void;
+        const manager = new BackgroundSubagentManager({
+            semaphore: new AbortableSemaphore(1),
+            invocation: (args) => ({ command: "fake", args }),
+            isIdle: () => true,
+            deliver: (result) => deliveries.push(result),
+            emit: (job) => {
+                if (job.run.status === "succeeded") abort.abort();
+            },
+            run: async (options) => {
+                await new Promise<void>((resolve) => (finish = resolve));
+                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
+                options.onSnapshot?.(details);
+                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+        const job = await manager.spawn({ prompt: "race", cwd }, cwd);
+        const waiting = manager.wait([job.id], abort.signal);
+        await waitUntil(() => finish !== undefined);
+        finish();
+        await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+        await waitUntil(() => deliveries.length === 1);
+        expect(deliveries.map((result) => result.id)).toEqual([job.id]);
+        expect(manager.check(job.id).run.status).toBe("succeeded");
+    });
+
+    test("multiple successful waiters consume one terminal result without automatic delivery", async () => {
+        const fixture = controlled();
+        fixture.setIdle(true);
+        const job = await fixture.manager.spawn({ prompt: "shared wait", cwd }, cwd);
+        await waitUntil(() => fixture.gates.length === 1);
+        const first = fixture.manager.wait([job.id]);
+        const second = fixture.manager.wait([job.id]);
+        fixture.gates[0]!();
+        expect((await first)[0]?.id).toBe(job.id);
+        expect((await second)[0]?.id).toBe(job.id);
+        fixture.manager.flushDeferred();
+        expect(fixture.deliveries).toHaveLength(0);
+    });
+
+    test("deferred flushing cannot race an active successful waiter", async () => {
+        const deliveries: any[] = [];
+        let finish!: () => void;
+        let manager!: BackgroundSubagentManager;
+        manager = new BackgroundSubagentManager({
+            semaphore: new AbortableSemaphore(1),
+            invocation: (args) => ({ command: "fake", args }),
+            isIdle: () => true,
+            deliver: (result) => deliveries.push(result),
+            emit: (job) => {
+                if (job.run.status === "succeeded") queueMicrotask(() => manager.flushDeferred());
+            },
+            run: async (options) => {
+                await new Promise<void>((resolve) => (finish = resolve));
+                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
+                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+        const job = await manager.spawn({ prompt: "wait flush race", cwd }, cwd);
+        await waitUntil(() => finish !== undefined);
+        const waiting = manager.wait([job.id]);
+        finish();
+        expect((await waiting)[0]?.id).toBe(job.id);
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        expect(deliveries).toHaveLength(0);
+    });
+
     test("wait interest consumes delivery and deferred results flush exactly once", async () => {
         const fixture = controlled();
         const waited = await fixture.manager.spawn({ prompt: "waited", cwd }, cwd);
@@ -154,7 +224,37 @@ describe("BackgroundSubagentManager", () => {
         expect((await fs.promises.stat(result.fullOutputPath)).mode & 0o777).toBe(0o600);
         expect((await fs.promises.stat(path.dirname(result.fullOutputPath))).mode & 0o777).toBe(0o700);
         await manager.wait([job.id]);
-        await fs.promises.rm(path.dirname(result.fullOutputPath), { recursive: true, force: true });
+        await manager.shutdown();
+        await expect(fs.promises.stat(result.fullOutputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("shutdown overlapping settlement cannot spill afterward and does not remove runner-owned output", async () => {
+        const externalDirectory = await fs.promises.mkdtemp(path.join(cwd, ".external-output-"));
+        const externalPath = path.join(externalDirectory, "runner.md");
+        await fs.promises.writeFile(externalPath, "runner-owned");
+        let finish!: () => void;
+        const manager = new BackgroundSubagentManager({
+            semaphore: new AbortableSemaphore(1),
+            emit: () => {},
+            deliver: () => {},
+            invocation: (args) => ({ command: "fake", args }),
+            run: async (options) => {
+                await new Promise<void>((resolve) => (finish = resolve));
+                const details = createTerminalSubagentDetails(options.details, {
+                    status: "succeeded",
+                    fullOutputPath: externalPath,
+                });
+                return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
+            },
+        });
+        const job = await manager.spawn({ prompt: "shutdown race", cwd }, cwd);
+        await waitUntil(() => finish !== undefined);
+        await manager.shutdown(0);
+        finish();
+        await waitUntil(() => manager.check(job.id).run.status === "succeeded");
+        expect(manager.check(job.id).run.fullOutputPath).toBe(externalPath);
+        expect(await fs.promises.readFile(externalPath, "utf8")).toBe("runner-owned");
+        await fs.promises.rm(externalDirectory, { recursive: true, force: true });
     });
 
     test("keeps settlement successful when host delivery throws", async () => {
@@ -175,6 +275,32 @@ describe("BackgroundSubagentManager", () => {
         await expect(manager.wait([job.id])).resolves.toEqual([
             expect.objectContaining({ id: job.id, status: "succeeded" }),
         ]);
+    });
+
+    test("host emit exceptions cannot reject settlement, cancellation, shutdown, or pruning", async () => {
+        const manager = new BackgroundSubagentManager({
+            semaphore: new AbortableSemaphore(64),
+            emit: () => {
+                throw new Error("host UI unavailable");
+            },
+            deliver: () => {},
+            isIdle: () => true,
+            invocation: (args) => ({ command: "fake", args }),
+            run: async (options) => {
+                const details = createTerminalSubagentDetails(options.details, {
+                    status: options.signal?.aborted ? "cancelled" : "succeeded",
+                });
+                return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+        const first = await manager.spawn({ prompt: "emit", cwd }, cwd);
+        await expect(manager.wait([first.id])).resolves.toHaveLength(1);
+        for (let index = 0; index < 64; index++) await manager.spawn({ prompt: `prune ${index}`, cwd }, cwd);
+        await waitUntil(() => manager.list().every((job) => job.run.status === "succeeded"));
+        expect(manager.list()).toHaveLength(64);
+        const cancelled = await manager.spawn({ prompt: "cancel", cwd }, cwd);
+        await expect(manager.cancel([cancelled.id])).resolves.toHaveLength(1);
+        await expect(manager.shutdown()).resolves.toBeUndefined();
     });
 
     test("never tracks more than 64 active or queued jobs", async () => {

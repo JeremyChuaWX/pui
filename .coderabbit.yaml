@@ -22,9 +22,9 @@ reviews:
       - "renovate[bot]"
 
   path_filters:
+    - "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,sh}"
     - "!dist/**"
     - "!node_modules/**"
-    - "!bun.lock"
 
   path_instructions:
     - path: "extensions/file-search/**"

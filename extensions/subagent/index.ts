@@ -1,6 +1,3 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
@@ -14,6 +11,7 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "./background-protocol.js";
+import { SessionOutputStore } from "./output-store.js";
 import {
     AGENT_NAMES,
     AGENT_SUMMARY,
@@ -87,18 +85,6 @@ export interface SubagentExtensionDependencies {
     environment?: NodeJS.ProcessEnv;
 }
 
-async function saveFullOutput(output: string): Promise<string | undefined> {
-    try {
-        const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-        await fs.promises.chmod(directory, 0o700);
-        const outputPath = path.join(directory, "output.md");
-        await fs.promises.writeFile(outputPath, output, { encoding: "utf8", mode: 0o600 });
-        return outputPath;
-    } catch {
-        return undefined;
-    }
-}
-
 function lifecycleText(details: SubagentDetailsV1): string {
     const { run } = details;
     if (run.status === "queued") return `${run.agent} subagent is queued...`;
@@ -125,6 +111,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     const now = dependencies.now ?? Date.now;
     const environment = dependencies.environment ?? process.env;
     const shutdownController = new AbortController();
+    const outputStore = new SessionOutputStore();
     const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
     let sessionId = "unbound";
@@ -205,6 +192,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         shutdownController.abort();
         failedDetails.clear();
         await background.shutdown();
+        await outputStore.cleanup();
         emitBus({
             schema: BACKGROUND_SUBAGENT_SCHEMA,
             version: BACKGROUND_SUBAGENT_VERSION,
@@ -431,7 +419,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                     maxLines: DEFAULT_MAX_LINES,
                     maxBytes: DEFAULT_MAX_BYTES,
                 });
-                const fullOutputPath = truncation.truncated ? await saveFullOutput(visibleOutput) : undefined;
+                const fullOutputPath = truncation.truncated ? await outputStore.save(visibleOutput) : undefined;
                 let resultText = truncation.content;
                 if (truncation.truncated) {
                     resultText += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;

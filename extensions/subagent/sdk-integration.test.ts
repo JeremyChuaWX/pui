@@ -69,6 +69,14 @@ test("background delivery persists once on resume and wait consumption suppresse
             allowModelNetwork: false,
         });
         let turn = 0;
+        let allowBackgroundSettlement!: () => void;
+        const backgroundMaySettle = new Promise<void>((resolve) => {
+            allowBackgroundSettlement = resolve;
+        });
+        let markBackgroundSettled!: () => void;
+        const backgroundSettled = new Promise<void>((resolve) => {
+            markBackgroundSettled = resolve;
+        });
         const requestedTitle = "T".repeat(200);
         modelRuntime.registerProvider("fixture-background", {
             api: "fixture-api",
@@ -122,13 +130,16 @@ test("background delivery persists once on resume and wait consumption suppresse
                         ];
                         stopReason = "toolUse";
                     } else {
-                        // Keep the parent active long enough to exercise deferred delivery.
-                        if (!consumeWithWait && currentTurn === 1) await Bun.sleep(40);
                         content = [{ type: "text", text: "Parent settled." }];
                         stopReason = "stop";
                     }
                     const message = parentMessage(content, stopReason);
                     stream.push({ type: "start", partial: message });
+                    if (currentTurn > 0) {
+                        await new Promise<void>((resolve) => setImmediate(resolve));
+                        allowBackgroundSettlement();
+                        await backgroundSettled;
+                    }
                     stream.push({ type: "done", reason: stopReason, message });
                 })();
                 return stream;
@@ -148,20 +159,24 @@ test("background delivery persists once on resume and wait consumption suppresse
             extensionFactories: [
                 {
                     name: "subagent-background-sdk-fixture",
-                    factory: (pi) =>
+                    factory: (pi) => {
+                        pi.events?.on("pui.subagent.background", (event: any) => {
+                            if (event.job?.run.status === "succeeded" && event.job.run.fullOutputPath)
+                                markBackgroundSettled();
+                        });
                         registerSubagentExtension(pi, {
                             semaphore: new AbortableSemaphore(1),
                             invocation: (args) => ({ command: "fake-pi", args }),
                             run: async (options) => {
-                                await Bun.sleep(20);
+                                await backgroundMaySettle;
                                 const details = createTerminalSubagentDetails(options.details, {
                                     status: "succeeded",
                                     outputPreview: "background output",
                                 });
-                                options.onSnapshot?.(details);
                                 return { details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
                             },
-                        }),
+                        });
+                    },
                 },
             ],
         });

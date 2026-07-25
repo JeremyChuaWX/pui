@@ -10,6 +10,7 @@ export interface CapturedOutput {
     totalBytes: number;
     truncated: boolean;
     fullOutputPath?: string;
+    cleanup?: () => Promise<void>;
 }
 
 /** Streams all bytes to disk while retaining only Pi's context-sized head in memory. */
@@ -46,7 +47,11 @@ export class FileSearchOutput {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         if (bytes.length === 0) return;
         this.totalBytes += bytes.length;
-        for (const byte of bytes) if (byte === 10) this.newlineCount++;
+        let newline = bytes.indexOf(10);
+        while (newline !== -1) {
+            this.newlineCount++;
+            newline = bytes.indexOf(10, newline + 1);
+        }
         this.lastByte = bytes.at(-1);
         if (this.headBytes < DEFAULT_MAX_BYTES) {
             const kept = bytes.subarray(0, DEFAULT_MAX_BYTES - this.headBytes);
@@ -92,6 +97,7 @@ export class FileSearchOutput {
             totalBytes: this.totalBytes,
             truncated: true,
             fullOutputPath: this.path,
+            cleanup: () => rm(this.directory, { recursive: true, force: true }),
         };
     }
 

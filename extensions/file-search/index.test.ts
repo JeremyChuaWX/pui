@@ -8,12 +8,15 @@ const fixtureCwd = path.dirname(fixture);
 
 function setup(overrides: any = {}) {
     const tools = new Map<string, any>();
+    const handlers = new Map<string, (...args: any[]) => unknown>();
     registerFileSearchExtension(
         {
             registerTool(tool: any) {
                 tools.set(tool.name, tool);
             },
-            on() {},
+            on(event: string, handler: (...args: any[]) => unknown) {
+                handlers.set(event, handler);
+            },
         } as any,
         {
             resolveFd: () => ({ command: "/bin/fd", source: "system" }),
@@ -31,7 +34,7 @@ function setup(overrides: any = {}) {
             ...overrides,
         },
     );
-    return { tools };
+    return { tools, handlers };
 }
 
 function execute(tool: any, params: any, signal?: AbortSignal) {
@@ -70,6 +73,26 @@ describe("file-search extension", () => {
         expect(calls[1].args.slice(-2)).toEqual(["--", "--version"]);
     });
 
+    test("resolves each binary once per extension instance", async () => {
+        let fdResolutions = 0;
+        let rgResolutions = 0;
+        const { tools } = setup({
+            resolveFd: () => {
+                fdResolutions++;
+                return { command: "/bin/fd", source: "system" };
+            },
+            resolveRg: () => {
+                rgResolutions++;
+                return { command: "/bin/rg", source: "system" };
+            },
+        });
+        await execute(tools.get("fd"), {});
+        await execute(tools.get("fd"), { pattern: "x" });
+        await execute(tools.get("rg"), { pattern: "x" });
+        await execute(tools.get("rg"), { pattern: "y" });
+        expect({ fdResolutions, rgResolutions }).toEqual({ fdResolutions: 1, rgResolutions: 1 });
+    });
+
     test("surfaces missing binaries and actionable process statuses", async () => {
         const missing = setup({
             resolveFd: () => {
@@ -105,8 +128,9 @@ describe("file-search extension", () => {
         }
     });
 
-    test("returns renderer-neutral details, truncation path, and prompt guidance", async () => {
-        const { tools } = setup({
+    test("returns renderer-neutral details, retains full output through use, and cleans it on shutdown", async () => {
+        let cleaned = false;
+        const { tools, handlers } = setup({
             run: async () => ({
                 status: "succeeded",
                 output: "head",
@@ -114,6 +138,9 @@ describe("file-search extension", () => {
                 totalBytes: 60000,
                 truncated: true,
                 fullOutputPath: "/private/output.txt",
+                cleanup: async () => {
+                    cleaned = true;
+                },
                 stderr: "",
                 exitCode: 0,
                 signal: null,
@@ -127,6 +154,9 @@ describe("file-search extension", () => {
             fullOutputPath: "/private/output.txt",
         });
         expect(value.content[0].text).toContain("Complete output: /private/output.txt");
+        expect(cleaned).toBe(false);
+        await handlers.get("session_shutdown")!();
+        expect(cleaned).toBe(true);
         const prompt = [
             tools.get("fd").promptSnippet,
             ...tools.get("fd").promptGuidelines,
@@ -137,5 +167,31 @@ describe("file-search extension", () => {
         expect(prompt).toContain("rg");
         expect(prompt).toContain("fixed_strings");
         expect(prompt).toContain("bash");
+    });
+
+    test("cleans output that finishes after session shutdown", async () => {
+        let cleaned = false;
+        let finish!: (value: any) => void;
+        const { tools, handlers } = setup({
+            run: () => new Promise((resolve) => (finish = resolve)),
+        });
+        const execution = execute(tools.get("rg"), { pattern: "x" });
+        await handlers.get("session_shutdown")!();
+        finish({
+            status: "succeeded",
+            output: "head",
+            count: 2001,
+            totalBytes: 60000,
+            truncated: true,
+            fullOutputPath: "/private/output.txt",
+            cleanup: async () => {
+                cleaned = true;
+            },
+            stderr: "",
+            exitCode: 0,
+            signal: null,
+        });
+        await execution;
+        expect(cleaned).toBe(true);
     });
 });

@@ -13,6 +13,9 @@ describe("background subagent control protocol", () => {
 
     test("accepts only bounded versioned cancellation messages", () => {
         expect(parseBackgroundSubagentControl(valid)).toEqual(valid);
+        expect(parseBackgroundSubagentControl(null)).toBeUndefined();
+        expect(parseBackgroundSubagentControl([valid])).toBeUndefined();
+        expect(parseBackgroundSubagentControl({ ...valid, schema: "pi.subagent.background" })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, version: 2 })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, type: "steer" })).toBeUndefined();
         expect(parseBackgroundSubagentControl({ ...valid, jobId: "" })).toBeUndefined();

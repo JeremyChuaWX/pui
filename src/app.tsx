@@ -357,18 +357,31 @@ export function App(props: { controller: PuiController }) {
                 const usage = compactSubagentUsage(job.usage);
                 return {
                     label: `${subagentStatusIcon(job.status)} ${job.title}`,
-                    detail: `${job.status} · ${job.model}${usage ? ` · ${usage}` : ""}${active ? " · select to cancel" : ""}`,
+                    detail: `${subagentStatusLabel(job.status)} · ${job.model}${usage ? ` · ${usage}` : ""}${active ? " · select to cancel" : ""}`,
                     search: `${job.title} ${job.model} ${job.agent} ${job.status}`.toLowerCase(),
                     action: () => {
                         setDialog(undefined);
-                        if (active) {
-                            if (props.controller.cancelBackgroundSubagent(job.id))
-                                props.controller.notify(`Cancelling ${job.title}`, "warning");
-                        } else {
+                        const current = snapshot.backgroundSubagents.find((candidate) => candidate.id === job.id);
+                        if (!current) return;
+                        const notifyStatus = () =>
                             props.controller.notify(
-                                `${job.title} · ${subagentStatusLabel(job.status)} · ${subagentElapsed(job)}`,
-                                job.status === "succeeded" ? "success" : "info",
+                                `${current.title} · ${subagentStatusLabel(current.status)} · ${subagentElapsed(current)}`,
+                                current.status === "succeeded" ? "success" : "info",
                             );
+                        if (isTerminalSubagentStatus(current.status)) {
+                            notifyStatus();
+                        } else if (props.controller.cancelBackgroundSubagent(current.id)) {
+                            props.controller.notify(`Cancelling ${current.title}`, "warning");
+                        } else {
+                            const settled = props.controller
+                                .snapshot()
+                                .backgroundSubagents.find((candidate) => candidate.id === job.id);
+                            if (settled && isTerminalSubagentStatus(settled.status)) {
+                                props.controller.notify(
+                                    `${settled.title} · ${subagentStatusLabel(settled.status)} · ${subagentElapsed(settled)}`,
+                                    settled.status === "succeeded" ? "success" : "info",
+                                );
+                            }
                         }
                     },
                 };
@@ -689,6 +702,7 @@ function MessageItem(props: {
         const item = props.item();
         return item.kind === "custom" ? item : undefined;
     });
+    const isSubagentResult = createMemo(() => customItem()?.label === "subagent-result");
     const toolColor = () => (toolItem()?.isError ? theme.error : toolItem()?.running ? theme.warning : theme.success);
     const bashColor = () =>
         bashItem()?.running
@@ -810,25 +824,16 @@ function MessageItem(props: {
                     marginTop={1}
                     border={["left"]}
                     borderColor={
-                        customItem()?.label === "error"
-                            ? theme.error
-                            : customItem()?.label === "subagent-result"
-                              ? theme.success
-                              : theme.info
+                        customItem()?.label === "error" ? theme.error : isSubagentResult() ? theme.success : theme.info
                     }
                     paddingLeft={2}
-                    paddingTop={customItem()?.label === "subagent-result" ? 1 : 0}
-                    paddingBottom={customItem()?.label === "subagent-result" ? 1 : 0}
+                    paddingTop={isSubagentResult() ? 1 : 0}
+                    paddingBottom={isSubagentResult() ? 1 : 0}
                 >
                     <text fg={customItem()?.label === "error" ? theme.error : theme.info}>
-                        {customItem()?.label === "subagent-result"
-                            ? "✓ Background subagent result"
-                            : customItem()?.label || "message"}
+                        {isSubagentResult() ? "✓ Background subagent result" : customItem()?.label || "message"}
                     </text>
-                    <Show
-                        when={customItem()?.label === "subagent-result"}
-                        fallback={<text fg={theme.text}>{customItem()?.text}</text>}
-                    >
+                    <Show when={isSubagentResult()} fallback={<text fg={theme.text}>{customItem()?.text}</text>}>
                         <markdown
                             syntaxStyle={syntaxStyle}
                             content={customItem()?.text}

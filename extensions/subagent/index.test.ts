@@ -21,6 +21,7 @@ function fakePi() {
     const handlers = new Map<string, Handler[]>();
     const busHandlers = new Map<string, Set<(payload: any) => void>>();
     const emitted: Array<{ channel: string; payload: any }> = [];
+    const sent: Array<{ message: any; options: any }> = [];
     const events = {
         emit(channel: string, payload: any) {
             emitted.push({ channel, payload });
@@ -35,7 +36,9 @@ function fakePi() {
     };
     const pi = {
         events,
-        sendMessage() {},
+        sendMessage(message: any, options: any) {
+            sent.push({ message, options });
+        },
         registerTool(definition: any) {
             tool = definition;
             tools.set(definition.name, definition);
@@ -52,6 +55,7 @@ function fakePi() {
         tools,
         events,
         emitted,
+        sent,
         listenerCount(channel: string) {
             return busHandlers.get(channel)?.size ?? 0;
         },
@@ -326,7 +330,29 @@ describe("subagent extension integration", () => {
         expect(await fs.promises.readFile(outputPath, "utf8")).toBe(output);
         const mode = (await fs.promises.stat(outputPath)).mode & 0o777;
         expect(mode).toBe(0o600);
-        await fs.promises.rm(path.dirname(outputPath), { recursive: true, force: true });
+        await host.handler("session_shutdown")({ type: "session_shutdown", reason: "quit" });
+        await expect(fs.promises.stat(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("blocking settlement overlapping shutdown cannot create a late full-output spill", async () => {
+        const host = fakePi();
+        let finish!: () => void;
+        registerSubagentExtension(host.pi, {
+            semaphore: new AbortableSemaphore(1),
+            invocation: (args) => ({ command: "fake-pi", args }),
+            run: async (options) => {
+                await new Promise<void>((resolve) => (finish = resolve));
+                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
+                return { details, output: "x".repeat(60_000), stderr: "", exitCode: 0, signal: null };
+            },
+        });
+        const execution = execute(host.tool, "shutdown-spill-race");
+        await waitUntil(() => finish !== undefined);
+        await host.handler("session_shutdown")({ type: "session_shutdown", reason: "quit" });
+        finish();
+        const result = await execution;
+        expect(result.details.run.fullOutputPath).toBeUndefined();
+        expect(result.content[0].text).not.toContain("Full output saved to:");
     });
 
     test("throws failures and patches terminal details into the persisted tool result once", async () => {
@@ -523,13 +549,54 @@ describe("subagent extension integration", () => {
         ];
         for (const { id, override } of rejected)
             host.events.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, control(id, override));
-        await Bun.sleep(10);
+        const sentinelId = await spawn("bus drain sentinel");
+        host.events.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, control(sentinelId));
+        await waitUntil(() => running.get(sentinelId)?.aborted === true);
         expect(rejected.map(({ id }) => running.get(id)?.aborted)).toEqual([false, false, false, false]);
         expect(host.listenerCount(BACKGROUND_SUBAGENT_CONTROL_CHANNEL)).toBe(1);
 
         await host.handler("session_shutdown")({ type: "session_shutdown", reason: "quit" });
         expect(host.listenerCount(BACKGROUND_SUBAGENT_CONTROL_CHANNEL)).toBe(0);
         for (const { id } of rejected) expect(running.get(id)?.aborted).toBe(true);
+    });
+
+    test("delivers a background result after an aborted waiter goes away", async () => {
+        const host = fakePi();
+        let finish: (() => void) | undefined;
+        registerSubagentExtension(host.pi, {
+            semaphore: new AbortableSemaphore(1),
+            invocation: (args) => ({ command: "fake-pi", args }),
+            run: async (options) => {
+                await new Promise<void>((resolve) => {
+                    finish = resolve;
+                });
+                const details = createTerminalSubagentDetails(options.details, {
+                    status: "succeeded",
+                    outputPreview: "late result",
+                });
+                options.onSnapshot?.(details);
+                return { details, output: "late result", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+
+        const spawned = await host.tools
+            .get("subagent_spawn")
+            .execute("spawn-late", { prompt: "Late work", cwd: extensionCwd }, undefined, undefined, {
+                cwd: extensionCwd,
+            });
+        await waitUntil(() => finish !== undefined);
+        const controller = new AbortController();
+        const waiting = host.tools
+            .get("subagent_wait")
+            .execute("wait-late", { ids: [spawned.details.id] }, controller.signal);
+        controller.abort();
+        await expect(waiting).rejects.toThrow();
+
+        finish?.();
+        await waitUntil(() => host.sent.some(({ message }) => message.details?.id === spawned.details.id));
+        expect(host.sent.find(({ message }) => message.details?.id === spawned.details.id)?.message.content).toContain(
+            "late result",
+        );
     });
 
     test("session shutdown aborts running work and leaves no saved failure state", async () => {

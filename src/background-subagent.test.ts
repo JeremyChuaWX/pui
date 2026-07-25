@@ -97,7 +97,7 @@ describe("background subagent host protocol", () => {
     });
 
     test("ignores stale sessions and instances", () => {
-        let state = reduceBackgroundSubagentEvent({ jobs: new Map() }, parse(event("ready")), "session-a");
+        const state = reduceBackgroundSubagentEvent({ jobs: new Map() }, parse(event("ready")), "session-a");
         const current = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
         expect(reduceBackgroundSubagentEvent(current, parse(event("upsert", { sessionId: "old" })), "session-a")).toBe(
             current,
@@ -114,7 +114,6 @@ describe("background subagent host protocol", () => {
         expect(reduceBackgroundSubagentEvent(current, parse(event("ready", { instanceId: "old" })), "session-a")).toBe(
             current,
         );
-        state = current;
     });
 
     test("bounds the host to 64 complete job snapshots", () => {
