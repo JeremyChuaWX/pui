@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: "en-US"
+tone_instructions: "Be concise, actionable, and prioritize correctness over style preferences."
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  review_details: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches:
+      - "main"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+
+  path_filters:
+    - "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,sh}"
+    - "!dist/**"
+    - "!node_modules/**"
+
+  path_instructions:
+    - path: "extensions/file-search/**"
+      instructions: |
+        Focus on shell-injection safety, argument boundaries, bounded output,
+        temporary-file cleanup and permissions, cancellation, timeouts, and
+        complete process-tree termination on supported platforms.
+
+    - path: "extensions/subagent/**"
+      instructions: |
+        Focus on child-process isolation and cleanup, FIFO concurrency,
+        cancellation races, bounded protocol fields, exact-once delivery,
+        session teardown, and backward-compatible renderer-neutral details.
+
+    - path: "src/**"
+      instructions: |
+        Focus on controller lifecycle races, stale session or extension events,
+        display reconciliation, keyboard accessibility, and compatibility with
+        persisted sessions and unknown protocol versions.
+
+    - path: "**/*.test.ts"
+      instructions: |
+        Check that assertions cover observable behavior and failure paths.
+        Flag timing assumptions that may be flaky across Linux and macOS CI.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Check least-privilege permissions, event safety, dependency pinning,
+        concurrency behavior, and reproducible Bun installation.
+
+chat:
+  auto_reply: true

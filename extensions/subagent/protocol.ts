@@ -1,6 +1,7 @@
 export const SUBAGENT_SCHEMA = "pi.subagent" as const;
 export const SUBAGENT_PROTOCOL_VERSION = 1 as const;
 export const MAX_RECENT_ACTIVITY = 20;
+export const MAX_SUBAGENT_ACTIVE_TOOLS = 64;
 
 export type SubagentStatus = "queued" | "starting" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
 
@@ -150,7 +151,9 @@ export function updateSubagentDetails(
         id: details.run.id,
         status,
         updatedAt: now,
-        activeTools: terminal ? [] : [...(patch.activeTools ?? details.run.activeTools)],
+        activeTools: terminal
+            ? []
+            : [...(patch.activeTools ?? details.run.activeTools)].slice(-MAX_SUBAGENT_ACTIVE_TOOLS),
         recentActivity: [...(patch.recentActivity ?? details.run.recentActivity)].slice(-MAX_RECENT_ACTIVITY),
         usage: { ...(patch.usage ?? details.run.usage) },
     };
@@ -298,6 +301,7 @@ export function isSubagentDetailsV1(value: unknown): value is SubagentDetailsV1 
     if (isTerminalSubagentStatus(run.status as SubagentStatus) && run.endedAt === undefined) return false;
     if (
         !Array.isArray(run.activeTools) ||
+        run.activeTools.length > MAX_SUBAGENT_ACTIVE_TOOLS ||
         !Array.isArray(run.recentActivity) ||
         run.recentActivity.length > MAX_RECENT_ACTIVITY
     ) {

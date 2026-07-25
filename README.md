@@ -6,7 +6,7 @@ An OpenCode-inspired, full-screen OpenTUI/Solid client backed by Pi's SDK. It us
 
 - The `pi` command installed and configured
 - [Bun](https://bun.sh/) 1.3 or newer (build only)
-- `fd` for fuzzy `@` file completion (optional, but recommended)
+- `fd` (or `fdfind`) and `rg` to use bundled file search; pui still starts without them
 
 ## Install
 
@@ -51,13 +51,14 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
 - Live and resumed subagent cards with lifecycle, child activity, usage, output, and diagnostics
-- Responsive OpenCode-style session sidebar with active subagent instances
-- Model and session pickers plus a command palette
+- Responsive OpenCode-style session sidebar with active blocking and background subagents
+- Model, session, and `/subagents` background-job pickers plus a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
 - Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
+- Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
 - Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
 - `!command` and `!!command` shell execution
 
@@ -67,7 +68,7 @@ Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensi
 
 Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
-Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
+Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
 The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
 
@@ -76,6 +77,12 @@ pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 ```
 
 See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
+
+## File-search tools
+
+pui bundles application-owned `fd` and `rg` tools from [`extensions/file-search/`](extensions/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](extensions/file-search/README.md).
+
+The regular `pi` command does not auto-load these tools; load them explicitly with `pi -e /absolute/path/to/pui/extensions/file-search/index.ts`.
 
 ## Web tools
 
@@ -97,6 +104,7 @@ See the [web extension guide](extensions/web/README.md) for the compact configur
 - `src/controller.ts` embeds Pi through `AgentSessionRuntime`, rebinds every replaced session, and adapts Pi's `CombinedAutocompleteProvider` to OpenTUI prompt completions.
 - `src/bundled-extensions.ts` registers application-owned extension factories independently of session cwd.
 - `extensions/subagent/` owns the standalone subagent extension, protocol producer, preset, fixtures, and tests.
+- `extensions/file-search/` owns bundled `fd`/`rg` schemas, binary resolution, safe process execution, and bounded output.
 - `extensions/web/` owns the bundled web-search and Firecrawl tools and their provider-facing tests.
 - `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
 - `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.

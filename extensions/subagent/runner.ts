@@ -24,6 +24,23 @@ const DIAGNOSTIC_CAP_BYTES = 8 * 1024;
 const OUTPUT_PREVIEW_BYTES = 4 * 1024;
 const ACTIVITY_TITLE_BYTES = 512;
 const ASSISTANT_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
+const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
+
+/** Resolve a stable, canonical model label from a child assistant event. */
+export function resolveSubagentModelLabel(current: string, provider?: string, model?: string): string {
+    const childProvider = provider?.trim();
+    const childModel = model?.trim();
+    if (!childProvider || !childModel) return current;
+
+    const reportedSuffix = childModel.match(THINKING_SUFFIX)?.[0] ?? "";
+    const reportedBase = reportedSuffix ? childModel.slice(0, -reportedSuffix.length) : childModel;
+    const canonicalBase = reportedBase.startsWith(`${childProvider}/`)
+        ? reportedBase
+        : `${childProvider}/${reportedBase}`;
+    const currentSuffix = current.match(THINKING_SUFFIX)?.[0] ?? "";
+    const currentBase = currentSuffix ? current.slice(0, -currentSuffix.length) : current;
+    return `${canonicalBase}${currentBase === canonicalBase ? currentSuffix || reportedSuffix : reportedSuffix}`;
+}
 
 export type SpawnedChild = ChildProcessByStdio<null, Readable, Readable>;
 export type SpawnChild = (
@@ -333,12 +350,16 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         if (event.type === "message_update") {
             if (!isRecord(event.message) || event.message.role !== "assistant") return;
             const preview = assistantText(event.message);
-            const model = stringOrUndefined(event.message.model);
+            const model = resolveSubagentModelLabel(
+                details.run.model,
+                stringOrUndefined(event.message.provider),
+                stringOrUndefined(event.message.model),
+            );
             details = updateSubagentDetails(
                 details,
                 {
                     ...(preview ? { outputPreview: truncateUtf8(preview, OUTPUT_PREVIEW_BYTES).content } : {}),
-                    ...(model ? { model } : {}),
+                    model,
                     phase: activeTools.size > 0 ? "tool" : "thinking",
                 },
                 timestamp,
@@ -369,7 +390,11 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                     timestamp,
                 );
             }
-            const model = stringOrUndefined(event.message.model);
+            const model = resolveSubagentModelLabel(
+                details.run.model,
+                stringOrUndefined(event.message.provider),
+                stringOrUndefined(event.message.model),
+            );
             const preview = truncateUtf8(finalOutput, OUTPUT_PREVIEW_BYTES).content;
             const stopReason = stringOrUndefined(event.message.stopReason);
             const title = preview
@@ -381,7 +406,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             details = updateSubagentDetails(
                 details,
                 {
-                    ...(model ? { model } : {}),
+                    model,
                     ...(preview ? { outputPreview: preview } : {}),
                     phase: activeTools.size > 0 ? "tool" : "thinking",
                 },
@@ -493,7 +518,15 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 status,
                 ...(error ? { error } : {}),
                 ...(preview ? { outputPreview: preview } : {}),
-                ...(finalMessage?.model ? { model: finalMessage.model } : {}),
+                ...(finalMessage
+                    ? {
+                          model: resolveSubagentModelLabel(
+                              details.run.model,
+                              finalMessage.provider,
+                              finalMessage.model,
+                          ),
+                      }
+                    : {}),
             },
             now(),
         );

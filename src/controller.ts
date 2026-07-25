@@ -10,13 +10,25 @@ import {
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
+    createEventBus,
+    type EventBusController,
     getAgentDir,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
+import { resolveFdBinary } from "../extensions/file-search/binaries.js";
+import {
+    BACKGROUND_SUBAGENT_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+    type BackgroundSubagentState,
+    parseBackgroundSubagentEvent,
+    reduceBackgroundSubagentEvent,
+} from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
+import { isTerminalSubagentStatus as isTerminalBackgroundStatus } from "./subagent.js";
 import {
     reconcileToolExecutions,
     reduceToolExecutions,
@@ -43,25 +55,26 @@ export interface ControllerOptions {
     noSession?: boolean;
 }
 
-export const createPuiRuntime: CreateAgentSessionRuntimeFactory = async ({
-    cwd,
-    agentDir,
-    sessionManager,
-    sessionStartEvent,
-}) => {
-    const services = await createAgentSessionServices({
-        cwd,
-        agentDir,
-        resourceLoaderOptions: {
-            extensionFactories: BUNDLED_EXTENSION_FACTORIES,
-        },
-    });
-    return {
-        ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
-        services,
-        diagnostics: services.diagnostics,
+export function createPuiRuntimeFactory(eventBus: EventBusController): CreateAgentSessionRuntimeFactory {
+    return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+        const services = await createAgentSessionServices({
+            cwd,
+            agentDir,
+            resourceLoaderOptions: {
+                extensionFactories: BUNDLED_EXTENSION_FACTORIES,
+                eventBus,
+            },
+        });
+        return {
+            ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+            services,
+            diagnostics: services.diagnostics,
+        };
     };
-};
+}
+
+/** Standalone factory retained for SDK/tests; a controller uses its own stable bus-backed factory. */
+export const createPuiRuntime = createPuiRuntimeFactory(createEventBus());
 
 type Listener = (snapshot: PuiSnapshot) => void;
 
@@ -86,6 +99,7 @@ const LOCAL_SLASH_COMMANDS: SlashCommand[] = [
     { name: "reload", description: "Reload extensions, skills, prompts, and context" },
     { name: "session", description: "Show session information" },
     { name: "commands", description: "Open the command palette" },
+    { name: "subagents", description: "Inspect or cancel background subagents" },
     { name: "thinking", description: "Cycle the thinking level" },
     { name: "help", description: "Show keyboard shortcuts" },
     { name: "hotkeys", description: "Show keyboard shortcuts" },
@@ -134,9 +148,21 @@ export class PuiController {
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
+    private backgroundState: BackgroundSubagentState = { jobs: new Map() };
+    private readonly eventBus: EventBusController;
+    private readonly unsubscribeBackground: () => void;
 
-    private constructor(runtime: AgentSessionRuntime) {
+    private constructor(runtime: AgentSessionRuntime, eventBus: EventBusController = createEventBus()) {
         this.runtime = runtime;
+        this.eventBus = eventBus;
+        this.unsubscribeBackground = eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
+            const event = parseBackgroundSubagentEvent(payload);
+            if (!event || this.disposed) return;
+            const next = reduceBackgroundSubagentEvent(this.backgroundState, event, this.runtime.session.sessionId);
+            if (next === this.backgroundState) return;
+            this.backgroundState = next;
+            this.scheduleRefresh();
+        });
         this.gitBranch = readGitBranch(runtime.cwd);
         this.currentSnapshot = this.buildSnapshot();
     }
@@ -155,13 +181,14 @@ export class PuiController {
         }
 
         const sessionCwd = options.sessionPath ? sessionManager.getCwd() || options.cwd : options.cwd;
-        const runtime = await createAgentSessionRuntime(createPuiRuntime, {
+        const eventBus = createEventBus();
+        const runtime = await createAgentSessionRuntime(createPuiRuntimeFactory(eventBus), {
             cwd: sessionCwd,
             agentDir,
             sessionManager,
             sessionStartEvent: { type: "session_start", reason: "startup" },
         });
-        const controller = new PuiController(runtime);
+        const controller = new PuiController(runtime, eventBus);
 
         runtime.setRebindSession(async (session) => controller.bindSession(session));
         await controller.bindSession(runtime.session);
@@ -205,6 +232,7 @@ export class PuiController {
 
     private async bindSession(session: AgentSession): Promise<void> {
         this.unsubscribeSession?.();
+        this.backgroundState = { jobs: new Map() };
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
@@ -332,6 +360,7 @@ export class PuiController {
             queuedFollowUp: [...session.getFollowUpMessages()],
             display: stableDisplay,
             activeTools,
+            backgroundSubagents: [...this.backgroundState.jobs.values()],
             toasts: [...this.toasts],
             exitRequested: this.exitRequested,
         };
@@ -415,7 +444,13 @@ export class PuiController {
         this.autocompleteProvider = new CombinedAutocompleteProvider(
             [...localCommands, ...extensionCommands, ...templateCommands, ...skillCommands],
             this.runtime.cwd,
-            Bun.which("fd") ?? Bun.which("fdfind"),
+            (() => {
+                try {
+                    return resolveFdBinary().command;
+                } catch {
+                    return undefined;
+                }
+            })(),
         );
     }
 
@@ -477,6 +512,8 @@ export class PuiController {
             case "/commands":
             case "/palette":
                 return "commands";
+            case "/subagents":
+                return "subagents";
             case "/help":
             case "/hotkeys":
                 return "help";
@@ -675,6 +712,21 @@ export class PuiController {
         this.refresh();
     }
 
+    cancelBackgroundSubagent(id: string): boolean {
+        const job = this.backgroundState.jobs.get(id);
+        const instanceId = this.backgroundState.instanceId;
+        if (!job || !instanceId || isTerminalBackgroundStatus(job.status)) return false;
+        this.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
+            schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+            version: 1,
+            sessionId: this.runtime.session.sessionId,
+            instanceId,
+            type: "cancel",
+            jobId: id,
+        });
+        return true;
+    }
+
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -696,6 +748,10 @@ export class PuiController {
         if (this.disposed) return;
         this.disposed = true;
         this.unsubscribeSession?.();
+        this.unsubscribeBackground();
+        this.eventBus.clear();
+        this.backgroundState = { jobs: new Map() };
+        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);

@@ -1,6 +1,8 @@
 export const SUBAGENT_SCHEMA = "pi.subagent" as const;
 export const SUBAGENT_PROTOCOL_VERSION = 1 as const;
 export const MAX_SUBAGENT_ACTIVITY = 20;
+/** Compatibility mirror of extensions/subagent/protocol.ts; host code stays extension-runtime independent. */
+export const MAX_SUBAGENT_ACTIVE_TOOLS = 64;
 
 export type SubagentStatus = "queued" | "starting" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
 export type SubagentPhase = "queued" | "spawning" | "thinking" | "tool" | "exiting";
@@ -140,7 +142,7 @@ function parseProtocolV1(
     if (run.startedAt !== undefined && !isFiniteNonNegative(run.startedAt)) return undefined;
     if (run.endedAt !== undefined && !isFiniteNonNegative(run.endedAt)) return undefined;
     if (TERMINAL_STATUSES.has(run.status as SubagentStatus) && run.endedAt === undefined) return undefined;
-    if (!Array.isArray(run.activeTools) || run.activeTools.length > 64) return undefined;
+    if (!Array.isArray(run.activeTools) || run.activeTools.length > MAX_SUBAGENT_ACTIVE_TOOLS) return undefined;
     if (!Array.isArray(run.recentActivity) || run.recentActivity.length > MAX_SUBAGENT_ACTIVITY) return undefined;
     if (TERMINAL_STATUSES.has(run.status as SubagentStatus) && run.activeTools.length > 0) return undefined;
 

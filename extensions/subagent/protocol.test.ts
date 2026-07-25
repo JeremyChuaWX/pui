@@ -8,6 +8,7 @@ import {
     emptySubagentUsage,
     isSubagentDetailsV1,
     MAX_RECENT_ACTIVITY,
+    MAX_SUBAGENT_ACTIVE_TOOLS,
     truncateUtf8,
     truncateUtf8Tail,
     updateSubagentDetails,
@@ -53,6 +54,23 @@ describe("subagent protocol", () => {
             4,
         );
         expect(patchedTerminal.run.activeTools).toEqual([]);
+    });
+
+    test("publishes only the newest active tools and rejects oversized wire snapshots", () => {
+        const initial = createInitialSubagentDetails({ id: "id", agent: "explore", model: "m", cwd: "/repo", now: 1 });
+        const activeTools = Array.from({ length: MAX_SUBAGENT_ACTIVE_TOOLS + 1 }, (_, index) => ({
+            id: `tool-${index}`,
+            name: "read",
+            title: `read ${index}`,
+            startedAt: index + 2,
+        }));
+        const running = updateSubagentDetails(initial, { status: "running", activeTools }, 2);
+
+        expect(running.run.activeTools).toHaveLength(MAX_SUBAGENT_ACTIVE_TOOLS);
+        expect(running.run.activeTools[0]?.id).toBe("tool-1");
+        expect(running.run.activeTools.at(-1)?.id).toBe(`tool-${MAX_SUBAGENT_ACTIVE_TOOLS}`);
+        expect(isSubagentDetailsV1(running)).toBe(true);
+        expect(isSubagentDetailsV1({ ...running, run: { ...running.run, activeTools } })).toBe(false);
     });
 
     test("orders and caps recent activity", () => {

@@ -1,4 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
+import type { BackgroundSubagentViewModel } from "./background-subagent.js";
 import type { SubagentViewModel } from "./subagent.js";
 
 interface DisplayItemBase {
@@ -95,6 +96,7 @@ export interface PuiSnapshot {
     queuedFollowUp: readonly string[];
     display: DisplayItem[];
     activeTools: ActiveTool[];
+    backgroundSubagents: BackgroundSubagentViewModel[];
     toasts: ToastMessage[];
     exitRequested: boolean;
 }
@@ -130,4 +132,4 @@ export interface AppliedPromptCompletion {
     cursorOffset: number;
 }
 
-export type PromptAction = "sent" | "models" | "sessions" | "commands" | "help" | "ignored";
+export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "commands" | "help" | "ignored";

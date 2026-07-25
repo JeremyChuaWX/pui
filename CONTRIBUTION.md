@@ -1,1 +1,2 @@
 - use conventional commits
+- run `bun run check` before opening a pull request

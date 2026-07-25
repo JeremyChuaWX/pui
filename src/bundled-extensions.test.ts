@@ -4,16 +4,28 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
     type AgentSessionRuntime,
+    createAgentSessionFromServices,
     createAgentSessionRuntime,
+    createAgentSessionServices,
     DefaultResourceLoader,
     SessionManager,
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
+import { resolveFdBinary } from "../extensions/file-search/binaries.js";
 import { BUNDLED_EXTENSION_FACTORIES, BUNDLED_SUBAGENT_SOURCE_PATH } from "./bundled-extensions.js";
 import { createPuiRuntime } from "./controller.js";
 
 const bundledTools = {
-    "<inline:pui-subagent>": ["subagent"],
+    "<inline:pui-file-search>": ["fd", "rg"],
+    "<inline:pui-subagent>": [
+        "subagent",
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_check",
+        "subagent_cancel",
+        "subagent_list",
+    ],
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
@@ -31,7 +43,11 @@ function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): 
 
 describe("bundled extensions", () => {
     test("exposes application-owned tools as named inline factories with the subagent source intact", async () => {
-        expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual(["pui-subagent", "pui-web"]);
+        expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual([
+            "pui-file-search",
+            "pui-subagent",
+            "pui-web",
+        ]);
         expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);
         expect((await fs.promises.stat(BUNDLED_SUBAGENT_SOURCE_PATH)).isFile()).toBe(true);
     });
@@ -96,6 +112,110 @@ describe("bundled extensions", () => {
 
             expect((await runtime.switchSession(resumedPath)).cancelled).toBe(false);
             expectOneOfEachBundledTool(runtime, resumedCwd);
+        } finally {
+            await runtime.dispose();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+
+    test.skipIf(process.platform === "win32")("shares the fdfind fallback with @ file completion", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-fdfind-autocomplete-test-"));
+        const fdfind = path.join(temp, "fdfind");
+        const match = path.join(temp, "needle.txt");
+        await Promise.all([
+            fs.promises.writeFile(match, "fixture\n"),
+            fs.promises.writeFile(fdfind, `#!/bin/sh\nprintf '%s\\n' '${match}'\n`, { mode: 0o755 }),
+        ]);
+
+        try {
+            const lookups: string[] = [];
+            const binary = resolveFdBinary((name) => {
+                lookups.push(name);
+                return name === "fdfind" ? fdfind : undefined;
+            });
+            expect(lookups).toEqual(["fd", "fdfind"]);
+            expect(binary.command).toBe(fdfind);
+
+            const provider = new CombinedAutocompleteProvider([], temp, binary.command);
+            const suggestions = await provider.getSuggestions(["@nee"], 0, 4, {
+                signal: new AbortController().signal,
+            });
+            expect(suggestions?.prefix).toBe("@nee");
+            expect(suggestions?.items.some((item) => item.value.includes("needle.txt"))).toBe(true);
+        } finally {
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+
+    test("normal Pi load order gives discovered extensions deterministic ownership of conflicting tools", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-bundled-conflict-test-"));
+        const cwd = path.join(temp, "session-cwd");
+        const agentDir = path.join(temp, "agent-dir");
+        const globalExtensionDir = path.join(agentDir, "extensions");
+        const projectExtensionDir = path.join(cwd, ".pi", "extensions");
+        await Promise.all([
+            fs.promises.mkdir(globalExtensionDir, { recursive: true }),
+            fs.promises.mkdir(projectExtensionDir, { recursive: true }),
+        ]);
+        const fixture = (name: string, owner: string, unrelated: string) => `
+import { Type } from "typebox";
+export default function (pi: any) {
+  pi.registerTool({ name: "${name}", label: "${owner}", description: "owned by ${owner}", parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "${owner}" }] }; } });
+  pi.registerTool({ name: "${unrelated}", label: "${unrelated}", description: "unrelated", parameters: Type.Object({}), async execute() { return { content: [{ type: "text", text: "ok" }] }; } });
+}
+`;
+        await Promise.all([
+            fs.promises.writeFile(
+                path.join(globalExtensionDir, "global-conflict.ts"),
+                fixture("fd", "global", "global_extra"),
+            ),
+            fs.promises.writeFile(
+                path.join(projectExtensionDir, "project-conflict.ts"),
+                fixture("rg", "project", "project_extra"),
+            ),
+        ]);
+
+        const settingsManager = SettingsManager.inMemory();
+        settingsManager.setProjectTrusted(true);
+        const runtime = await createAgentSessionRuntime(
+            async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
+                const services = await createAgentSessionServices({
+                    cwd,
+                    agentDir,
+                    settingsManager,
+                    resourceLoaderOptions: { extensionFactories: BUNDLED_EXTENSION_FACTORIES },
+                });
+                return {
+                    ...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
+                    services,
+                    diagnostics: services.diagnostics,
+                };
+            },
+            { cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) },
+        );
+        try {
+            const tools = runtime.session.getAllTools();
+            for (const name of ["fd", "rg", "global_extra", "project_extra"]) {
+                expect(tools.filter((tool) => tool.name === name)).toHaveLength(1);
+            }
+            const fd = tools.find((tool) => tool.name === "fd");
+            const rg = tools.find((tool) => tool.name === "rg");
+            expect(fd?.description).toBe("owned by global");
+            expect(rg?.description).toBe("owned by project");
+            const signal = new AbortController().signal;
+            const fdDefinition = runtime.session.extensionRunner.getToolDefinition("fd");
+            const rgDefinition = runtime.session.extensionRunner.getToolDefinition("rg");
+            const fdResult = await fdDefinition?.execute("fd-fixture", {}, signal, undefined, { cwd } as never);
+            const rgResult = await rgDefinition?.execute("rg-fixture", {}, signal, undefined, { cwd } as never);
+            expect(fdResult?.content).toEqual([{ type: "text", text: "global" }]);
+            expect(rgResult?.content).toEqual([{ type: "text", text: "project" }]);
+
+            const extensions = runtime.services.resourceLoader.getExtensions();
+            expect(extensions.errors.filter((error) => /fd.*conflict|conflict.*fd/i.test(error.error))).toHaveLength(1);
+            expect(extensions.errors.filter((error) => /rg.*conflict|conflict.*rg/i.test(error.error))).toHaveLength(1);
+
+            const fallback = resolveFdBinary((name) => (name === "fdfind" ? "/fixture/fdfind" : undefined));
+            expect(fallback.command).toBe("/fixture/fdfind");
         } finally {
             await runtime.dispose();
             await fs.promises.rm(temp, { recursive: true, force: true });

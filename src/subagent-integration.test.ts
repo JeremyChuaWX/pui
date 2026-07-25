@@ -36,6 +36,7 @@ function assistantCalls(ids: string[], name = "subagent"): AgentMessage {
 function details(
     id: string,
     status: "queued" | "starting" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out",
+    model = "fixture/model",
 ): Record<string, unknown> {
     const terminal = ["succeeded", "failed", "cancelled", "timed_out"].includes(status);
     return {
@@ -44,7 +45,7 @@ function details(
         run: {
             id,
             agent: "explore",
-            model: "fixture/model",
+            model,
             cwd: "/repo",
             status,
             phase:
@@ -105,6 +106,57 @@ describe("extension update to host display integration", () => {
         expect(cards).toHaveLength(5);
         expect(cards.map((card) => card.subagent?.id)).toEqual(ids);
         expect(cards.map((card) => card.subagent?.status)).toEqual(ids.map(() => "queued"));
+    });
+
+    test("reconciles progress without changing display solely for a shortened model id", () => {
+        const id = "stable-model";
+        let state: ToolExecutionState = new Map();
+        state = apply(
+            state,
+            {
+                type: "tool_execution_start",
+                toolCallId: id,
+                toolName: "subagent",
+                args: { agent: "explore", prompt: "Inspect labels", cwd: "/repo" },
+            },
+            1,
+        );
+        state = apply(
+            state,
+            {
+                type: "tool_execution_update",
+                toolCallId: id,
+                toolName: "subagent",
+                args: { agent: "explore", prompt: "Inspect labels", cwd: "/repo" },
+                partialResult: {
+                    content: [{ type: "text", text: "running" }],
+                    details: details(id, "running", "openai-codex/gpt-5.4-mini:off"),
+                },
+            },
+            2,
+        );
+
+        const before = buildDisplayItems([assistantCalls([id])], undefined, { toolExecutions: state })[0];
+        state = apply(
+            state,
+            {
+                type: "tool_execution_update",
+                toolCallId: id,
+                toolName: "subagent",
+                args: { agent: "explore", prompt: "Inspect labels", cwd: "/repo" },
+                partialResult: {
+                    content: [{ type: "text", text: "still running" }],
+                    details: details(id, "running", "openai-codex/gpt-5.4-mini:off"),
+                },
+            },
+            3,
+        );
+        const after = buildDisplayItems([assistantCalls([id])], undefined, { toolExecutions: state })[0];
+
+        expect(before && "subagent" in before ? before.subagent?.model : undefined).toBe(
+            "openai-codex/gpt-5.4-mini:off",
+        );
+        expect(after && "subagent" in after ? after.subagent?.model : undefined).toBe("openai-codex/gpt-5.4-mini:off");
     });
 
     test("keeps sibling status and final details correct when completion order differs", () => {

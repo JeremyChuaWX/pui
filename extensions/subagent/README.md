@@ -1,6 +1,6 @@
 # Subagent extension
 
-This extension supplies the `subagent` tool. Subagents are **not a Pi core feature**: the extension owns its trusted presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
+This extension supplies the blocking `subagent` tool plus `subagent_spawn`, `subagent_wait`, `subagent_check`, `subagent_cancel`, and `subagent_list` for session-scoped background work. Subagents are **not a Pi core feature**: the extension owns its trusted presets, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
 
 ## Tool shape
 
@@ -38,6 +38,16 @@ The explicit worker reads repository guidance itself, completes the delegated ta
 All modes disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt tells the child to discover `AGENTS.md` and contribution documentation before editing; omitted-agent calls receive no equivalent bundled instruction. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
 
 Relative working directories resolve from the parent session's working directory. `~`, `~/...`, and the accidental leading `@` commonly produced by models are normalized before the directory is canonicalized.
+
+## Background jobs
+
+`subagent_spawn` validates the prompt and working directory, then immediately returns a job ID while the child waits on the same process-wide FIFO concurrency limit as blocking calls. Continue useful parent work after spawning. Use `subagent_check` or `subagent_list` for non-blocking inspection, `subagent_wait` only when progress depends on results, and `subagent_cancel` for explicit cancellation. Aborting a wait never cancels its jobs.
+
+Background completion is delivered exactly once as a persisted `subagent-result` custom message unless a wait consumes it first. Completion while the parent is busy is deferred until `agent_settled`; idle completion is delivered immediately. Wait and automatic-delivery output have smaller budgets within Pi's 50KB/2000-line hard ceiling, and truncated complete output retains a private file path.
+
+The extension emits complete version-1 snapshots on `pui.subagent.background` through `pi.events`. Envelopes use schema `pi.subagent.background` and include the current `sessionId` and a fresh extension `instanceId`; jobs include bounded title, prompt, activity, preview, diagnostics, paths, and the existing `SubagentRunV1`. At most 64 jobs are tracked, pruning the oldest terminal entries first. Hosts may explicitly cancel a job with a bounded version-1 `pi.subagent.background.control` message on `pui.subagent.background.control`; controls are accepted only when both session and extension instance match, and the listener is removed during shutdown.
+
+Reload, session replacement, fork, and quit abort all queued/running background jobs. Shutdown waits concurrently for settlement with a bounded teardown, clears deferred results, removes full-output directories created by this extension, emits `reset`, and never sends stale result messages or writes a late spill. Jobs are intentionally not restored or reattached.
 
 ## Security boundary
 
@@ -77,13 +87,13 @@ A call's non-empty `model` value always overrides model selection. With no expli
 
 Sibling outer tool calls are the concurrency unit. Additional calls stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
 
-If final output exceeds the model-visible limit, the extension writes the complete assistant output to a mode-`0600` file in a private temporary directory and includes its path in the result. No file is created for untruncated output.
+If final output exceeds the model-visible limit, the extension writes the complete assistant output to a mode-`0600` file in a private temporary directory and includes its path in the result. The file remains available for inspection during the active session and is removed at session shutdown. Paths supplied by the child runner remain externally owned and are not removed. No file is created for untruncated output.
 
 ## Troubleshooting
 
 - **`Unable to start child Pi`**: ensure `pi` is on `PATH`. When the parent is Pi's CLI, the extension safely reuses that CLI entrypoint; SDK hosts do not reuse their own `argv[1]`.
 - **Exited without a final assistant response**: inspect the bounded stderr/diagnostic in the failed tool result. Malformed JSONL lines are reported as diagnostics rather than crashing the parent.
-- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `index.ts` after review.
+- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `presets.ts` after review.
 - **Calls remain queued**: inspect `PI_SUBAGENT_MAX_CONCURRENCY`; invalid values fall back to four.
 - **Full output path missing after truncation**: the result remains usable, but the private temporary file could not be created.
 
