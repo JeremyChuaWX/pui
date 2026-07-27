@@ -478,15 +478,13 @@ describe("web output retention integration", () => {
         await waitUntil(() => fetchStarted);
 
         await registered.handler("session_shutdown")!();
+        await registered.handler("session_start")!();
+        const nextResult = await run(registered("web_search"), { query: "next session" }, context(openai));
         resolveFetch(new Response(JSON.stringify({ output_text: "x".repeat(60_000) })));
         const lateResult = await lateExecution;
 
         expect("fullOutputPath" in lateResult.details).toBe(false);
         expect(lateResult.content[0].text).toContain("session is shutting down");
-        expect(directories).toEqual([]);
-
-        await registered.handler("session_start")!();
-        const nextResult = await run(registered("web_search"), { query: "next session" }, context(openai));
         expect(nextResult.details.fullOutputPath).toBeString();
         expect(directories).toEqual(["/private/late-web-output-1"]);
     });

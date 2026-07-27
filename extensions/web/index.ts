@@ -12,7 +12,7 @@ export type WebExtensionDependencies = WebSearchDependencies &
         outputRetention?: WebOutputRetentionDependencies;
     };
 
-class SessionOutputRetention implements WebOutputRetentionAdapter {
+class SessionOutputRetention {
     private owner: WebOutputRetentionAdapter | undefined;
     private shutdownOwner: WebOutputRetentionAdapter | undefined;
     private readonly retiredOwners = new Set<WebOutputRetentionAdapter>();
@@ -26,13 +26,13 @@ class SessionOutputRetention implements WebOutputRetentionAdapter {
         this.shutdownOwner = undefined;
     }
 
-    retain(fullText: string, limits: { maxBytes: number; maxLines: number }) {
+    acquire(): WebOutputRetentionAdapter {
         if (!this.acceptingResults) {
             this.shutdownOwner ??= this.closedOwner();
-            return this.shutdownOwner.retain(fullText, limits);
+            return this.shutdownOwner;
         }
         this.owner ??= new WebOutputRetention(this.ownerDependencies);
-        return this.owner.retain(fullText, limits);
+        return this.owner;
     }
 
     cleanup(): Promise<boolean> {
@@ -83,8 +83,8 @@ class SessionOutputRetention implements WebOutputRetentionAdapter {
 /** Registers the application-owned web discovery and extraction tools. */
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
     const outputRetention = new SessionOutputRetention(dependencies.outputRetention ?? {});
-    registerSearch(pi, dependencies, outputRetention);
-    registerCrawl(pi, dependencies, outputRetention);
+    registerSearch(pi, dependencies, () => outputRetention.acquire());
+    registerCrawl(pi, dependencies, () => outputRetention.acquire());
     pi.on("session_start", () => outputRetention.startSession());
     pi.on("session_shutdown", async () => {
         await outputRetention.cleanup();

@@ -320,7 +320,7 @@ function formatSearchResult(query: string, result: SearchResult): string {
 export default function webSearchExtension(
     pi: ExtensionAPI,
     dependencies: WebSearchDependencies,
-    outputRetention: WebOutputRetentionAdapter,
+    getOutputRetention: () => WebOutputRetentionAdapter,
 ) {
     pi.registerTool<typeof SEARCH_PARAMS, SearchDetails>({
         name: "web_search",
@@ -336,6 +336,7 @@ export default function webSearchExtension(
         ],
         parameters: SEARCH_PARAMS,
         async execute(_toolCallId, params, signal, onUpdate, ctx) {
+            const outputRetention = getOutputRetention();
             onUpdate?.({
                 content: [{ type: "text", text: `Searching the web for: ${params.query}` }],
                 details: { status: "searching" },

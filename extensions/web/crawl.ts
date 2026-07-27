@@ -159,7 +159,7 @@ function formatCrawlResult(result: CrawlResult): string {
 export default function webCrawlExtension(
     pi: ExtensionAPI,
     dependencies: WebCrawlDependencies,
-    outputRetention: WebOutputRetentionAdapter,
+    getOutputRetention: () => WebOutputRetentionAdapter,
 ) {
     pi.registerTool<typeof CRAWL_PARAMS, CrawlDetails>({
         name: "web_crawl",
@@ -175,6 +175,7 @@ export default function webCrawlExtension(
         ],
         parameters: CRAWL_PARAMS,
         async execute(_toolCallId, params, signal, onUpdate) {
+            const outputRetention = getOutputRetention();
             const maxBytes = clampMaxBytes(params.max_bytes);
             onUpdate?.({
                 content: [{ type: "text", text: `Scraping with Firecrawl: ${params.url}` }],
