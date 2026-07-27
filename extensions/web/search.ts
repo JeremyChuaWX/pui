@@ -1,16 +1,12 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     type ExtensionAPI,
     type ExtensionContext,
-    formatSize,
-    truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
+import type { WebOutputRetentionAdapter } from "./output-retention.ts";
 
 const SEARCH_PARAMS = Type.Object({
     query: Type.String({ minLength: 1, description: "Natural-language web search query." }),
@@ -309,11 +305,8 @@ async function runSearch(
     };
 }
 
-async function formatSearchResult(
-    query: string,
-    result: SearchResult,
-): Promise<{ text: string; truncated: boolean; fullOutputPath?: string }> {
-    const fullText = [
+function formatSearchResult(query: string, result: SearchResult): string {
+    return [
         `Web search findings for ${JSON.stringify(query)}:`,
         `Provider: ${result.provider}; model: ${result.model}`,
         "",
@@ -322,20 +315,13 @@ async function formatSearchResult(
         result.sources.length ? "Sources:" : "Sources: none returned by provider",
         ...result.sources.map((source, index) => `${index + 1}. ${source.title}\n   ${source.url}`),
     ].join("\n");
-    const truncation = truncateHead(fullText, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-    if (!truncation.truncated) return { text: truncation.content, truncated: false };
-
-    const directory = await mkdtemp(join(tmpdir(), "pi-web-search-"));
-    const fullOutputPath = join(directory, "result.md");
-    await writeFile(fullOutputPath, fullText, "utf8");
-    return {
-        text: `${truncation.content}\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`,
-        truncated: true,
-        fullOutputPath,
-    };
 }
 
-export default function webSearchExtension(pi: ExtensionAPI, dependencies: WebSearchDependencies = {}) {
+export default function webSearchExtension(
+    pi: ExtensionAPI,
+    dependencies: WebSearchDependencies,
+    outputRetention: WebOutputRetentionAdapter,
+) {
     pi.registerTool<typeof SEARCH_PARAMS, SearchDetails>({
         name: "web_search",
         label: "Web Search",
@@ -358,7 +344,11 @@ export default function webSearchExtension(pi: ExtensionAPI, dependencies: WebSe
             try {
                 const result = await runSearch(params, ctx, signal, dependencies);
                 if (signal?.aborted) throw new Error("Search cancelled.");
-                const formatted = await formatSearchResult(params.query, result);
+                const fullText = formatSearchResult(params.query, result);
+                const formatted = await outputRetention.retain(fullText, {
+                    maxBytes: DEFAULT_MAX_BYTES,
+                    maxLines: DEFAULT_MAX_LINES,
+                });
                 return {
                     content: [{ type: "text", text: formatted.text }],
                     details: {
@@ -368,7 +358,7 @@ export default function webSearchExtension(pi: ExtensionAPI, dependencies: WebSe
                         query: params.query,
                         sources: result.sources,
                         truncated: formatted.truncated,
-                        fullOutputPath: formatted.fullOutputPath,
+                        ...(formatted.fullOutputPath && { fullOutputPath: formatted.fullOutputPath }),
                     },
                 };
             } catch (error) {
