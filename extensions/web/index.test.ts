@@ -377,7 +377,7 @@ describe("web output retention integration", () => {
             maxRetainedSessionBytes: Buffer.byteLength(expectedSearchOutput),
         });
         const registered = host({
-            outputRetention,
+            createOutputRetention: () => outputRetention,
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
@@ -395,8 +395,13 @@ describe("web output retention integration", () => {
         expect(crawl.content[0].text).toContain("Output truncated");
     });
 
-    test("session shutdown removes retained search and crawl directories", async () => {
+    test("session shutdown removes retained output and creates a fresh injected owner", async () => {
+        let owners = 0;
         const registered = host({
+            createOutputRetention() {
+                owners++;
+                return new WebOutputRetention();
+            },
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
@@ -407,15 +412,47 @@ describe("web output retention integration", () => {
         const crawl = await run(registered("web_crawl"), { url: "https://example.test", max_bytes: 100 });
         const paths = [search.details.fullOutputPath, crawl.details.fullOutputPath] as string[];
 
+        expect(owners).toBe(1);
         for (const path of paths) expect(await stat(path)).toBeDefined();
         expect(dirname(paths[0])).not.toBe(dirname(paths[1]));
         await registered.handler("session_shutdown")!();
         for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
 
         const nextSession = await run(registered("web_search"), { query: "after shutdown" }, context(openai));
+        expect(owners).toBe(2);
         expect(nextSession.details.truncated).toBe(true);
         expect(nextSession.details.fullOutputPath).toBeString();
         expect(await stat(nextSession.details.fullOutputPath)).toBeDefined();
+    });
+
+    test("retries a retired owner's failed cleanup on a later session shutdown", async () => {
+        let directory = 0;
+        let removals = 0;
+        const removed: string[] = [];
+        const fileSystem: WebOutputRetentionFileSystem = {
+            async mkdtemp() {
+                return `/private/retry-web-output-${++directory}`;
+            },
+            async chmod() {},
+            async writeFile() {},
+            async rm(path) {
+                removed.push(path);
+                if (removals++ === 0) throw new Error("busy");
+            },
+        };
+        const registered = host({
+            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
+            environment: {},
+            fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
+        });
+
+        await run(registered("web_search"), { query: "first session" }, context(openai));
+        await registered.handler("session_shutdown")!();
+        await run(registered("web_search"), { query: "second session" }, context(openai));
+        await registered.handler("session_shutdown")!();
+
+        expect(removed.filter((path) => path === "/private/retry-web-output-1")).toHaveLength(2);
+        expect(removed).toContain("/private/retry-web-output-2");
     });
 
     test("waits for a write settling during shutdown and leaves no retained directory", async () => {
@@ -437,7 +474,7 @@ describe("web output retention integration", () => {
             },
         };
         const registered = host({
-            outputRetention: new WebOutputRetention({ fileSystem }),
+            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
             environment: {},
             fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
         });
@@ -470,7 +507,7 @@ describe("web output retention integration", () => {
             async rm() {},
         };
         const registered = host({
-            outputRetention: new WebOutputRetention({ fileSystem }),
+            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")

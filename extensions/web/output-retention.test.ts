@@ -127,7 +127,7 @@ describe("WebOutputRetention", () => {
     test("returns only the notice when its byte budget leaves no room for a preview separator", async () => {
         const { fileSystem } = fakeFileSystem();
         const retention = store({ fileSystem });
-        const fullText = "x".repeat(500);
+        const fullText = "x".repeat(2_000);
         const baseline = await retention.retain(fullText, { maxBytes: 1_000, maxLines: 10 });
         const notice = baseline.text.split("\n\n").at(-1)!.replace("web-output-1", "web-output-2");
 
@@ -249,8 +249,8 @@ describe("WebOutputRetention", () => {
 
         const first = retention.cleanup();
         expect(retention.cleanup()).toBe(first);
-        await expect(first).resolves.toBeUndefined();
-        await expect(retention.cleanup()).resolves.toBeUndefined();
+        await expect(first).resolves.toBe(false);
+        await expect(retention.cleanup()).resolves.toBe(true);
         await retention.cleanup();
 
         expect(calls.rm).toEqual(["/private/web-output-1", "/private/web-output-1"]);
@@ -269,7 +269,7 @@ describe("WebOutputRetention", () => {
         const first = retention.cleanup();
         const second = retention.cleanup();
         expect(second).toBe(first);
-        await expect(first).resolves.toBeUndefined();
+        await expect(first).resolves.toBe(true);
         expect(calls.rm).toEqual(["/private/web-output-1"]);
     });
 });

@@ -14,7 +14,7 @@ export interface RetainedWebOutput {
 
 export interface WebOutputRetentionAdapter {
     retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput>;
-    cleanup(): Promise<void>;
+    cleanup(): Promise<boolean>;
 }
 
 export interface WebOutputRetentionFileSystem {
@@ -63,7 +63,7 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     private readonly pending = new Set<Promise<RetainedWebOutput>>();
     private retainedBytes = 0;
     private closed = false;
-    private cleanupPromise: Promise<void> | undefined;
+    private cleanupPromise: Promise<boolean> | undefined;
 
     constructor(dependencies: WebOutputRetentionDependencies = {}) {
         this.fileSystem = dependencies.fileSystem ?? defaultFileSystem;
@@ -119,20 +119,22 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         return pending;
     }
 
-    cleanup(): Promise<void> {
+    cleanup(): Promise<boolean> {
         if (this.cleanupPromise) return this.cleanupPromise;
         this.closed = true;
-        this.cleanupPromise = this.cleanupOwnedOutput().finally(() => {
-            if (this.directories.size > 0) this.cleanupPromise = undefined;
+        this.cleanupPromise = this.cleanupOwnedOutput().then((complete) => {
+            if (!complete) this.cleanupPromise = undefined;
+            return complete;
         });
         return this.cleanupPromise;
     }
 
-    private async cleanupOwnedOutput(): Promise<void> {
+    private async cleanupOwnedOutput(): Promise<boolean> {
         await Promise.allSettled([...this.pending]);
         const directories = [...this.directories];
         await Promise.allSettled(directories.map((directory) => this.removeDirectory(directory)));
         this.retainedBytes = 0;
+        return this.directories.size === 0;
     }
 
     private async write(output: string): Promise<WriteResult> {
