@@ -412,6 +412,7 @@ describe("web output retention integration", () => {
         await registered.handler("session_shutdown")!();
         for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
 
+        await registered.handler("session_start")!();
         const nextSession = await run(registered("web_search"), { query: "after shutdown" }, context(openai));
         expect(nextSession.details.truncated).toBe(true);
         expect(nextSession.details.fullOutputPath).toBeString();
@@ -441,11 +442,53 @@ describe("web output retention integration", () => {
 
         await run(registered("web_search"), { query: "first session" }, context(openai));
         await registered.handler("session_shutdown")!();
+        await registered.handler("session_start")!();
         await run(registered("web_search"), { query: "second session" }, context(openai));
         await registered.handler("session_shutdown")!();
 
         expect(removed.filter((path) => path === "/private/retry-web-output-1")).toHaveLength(2);
         expect(removed).toContain("/private/retry-web-output-2");
+    });
+
+    test("does not assign a result finishing during shutdown to the next session", async () => {
+        let fetchStarted = false;
+        let resolveFetch!: (response: Response) => void;
+        const firstFetch = new Promise<Response>((resolve) => (resolveFetch = resolve));
+        const directories: string[] = [];
+        const fileSystem: WebOutputRetentionFileSystem = {
+            async mkdtemp() {
+                const directory = `/private/late-web-output-${directories.length + 1}`;
+                directories.push(directory);
+                return directory;
+            },
+            async chmod() {},
+            async writeFile() {},
+            async rm() {},
+        };
+        const registered = host({
+            outputRetention: { fileSystem },
+            environment: {},
+            fetch: async () => {
+                if (fetchStarted) return new Response(JSON.stringify({ output_text: "y".repeat(60_000) }));
+                fetchStarted = true;
+                return firstFetch;
+            },
+        });
+        const lateExecution = run(registered("web_search"), { query: "late result" }, context(openai));
+        await waitUntil(() => fetchStarted);
+
+        await registered.handler("session_shutdown")!();
+        resolveFetch(new Response(JSON.stringify({ output_text: "x".repeat(60_000) })));
+        const lateResult = await lateExecution;
+
+        expect("fullOutputPath" in lateResult.details).toBe(false);
+        expect(lateResult.content[0].text).toContain("session is shutting down");
+        expect(directories).toEqual([]);
+
+        await registered.handler("session_start")!();
+        const nextResult = await run(registered("web_search"), { query: "next session" }, context(openai));
+        expect(nextResult.details.fullOutputPath).toBeString();
+        expect(directories).toEqual(["/private/late-web-output-1"]);
     });
 
     test("waits for a write settling during shutdown and leaves no retained directory", async () => {
