@@ -122,7 +122,9 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     cleanup(): Promise<void> {
         if (this.cleanupPromise) return this.cleanupPromise;
         this.closed = true;
-        this.cleanupPromise = this.cleanupOwnedOutput();
+        this.cleanupPromise = this.cleanupOwnedOutput().finally(() => {
+            if (this.directories.size > 0) this.cleanupPromise = undefined;
+        });
         return this.cleanupPromise;
     }
 
@@ -130,7 +132,6 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         await Promise.allSettled([...this.pending]);
         const directories = [...this.directories];
         await Promise.allSettled(directories.map((directory) => this.removeDirectory(directory)));
-        this.directories.clear();
         this.retainedBytes = 0;
     }
 
@@ -166,8 +167,9 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         try {
             await this.fileSystem.rm(directory, { recursive: true, force: true });
             this.directories.delete(directory);
-        } catch {
-            // Cleanup is best-effort. Keep the directory tracked so session cleanup can retry it.
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") this.directories.delete(directory);
+            // Other failures stay tracked so a later cleanup call can retry them.
         }
     }
 
@@ -193,10 +195,15 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         }
 
         const separator = "\n\n";
-        const preview = truncateHead(fullText, {
-            maxBytes: limits.maxBytes - Buffer.byteLength(notice, "utf8") - Buffer.byteLength(separator, "utf8"),
-            maxLines: limits.maxLines - 2,
-        }).content;
+        const previewMaxBytes =
+            limits.maxBytes - Buffer.byteLength(notice, "utf8") - Buffer.byteLength(separator, "utf8");
+        const preview =
+            previewMaxBytes > 0
+                ? truncateHead(fullText, {
+                      maxBytes: previewMaxBytes,
+                      maxLines: limits.maxLines - 2,
+                  }).content
+                : "";
         const text = preview ? `${preview}${separator}${notice}` : notice;
         return { text, truncated: true, ...(fullOutputPath && { fullOutputPath }) };
     }

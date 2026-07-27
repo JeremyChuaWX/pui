@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { registerWebExtension } from "./index.ts";
 import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
+import { lineCount, waitUntil } from "./test-utils.ts";
 
 const shutdownHandlers = new Set<() => Promise<void>>();
 
@@ -43,18 +44,6 @@ function context(model: any, apiKey = "secret") {
 
 function run(tool: any, params: any, ctx: any = {}, signal?: AbortSignal) {
     return tool.execute("call", params, signal, undefined, ctx);
-}
-
-function lineCount(text: string): number {
-    return text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-    for (let attempt = 0; attempt < 100; attempt++) {
-        if (predicate()) return;
-        await Bun.sleep(1);
-    }
-    throw new Error("Timed out waiting for condition");
 }
 
 afterEach(async () => {
@@ -357,7 +346,7 @@ describe("web_crawl", () => {
         expect(result.details.truncated).toBe(true);
         expect(result.content[0].text).toContain("Output truncated");
         expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(100);
-        expect(lineCount(result.content[0].text)).toBeLessThanOrEqual(2000);
+        expect(lineCount(result.content[0].text)).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
         expect(await readFile(result.details.fullOutputPath, "utf8")).toBe(
             [
                 "Web crawl result for https://example.test/:",
@@ -374,16 +363,25 @@ describe("web_crawl", () => {
 
 describe("web output retention integration", () => {
     test("shares one session quota owner between search and crawl", async () => {
+        const answer = "s".repeat(60_000);
+        const expectedSearchOutput = [
+            'Web search findings for "quota":',
+            "Provider: openai; model: openai/gpt-5",
+            "",
+            answer,
+            "",
+            "Sources: none returned by provider",
+        ].join("\n");
         const outputRetention = new WebOutputRetention({
             maxRetainedResultBytes: 70_000,
-            maxRetainedSessionBytes: 60_200,
+            maxRetainedSessionBytes: Buffer.byteLength(expectedSearchOutput),
         });
         const registered = host({
             outputRetention,
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
-                    ? new Response(JSON.stringify({ output_text: "s".repeat(60_000) }))
+                    ? new Response(JSON.stringify({ output_text: answer }))
                     : new Response(JSON.stringify({ data: { markdown: "crawl ".repeat(200) } })),
         });
 
@@ -413,6 +411,11 @@ describe("web output retention integration", () => {
         expect(dirname(paths[0])).not.toBe(dirname(paths[1]));
         await registered.handler("session_shutdown")!();
         for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+
+        const nextSession = await run(registered("web_search"), { query: "after shutdown" }, context(openai));
+        expect(nextSession.details.truncated).toBe(true);
+        expect(nextSession.details.fullOutputPath).toBeString();
+        expect(await stat(nextSession.details.fullOutputPath)).toBeDefined();
     });
 
     test("waits for a write settling during shutdown and leaves no retained directory", async () => {

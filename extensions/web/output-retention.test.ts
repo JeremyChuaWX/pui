@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
+import { lineCount, waitUntil } from "./test-utils.ts";
 
 const stores: WebOutputRetention[] = [];
 
@@ -9,10 +10,6 @@ function store(dependencies: ConstructorParameters<typeof WebOutputRetention>[0]
     const retention = new WebOutputRetention(dependencies);
     stores.push(retention);
     return retention;
-}
-
-function lineCount(text: string): number {
-    return text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -45,14 +42,6 @@ function fakeFileSystem(overrides: Partial<WebOutputRetentionFileSystem> = {}) {
         ...overrides,
     };
     return { calls, fileSystem };
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-    for (let attempt = 0; attempt < 100; attempt++) {
-        if (predicate()) return;
-        await Bun.sleep(1);
-    }
-    throw new Error("Timed out waiting for condition");
 }
 
 afterEach(async () => {
@@ -133,6 +122,22 @@ describe("WebOutputRetention", () => {
             expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(maxBytes);
             expect(result.text).not.toContain("�");
         }
+    });
+
+    test("returns only the notice when its byte budget leaves no room for a preview separator", async () => {
+        const { fileSystem } = fakeFileSystem();
+        const retention = store({ fileSystem });
+        const fullText = "x".repeat(500);
+        const baseline = await retention.retain(fullText, { maxBytes: 1_000, maxLines: 10 });
+        const notice = baseline.text.split("\n\n").at(-1)!.replace("web-output-1", "web-output-2");
+
+        const result = await retention.retain(fullText, {
+            maxBytes: Buffer.byteLength(notice, "utf8"),
+            maxLines: 3,
+        });
+
+        expect(result.text).toBe(notice);
+        expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(Buffer.byteLength(notice, "utf8"));
     });
 
     test("does not retain a result above the per-result quota", async () => {
@@ -229,6 +234,26 @@ describe("WebOutputRetention", () => {
         expect(calls.mkdtemp).toHaveLength(1);
         removeGate.resolve();
         await cleanup;
+    });
+
+    test("retries directories whose removal failed during cleanup", async () => {
+        let removals = 0;
+        const { calls, fileSystem } = fakeFileSystem({
+            async rm(path) {
+                calls.rm.push(path);
+                if (removals++ === 0) throw new Error("busy");
+            },
+        });
+        const retention = store({ fileSystem });
+        await retention.retain("retained output", { maxBytes: 4, maxLines: 10 });
+
+        const first = retention.cleanup();
+        expect(retention.cleanup()).toBe(first);
+        await expect(first).resolves.toBeUndefined();
+        await expect(retention.cleanup()).resolves.toBeUndefined();
+        await retention.cleanup();
+
+        expect(calls.rm).toEqual(["/private/web-output-1", "/private/web-output-1"]);
     });
 
     test("cleanup is idempotent and swallows missing-file errors", async () => {
