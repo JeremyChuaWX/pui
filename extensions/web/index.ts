@@ -1,11 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerCrawl, { type WebCrawlDependencies } from "./crawl.ts";
-import { WebOutputRetention, type WebOutputRetentionAdapter } from "./output-retention.ts";
+import {
+    WebOutputRetention,
+    type WebOutputRetentionAdapter,
+    type WebOutputRetentionDependencies,
+} from "./output-retention.ts";
 import registerSearch, { type WebSearchDependencies } from "./search.ts";
 
 export type WebExtensionDependencies = WebSearchDependencies &
     WebCrawlDependencies & {
-        createOutputRetention?: () => WebOutputRetentionAdapter;
+        outputRetention?: WebOutputRetentionDependencies;
     };
 
 class SessionOutputRetention implements WebOutputRetentionAdapter {
@@ -13,10 +17,10 @@ class SessionOutputRetention implements WebOutputRetentionAdapter {
     private readonly retiredOwners = new Set<WebOutputRetentionAdapter>();
     private cleanupQueue = Promise.resolve(true);
 
-    constructor(private readonly createOwner: () => WebOutputRetentionAdapter) {}
+    constructor(private readonly ownerDependencies: WebOutputRetentionDependencies) {}
 
     retain(fullText: string, limits: { maxBytes: number; maxLines: number }) {
-        this.owner ??= this.createOwner();
+        this.owner ??= new WebOutputRetention(this.ownerDependencies);
         return this.owner.retain(fullText, limits);
     }
 
@@ -43,9 +47,7 @@ class SessionOutputRetention implements WebOutputRetentionAdapter {
 
 /** Registers the application-owned web discovery and extraction tools. */
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
-    const outputRetention = new SessionOutputRetention(
-        dependencies.createOutputRetention ?? (() => new WebOutputRetention()),
-    );
+    const outputRetention = new SessionOutputRetention(dependencies.outputRetention ?? {});
     registerSearch(pi, dependencies, outputRetention);
     registerCrawl(pi, dependencies, outputRetention);
     pi.on("session_shutdown", async () => {

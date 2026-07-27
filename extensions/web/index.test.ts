@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { registerWebExtension } from "./index.ts";
-import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
+import type { WebOutputRetentionFileSystem } from "./output-retention.ts";
 import { lineCount, waitUntil } from "./test-utils.ts";
 
 const shutdownHandlers = new Set<() => Promise<void>>();
@@ -372,12 +372,11 @@ describe("web output retention integration", () => {
             "",
             "Sources: none returned by provider",
         ].join("\n");
-        const outputRetention = new WebOutputRetention({
-            maxRetainedResultBytes: 70_000,
-            maxRetainedSessionBytes: Buffer.byteLength(expectedSearchOutput),
-        });
         const registered = host({
-            createOutputRetention: () => outputRetention,
+            outputRetention: {
+                maxRetainedResultBytes: 70_000,
+                maxRetainedSessionBytes: Buffer.byteLength(expectedSearchOutput),
+            },
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
@@ -395,13 +394,9 @@ describe("web output retention integration", () => {
         expect(crawl.content[0].text).toContain("Output truncated");
     });
 
-    test("session shutdown removes retained output and creates a fresh injected owner", async () => {
-        let owners = 0;
+    test("session shutdown removes retained output and creates a fresh configured owner", async () => {
         const registered = host({
-            createOutputRetention() {
-                owners++;
-                return new WebOutputRetention();
-            },
+            outputRetention: {},
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
@@ -412,14 +407,12 @@ describe("web output retention integration", () => {
         const crawl = await run(registered("web_crawl"), { url: "https://example.test", max_bytes: 100 });
         const paths = [search.details.fullOutputPath, crawl.details.fullOutputPath] as string[];
 
-        expect(owners).toBe(1);
         for (const path of paths) expect(await stat(path)).toBeDefined();
         expect(dirname(paths[0])).not.toBe(dirname(paths[1]));
         await registered.handler("session_shutdown")!();
         for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
 
         const nextSession = await run(registered("web_search"), { query: "after shutdown" }, context(openai));
-        expect(owners).toBe(2);
         expect(nextSession.details.truncated).toBe(true);
         expect(nextSession.details.fullOutputPath).toBeString();
         expect(await stat(nextSession.details.fullOutputPath)).toBeDefined();
@@ -441,7 +434,7 @@ describe("web output retention integration", () => {
             },
         };
         const registered = host({
-            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
+            outputRetention: { fileSystem },
             environment: {},
             fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
         });
@@ -474,7 +467,7 @@ describe("web output retention integration", () => {
             },
         };
         const registered = host({
-            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
+            outputRetention: { fileSystem },
             environment: {},
             fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
         });
@@ -507,7 +500,7 @@ describe("web output retention integration", () => {
             async rm() {},
         };
         const registered = host({
-            createOutputRetention: () => new WebOutputRetention({ fileSystem }),
+            outputRetention: { fileSystem },
             environment: { FIRECRAWL_API_KEY: "fire" },
             fetch: async (url) =>
                 String(url).includes("/responses")
