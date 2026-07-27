@@ -7,11 +7,14 @@ import {
 } from "./output-retention.ts";
 import registerSearch, { type WebSearchDependencies } from "./search.ts";
 
+/** Provider dependencies and optional complete-output retention settings for the web extension. */
 export type WebExtensionDependencies = WebSearchDependencies &
     WebCrawlDependencies & {
+        /** Storage and quota overrides applied independently to each session owner. */
         outputRetention?: WebOutputRetentionDependencies;
     };
 
+/** Coordinates exactly one output-retention owner per active extension session. */
 class SessionOutputRetention {
     private owner: WebOutputRetentionAdapter | undefined;
     private shutdownOwner: WebOutputRetentionAdapter | undefined;
@@ -19,13 +22,20 @@ class SessionOutputRetention {
     private acceptingResults = true;
     private cleanupQueue = Promise.resolve(true);
 
+    /** Creates a session coordinator that will lazily create retention owners. */
     constructor(private readonly ownerDependencies: WebOutputRetentionDependencies) {}
 
+    /** Opens a new session for results without reusing the previous session's owner. */
     startSession(): void {
         this.acceptingResults = true;
         this.shutdownOwner = undefined;
     }
 
+    /**
+     * Returns the active session's shared owner, creating it on first use.
+     *
+     * After shutdown begins, returns a closed owner so late results cannot escape session cleanup.
+     */
     acquire(): WebOutputRetentionAdapter {
         if (!this.acceptingResults) {
             this.shutdownOwner ??= this.closedOwner();
@@ -35,6 +45,13 @@ class SessionOutputRetention {
         return this.owner;
     }
 
+    /**
+     * Ends the current session and serializes cleanup with earlier shutdowns.
+     *
+     * Owners whose cleanup fails or returns `false` remain tracked for retry on a later shutdown.
+     *
+     * @returns Whether every retired session owner has been cleaned up.
+     */
     cleanup(): Promise<boolean> {
         this.acceptingResults = false;
         const currentOwner = this.owner;

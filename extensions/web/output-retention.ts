@@ -3,20 +3,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 
+/** Maximum complete-output bytes retained for a single result. */
 export const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
+/** Maximum complete-output bytes retained by one session owner. */
 export const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
 
+/** A bounded tool result and, when retained successfully, its complete-output file. */
 export interface RetainedWebOutput {
+    /** Text bounded by the requested byte and line limits. */
     text: string;
+    /** Whether the complete input was omitted from `text`. */
     truncated: boolean;
+    /** Session-owned path to the complete input; absent when it was not retained. */
     fullOutputPath?: string;
 }
 
+/** Retains oversized web-tool output for the lifetime of one extension session. */
 export interface WebOutputRetentionAdapter {
+    /**
+     * Bounds `fullText` to `limits` and retains the complete text when truncation and quotas require and permit it.
+     *
+     * @returns The bounded result, including a complete-output path only when retention succeeded.
+     */
     retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput>;
+    /**
+     * Stops accepting retained output and removes all files owned by this adapter.
+     *
+     * @returns `true` when no owned directories remain. A `false` result may be retried by calling `cleanup` again.
+     */
     cleanup(): Promise<boolean>;
 }
 
+/** Injectable filesystem operations used to create and remove private retained-output files. */
 export interface WebOutputRetentionFileSystem {
     mkdtemp(prefix: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;
@@ -24,10 +42,15 @@ export interface WebOutputRetentionFileSystem {
     rm(path: string, options: { recursive: true; force: true }): Promise<void>;
 }
 
+/** Optional storage and quota overrides for a session retention owner. */
 export interface WebOutputRetentionDependencies {
+    /** Filesystem implementation; defaults to Node's filesystem promises API. */
     fileSystem?: WebOutputRetentionFileSystem;
+    /** Returns the parent directory in which private output directories are created. */
     temporaryDirectory?: () => string;
+    /** Per-result complete-output quota in UTF-8 bytes. */
     maxRetainedResultBytes?: number;
+    /** Aggregate complete-output quota in UTF-8 bytes for this owner. */
     maxRetainedSessionBytes?: number;
 }
 
@@ -65,6 +88,7 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     private closed = false;
     private cleanupPromise: Promise<boolean> | undefined;
 
+    /** Creates an independent retention owner whose files live until cleanup. */
     constructor(dependencies: WebOutputRetentionDependencies = {}) {
         this.fileSystem = dependencies.fileSystem ?? defaultFileSystem;
         this.temporaryDirectory = dependencies.temporaryDirectory ?? tmpdir;
@@ -74,6 +98,13 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         );
     }
 
+    /**
+     * Returns `fullText` unchanged when it fits; otherwise returns a bounded preview and attempts to retain the complete text.
+     *
+     * @param fullText - Complete web-tool output to bound and, if needed, retain.
+     * @param limits - Maximum UTF-8 bytes and lines allowed in the returned `text`.
+     * @returns A bounded result with `fullOutputPath` only when complete-output retention succeeds.
+     */
     retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput> {
         const normalizedLimits = {
             maxBytes: normalizedLimit(limits.maxBytes),
@@ -119,6 +150,13 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
         return pending;
     }
 
+    /**
+     * Closes this owner, waits for pending writes, and removes its retained-output directories.
+     *
+     * Concurrent calls share the active cleanup. A `false` result means removal was incomplete and a later call retries it.
+     *
+     * @returns Whether all session-owned directories were removed.
+     */
     cleanup(): Promise<boolean> {
         if (this.cleanupPromise) return this.cleanupPromise;
         this.closed = true;
