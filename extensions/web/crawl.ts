@@ -1,14 +1,6 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-    DEFAULT_MAX_BYTES,
-    DEFAULT_MAX_LINES,
-    type ExtensionAPI,
-    formatSize,
-    truncateHead,
-} from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { WebOutputRetentionAdapter } from "./output-retention.ts";
 
 const CRAWL_PARAMS = Type.Object({
     url: Type.String({ minLength: 1, description: "HTTP(S) URL to scrape with Firecrawl." }),
@@ -150,11 +142,8 @@ async function scrapeWithFirecrawl(
     return { requestedUrl: url, sourceUrl, title, content, metadata };
 }
 
-async function formatCrawlResult(
-    result: CrawlResult,
-    maxBytes: number,
-): Promise<{ text: string; truncated: boolean; fullOutputPath?: string }> {
-    const fullText = [
+function formatCrawlResult(result: CrawlResult): string {
+    return [
         `Web crawl result for ${result.requestedUrl}:`,
         "Provider: Firecrawl",
         result.title ? `Title: ${result.title}` : undefined,
@@ -165,20 +154,13 @@ async function formatCrawlResult(
     ]
         .filter((line): line is string => typeof line === "string")
         .join("\n");
-    const truncation = truncateHead(fullText, { maxLines: DEFAULT_MAX_LINES, maxBytes });
-    if (!truncation.truncated) return { text: truncation.content, truncated: false };
-
-    const directory = await mkdtemp(join(tmpdir(), "pi-web-crawl-"));
-    const fullOutputPath = join(directory, "result.md");
-    await writeFile(fullOutputPath, fullText, "utf8");
-    return {
-        text: `${truncation.content}\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`,
-        truncated: true,
-        fullOutputPath,
-    };
 }
 
-export default function webCrawlExtension(pi: ExtensionAPI, dependencies: WebCrawlDependencies = {}) {
+export default function webCrawlExtension(
+    pi: ExtensionAPI,
+    dependencies: WebCrawlDependencies,
+    getOutputRetention: () => WebOutputRetentionAdapter,
+) {
     pi.registerTool<typeof CRAWL_PARAMS, CrawlDetails>({
         name: "web_crawl",
         label: "Web Crawl",
@@ -193,6 +175,7 @@ export default function webCrawlExtension(pi: ExtensionAPI, dependencies: WebCra
         ],
         parameters: CRAWL_PARAMS,
         async execute(_toolCallId, params, signal, onUpdate) {
+            const outputRetention = getOutputRetention();
             const maxBytes = clampMaxBytes(params.max_bytes);
             onUpdate?.({
                 content: [{ type: "text", text: `Scraping with Firecrawl: ${params.url}` }],
@@ -203,7 +186,11 @@ export default function webCrawlExtension(pi: ExtensionAPI, dependencies: WebCra
                 const requestedUrl = normalizeHttpUrl(params.url);
                 const result = await scrapeWithFirecrawl(requestedUrl, signal, dependencies);
                 if (signal?.aborted) throw new Error("Crawl cancelled.");
-                const formatted = await formatCrawlResult(result, maxBytes);
+                const fullText = formatCrawlResult(result);
+                const formatted = await outputRetention.retain(fullText, {
+                    maxBytes,
+                    maxLines: DEFAULT_MAX_LINES,
+                });
                 return {
                     content: [{ type: "text", text: formatted.text }],
                     details: {
@@ -216,7 +203,7 @@ export default function webCrawlExtension(pi: ExtensionAPI, dependencies: WebCra
                         maxBytes,
                         contentBytes: Buffer.byteLength(result.content, "utf8"),
                         truncated: formatted.truncated,
-                        fullOutputPath: formatted.fullOutputPath,
+                        ...(formatted.fullOutputPath && { fullOutputPath: formatted.fullOutputPath }),
                     },
                 };
             } catch (error) {
