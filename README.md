@@ -78,6 +78,37 @@ pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 
 See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
 
+## Workflows (opt-in)
+
+Programmatic workflows are experimental and remain disabled by default. Start pui with `PUI_WORKFLOWS=1 pui`; this registers the `workflow` tool, `/workflow <name> [JSON args]` for saved definitions, and `/workflows` for run management. Workflows also require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
+
+An inline workflow is JavaScript using `agent`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
+
+```js
+phase("review");
+const reports = await parallel([agent("Review API", { role: "explore" }), agent("Review UI", { role: "explore" })]);
+return { reports, requestedBy: args.user };
+```
+
+Saved definitions add static metadata and can be invoked without regenerating the script:
+
+```js
+export const meta = { name: "review-pair", description: "Run two independent reviews" };
+return parallel([agent("Review API", { role: "explore" }), agent("Review UI", { role: "explore" })]);
+```
+
+Project definitions live at `.pi/workflows/*.js`; personal definitions live at `~/.pi/agent/workflows/*.js`. Lookup walks from the current directory to the repository root: the nearest project definition wins, then more distant project definitions, then personal definitions. Metadata must be one static `export const meta = { name: "lowercase-hyphen-name", description: "..." }` declaration and is parsed without execution.
+
+Every exact script is shown for approval. Choose **Run once** or **Trust unchanged script in this project**; trust is keyed by canonical project, name, and SHA-256 source bytes, so edits require approval again. Project workflows additionally require Pi project trust. Saving supports project or personal scope and refuses symlink traversal.
+
+Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, restart a completed agent, or save a run; `/workflow` directly launches a saved definition. Pause lets active agents finish but starts no new work. Stop aborts the worker and active agents. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
+
+Private run artifacts are stored under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/` (exact source/arguments, snapshots, journal, result, and summary). On startup pui discovers interrupted runs and asks whether to resume, inspect, stop, or defer. Completed structural operations replay from the journal; an operation interrupted before durable completion runs again. Model, tool, and filesystem side effects are therefore **at least once**, not exactly once. Terminal result delivery is durable and idempotent.
+
+Defaults are 4 concurrent agents (configurable ceiling 16), a warning at 25 scheduled agents, 1,000 agents maximum, a 10-minute run/agent timeout, 128 MiB worker old-space, 64 KiB scripts, and 256 KiB worker protocol frames. Direct workflow shell, filesystem, environment, network, imports, child processes, and signals are unavailable. Scripts run in a separate permission-restricted Node process with a stripped VM realm, static preflight, bounded NDJSON, heartbeat supervision, and host-side RPC validation. This is a layered sandbox boundary—not a claim that `node:vm` or agent tool allowlists alone are OS sandboxes. Host agents remain trusted code with capabilities selected by role and policy.
+
+Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is missing or the wrong version is found; ensure that path reports >=22.19 with `node --version`. If a run is interrupted, reopen `/workflows` and inspect its recovery artifact before resuming. Permission errors should be fixed by selecting a canonical external Node path, not by weakening Node permission flags.
+
 ## File-search tools
 
 pui bundles application-owned `fd` and `rg` tools from [`extensions/file-search/`](extensions/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](extensions/file-search/README.md).

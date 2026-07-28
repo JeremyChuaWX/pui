@@ -203,7 +203,7 @@ describe("PuiController workflow bridge", () => {
         const ui = h.bindings().uiContext;
 
         expect(await ui.confirm("x".repeat(513), "body")).toBe(false);
-        expect(await ui.confirm("title", "x".repeat(64 * 1024 + 1))).toBe(false);
+        expect(await ui.confirm("title", "x".repeat(72 * 1024 + 1))).toBe(false);
         expect(
             await ui.select(
                 "title",

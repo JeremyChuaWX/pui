@@ -146,8 +146,10 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
     const executable = executableWorkflowScript(script);
+    // Defense in depth only: process isolation, Node permissions, a stripped realm, and host validation
+    // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.
     const forbidden =
-        /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest)\b|\bimport\s*(?:\(|["'{*])|\bexport\s|__proto__|constructor\s*\[)/;
+        /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
     if (forbidden.test(executable)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
         phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
@@ -346,9 +348,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 lastBeat = now();
             const send = (frame: unknown) => child.stdin.write(`${bounded(frame)}\n`);
             const tracked = <T>(p: Promise<T>) => p;
-            const handle = async (frame: any) => {
-                if (!frame || frame.v !== 1 || typeof frame.t !== "string")
+            const handle = async (inputFrame: unknown) => {
+                if (!inputFrame || typeof inputFrame !== "object" || Array.isArray(inputFrame))
                     throw new Error("Malformed workflow worker frame.");
+                const frame = inputFrame as Record<string, unknown>;
+                if (frame.v !== 1 || typeof frame.t !== "string") throw new Error("Malformed workflow worker frame.");
                 if (frame.t === "ready") {
                     ready = true;
                     lastBeat = now();
@@ -360,9 +364,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     return;
                 }
                 if (frame.t === "terminal") {
+                    if (frame.json !== undefined && typeof frame.json !== "string")
+                        throw new Error("Malformed workflow result.");
                     if (typeof frame.json === "string" && Buffer.byteLength(frame.json) > MAX_FRAME_BYTES)
                         throw new Error("Oversized workflow result.");
-                    frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", String(frame.error));
+                    frame.ok === true
+                        ? finish("succeeded", undefined, frame.json as string | undefined)
+                        : finish("failed", String(frame.error));
                     child.stdin.end();
                     child.kill("SIGTERM");
                     return;
@@ -378,7 +386,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     let value: unknown = null;
                     if (frame.method === "phase") {
                         finishPhase(active, "succeeded");
-                        const name = String(frame.value?.name ?? "").slice(0, 512);
+                        const data =
+                                frame.value && typeof frame.value === "object" && !Array.isArray(frame.value)
+                                    ? (frame.value as Record<string, unknown>)
+                                    : {},
+                            name = String(data.name ?? "").slice(0, 512);
                         if (!name) throw new Error("Invalid phase");
                         phaseId = `phase-${active.summary.phases.length + 1}`;
                         active.summary.currentPhase = phaseId;
@@ -392,11 +404,15 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         });
                         publish(active);
                     } else if (frame.method === "log") {
+                        const data =
+                            frame.value && typeof frame.value === "object" && !Array.isArray(frame.value)
+                                ? (frame.value as Record<string, unknown>)
+                                : {};
                         active.summary.recentActivity.push({
                             sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
                             timestamp: now(),
                             kind: "log",
-                            title: String(frame.value?.message ?? "").slice(0, 2000),
+                            title: String(data.message ?? "").slice(0, 2000),
                         });
                         active.summary.recentActivity = active.summary.recentActivity.slice(-20);
                         publish(active);
@@ -423,18 +439,43 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             return;
                         }
                         await waitWhilePaused(active);
-                        const prompt = frame.value?.prompt,
-                            opts = frame.value?.options ?? {};
+                        if (!frame.value || typeof frame.value !== "object" || Array.isArray(frame.value))
+                            throw new Error("Invalid agent request.");
+                        const request = frame.value as Record<string, unknown>,
+                            prompt = request.prompt,
+                            rawOptions = request.options;
                         if (
                             typeof prompt !== "string" ||
                             !prompt.trim() ||
                             Buffer.byteLength(prompt) > 8000 ||
-                            !opts ||
-                            typeof opts !== "object"
+                            !rawOptions ||
+                            typeof rawOptions !== "object" ||
+                            Array.isArray(rawOptions)
                         )
                             throw new Error("Invalid agent request.");
-                        const role = String(opts.role || "generic"),
-                            isolation = opts.isolation;
+                        const opts = rawOptions as Record<string, unknown>;
+                        if (
+                            Object.keys(opts).some(
+                                (key) =>
+                                    !["label", "role", "model", "schema", "retries", "timeoutMs", "isolation"].includes(
+                                        key,
+                                    ),
+                            ) ||
+                            (opts.label !== undefined && typeof opts.label !== "string") ||
+                            (opts.role !== undefined && typeof opts.role !== "string") ||
+                            (opts.model !== undefined && typeof opts.model !== "string") ||
+                            (opts.schema !== undefined &&
+                                (!opts.schema || typeof opts.schema !== "object" || Array.isArray(opts.schema))) ||
+                            (opts.retries !== undefined &&
+                                (!Number.isInteger(opts.retries) || (opts.retries as number) < 0)) ||
+                            (opts.timeoutMs !== undefined &&
+                                (!Number.isFinite(opts.timeoutMs) || (opts.timeoutMs as number) <= 0))
+                        )
+                            throw new Error("Invalid or unknown agent option.");
+                        bounded(opts);
+                        const role = typeof opts.role === "string" ? opts.role : "generic",
+                            isolation = opts.isolation,
+                            schema = opts.schema as Record<string, unknown> | undefined;
                         if (isolation !== undefined && isolation !== "worktree")
                             throw new Error(`Unknown agent isolation: ${String(isolation)}`);
                         const writeCapable = role !== "explore" && role !== "read-only";
@@ -523,7 +564,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                                 prompt,
                                                 role,
                                                 model,
-                                                schema: opts.schema,
+                                                schema,
                                                 signal,
                                                 timeoutMs,
                                                 cwd: owned?.cwd ?? input.cwd,
@@ -536,7 +577,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                                 .catch(() => {});
                                         }
                                         result = await Promise.race([operation, timeout]);
-                                        if (!schemaValid(result.value, opts.schema))
+                                        if (!schemaValid(result.value, schema))
                                             throw new Error("Agent result does not match schema.");
                                         break;
                                     } catch (e) {

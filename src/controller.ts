@@ -458,7 +458,8 @@ export class PuiController {
             options?.signal?.aborted ||
             this.extensionDialogs.length >= 32 ||
             value.title.length > 512 ||
-            (value.kind === "confirm" && value.message.length > 64 * 1024) ||
+            // A 64 KiB workflow script plus approval headers must remain inspectable byte-for-byte.
+            (value.kind === "confirm" && value.message.length > 72 * 1024) ||
             (value.kind === "input" && (value.placeholder?.length ?? 0) > 1024) ||
             (value.kind === "select" &&
                 (value.options.length > 100 || value.options.some((option) => option.length > 4096)))

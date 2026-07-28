@@ -1,6 +1,6 @@
 # Programmatic Workflows Implementation Plan
 
-Status: proposed
+Status: implemented behind `PUI_WORKFLOWS=1`; manual alpha acceptance and default enablement remain pending
 
 This document is an implementation plan for adding Claude Code-style dynamic workflows to pui. It is organized so an orchestrating agent can delegate bounded work packages to subagents without assigning overlapping files.
 
