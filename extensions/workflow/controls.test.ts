@@ -13,6 +13,63 @@ async function waitFor(predicate: () => boolean, timeout = 5_000) {
     }
 }
 
+class BarrierStorage extends WorkflowRunStorage {
+    entered?: Promise<void>;
+    private enter?: () => void;
+    private release?: () => void;
+
+    armTerminalBarrier() {
+        this.entered = new Promise<void>((resolve) => (this.enter = resolve));
+    }
+
+    override async terminal(...args: Parameters<WorkflowRunStorage["terminal"]>) {
+        if (this.enter) {
+            this.enter();
+            this.enter = undefined;
+            await new Promise<void>((resolve) => (this.release = resolve));
+        }
+        await super.terminal(...args);
+    }
+
+    unblock() {
+        this.release?.();
+        this.release = undefined;
+    }
+}
+
+test("discovery sees the last nonterminal snapshot while terminal artifacts are in flight", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-terminal-race-"));
+    const cwd = path.join(temp, "project");
+    await fs.promises.mkdir(cwd);
+    const storage = new BarrierStorage(path.join(temp, "runs"));
+    const backend = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: "done" }) });
+    storage.armTerminalBarrier();
+    try {
+        const { runId } = await backend.launch({
+            name: "terminal-race",
+            script: `return "done"`,
+            sessionId: "terminal-race-test",
+            cwd,
+        });
+        await storage.entered;
+        expect(backend.inspect(runId).run.status).toBe("succeeded");
+
+        const stored = (await storage.discover(cwd)).find(({ id }) => id === runId);
+        expect(stored?.corrupt).toBeUndefined();
+        expect(stored?.snapshot.status).not.toBe("succeeded");
+
+        storage.unblock();
+        expect(await backend.claimTerminalDelivery!(runId)).toBe(true);
+        const durable = (await storage.discover(cwd)).find(({ id }) => id === runId);
+        expect(durable?.snapshot.status).toBe("succeeded");
+        expect(durable?.result).toBe('"done"');
+    } finally {
+        storage.unblock();
+        await backend.shutdown();
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("retry and agent restart create linked runs with durable replay", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-controls-"));
     const cwd = path.join(temp, "project");

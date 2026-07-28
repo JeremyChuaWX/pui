@@ -341,7 +341,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         for (const listener of listeners) listener(copy);
         const directory = a.directory;
         const storage = options.storage;
-        if (directory && storage)
+        if (directory && storage && !TERMINAL.has(copy.status))
             void persist(a, () => storage.snapshot(directory, copy)).catch((error) =>
                 console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
@@ -905,11 +905,18 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     await options.storage.complete(active.directory, operation, value, now());
             runs.set(id, active);
             publish(active);
-            active.settlement = execute(active, input, node).catch((e) => {
+            active.settlement = execute(active, input, node).catch(async (e) => {
                 if (!TERMINAL.has(active.summary.status)) {
                     active.summary.status = "failed";
+                    active.summary.endedAt = now();
                     active.summary.error = errorMessage(e);
                     publish(active);
+                    const activeDirectory = active.directory;
+                    const storage = options.storage;
+                    if (activeDirectory && storage)
+                        await persist(active, () =>
+                            storage.terminal(activeDirectory, null, structuredClone(active.summary)),
+                        );
                 }
             });
             return { runId: id };
