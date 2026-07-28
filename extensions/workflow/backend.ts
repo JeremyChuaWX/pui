@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
+import type { WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
     maxConcurrency: 4,
@@ -12,9 +12,12 @@ export const DEFAULT_WORKFLOW_LIMITS = {
     maxTokens: 0,
     maxCost: 0,
 } as const;
-const MAX_SCRIPT_BYTES = 64 * 1024;
-const MAX_FRAME_BYTES = 256 * 1024;
-const MAX_PENDING = 16;
+const MAX_SCRIPT_BYTES = 64 * 1024,
+    MAX_FRAME_BYTES = 256 * 1024,
+    MAX_PENDING = 16,
+    STDERR_BYTES = 8 * 1024;
+const READY_TIMEOUT_MS = 5_000,
+    HEARTBEAT_TIMEOUT_MS = 5_000;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
 export interface AgentRequest {
@@ -24,6 +27,7 @@ export interface AgentRequest {
     schema?: Record<string, unknown>;
     signal: AbortSignal;
     timeoutMs: number;
+    cwd: string;
 }
 export interface AgentResult {
     value: unknown;
@@ -37,12 +41,20 @@ export interface WorkflowLaunch {
     sessionId: string;
     cwd: string;
 }
+export interface WorkflowHostPolicy {
+    roles?: readonly string[];
+    models?: readonly string[];
+    resolveModel?: (role: string, requested?: string) => string | undefined;
+}
 export interface WorkflowBackendOptions {
     agentExecutor: AgentExecutor;
     nodePath?: string;
     environment?: NodeJS.ProcessEnv;
     eventSink?: (run: WorkflowRunSummaryV1) => void;
     now?: () => number;
+    policy?: WorkflowHostPolicy;
+    runTimeoutMs?: number;
+    watchdogMs?: number;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch): Promise<{ runId: string }>;
@@ -59,6 +71,7 @@ interface ActiveRun {
     child?: ReturnType<typeof spawn>;
     result?: string;
     settlement: Promise<void>;
+    tasks: Set<Promise<unknown>>;
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -70,29 +83,33 @@ const emptyUsage = (): WorkflowUsageV1 => ({
     cost: 0,
     turns: 0,
 });
-const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const bounded = (value: unknown) => {
     const text = JSON.stringify(value);
+    if (text === undefined) throw new Error("Workflow values must be JSON serializable.");
     if (Buffer.byteLength(text) > MAX_FRAME_BYTES) throw new Error("Workflow RPC value exceeds the 256 KiB limit.");
     return text;
+};
+const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {}) => {
+    for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
 export function preflightWorkflow(script: string): { phases: string[]; agents: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
-    // Defense in depth. The external permissioned worker remains the security boundary.
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest)\b|\bimport\s*(?:\(|["'{*])|\bexport\s|__proto__|constructor\s*\[)/;
     if (forbidden.test(script)) throw new Error("Workflow script uses a forbidden runtime capability.");
-    const phases = [...script.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)].map((match) => match[2]!);
-    return { phases: phases.slice(0, 100), agents: [...script.matchAll(/\bagent\s*\(/g)].length };
+    return {
+        phases: [...script.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)].map((m) => m[2] ?? "").slice(0, 100),
+        agents: [...script.matchAll(/\bagent\s*\(/g)].length,
+    };
 }
-
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
     return new Promise((resolve, reject) => {
         const child = spawn(command, ["--version"], { stdio: ["ignore", "pipe", "pipe"], env: environment });
         let output = "";
-        child.stdout.on("data", (chunk) => (output += chunk.toString()));
+        child.stdout.on("data", (c) => (output += c));
         child.once("error", reject);
         child.once("close", (code) => (code === 0 ? resolve(output.trim()) : reject(new Error(`exit code ${code}`))));
     });
@@ -100,105 +117,109 @@ async function commandVersion(command: string, environment: NodeJS.ProcessEnv): 
 export async function resolveWorkflowNode(
     options: { environment?: NodeJS.ProcessEnv; configuredPath?: string } = {},
 ): Promise<string> {
-    const env = options.environment ?? process.env;
-    const candidates = [
+    const env = options.environment ?? process.env,
+        failures: string[] = [];
+    for (const [source, candidate] of [
         ["PUI_WORKFLOW_NODE", env.PUI_WORKFLOW_NODE],
         ["configured path", options.configuredPath],
         ["PATH", "node"],
-    ] as const;
-    const failures: string[] = [];
-    for (const [source, candidate] of candidates) {
+    ] as const) {
         if (!candidate) continue;
         try {
-            const version = await commandVersion(candidate, env);
-            const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version);
+            const version = await commandVersion(candidate, env),
+                match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version);
             if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 19))
                 throw new Error(`found ${version}; need >=22.19.0`);
             if (candidate.includes(path.sep)) return await realpath(candidate);
             const located = Bun.which(candidate);
             return located ? await realpath(located) : candidate;
-        } catch (error) {
-            failures.push(`${source} (${candidate}): ${message(error)}`);
+        } catch (e) {
+            failures.push(`${source} (${candidate}): ${errorMessage(e)}`);
         }
     }
     throw new Error(
         `Workflows require an external Node >=22.19. Set PUI_WORKFLOW_NODE. Attempts: ${failures.join("; ") || "none"}`,
     );
 }
-
 function schemaValid(value: unknown, schema: unknown): boolean {
     if (!schema || typeof schema !== "object" || Array.isArray(schema)) return true;
     const s = schema as Record<string, unknown>;
     if (s.type === "object") {
         if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-        const object = value as Record<string, unknown>;
-        if (Array.isArray(s.required) && !s.required.every((key) => typeof key === "string" && key in object))
-            return false;
+        const o = value as Record<string, unknown>;
+        if (Array.isArray(s.required) && !s.required.every((k) => typeof k === "string" && k in o)) return false;
         if (s.properties && typeof s.properties === "object")
-            for (const [key, child] of Object.entries(s.properties))
-                if (key in object && !schemaValid(object[key], child)) return false;
-    } else if (s.type === "array") {
-        if (!Array.isArray(value) || value.some((item) => !schemaValid(item, s.items))) return false;
-    } else if (s.type === "string" && typeof value !== "string") return false;
-    else if (s.type === "number" && typeof value !== "number") return false;
-    else if (s.type === "boolean" && typeof value !== "boolean") return false;
+            for (const [k, child] of Object.entries(s.properties))
+                if (k in o && !schemaValid(o[k], child)) return false;
+    } else if (s.type === "array") return Array.isArray(value) && value.every((v) => schemaValid(v, s.items));
+    else if (s.type === "string") return typeof value === "string";
+    else if (s.type === "number") return typeof value === "number";
+    else if (s.type === "boolean") return typeof value === "boolean";
     return true;
 }
 
+// The only cross-realm value retained by VM code is this closure's bridge. Its callable wrappers
+// and every value visible to workflow code are created by the context itself.
+const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,call=(method,value)=>Promise.resolve(bridge(stringify({method,value}))).then(parse);globalThis.phase=n=>call("phase",{name:n});globalThis.log=x=>call("log",{message:String(x)});globalThis.agent=(prompt,options={})=>call("agent",{prompt,options});globalThis.parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);globalThis.pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};globalThis.args=parse(__args);delete globalThis.__bridge;delete globalThis.__args})()`;
 const WORKER_SOURCE = String.raw`import vm from "node:vm";
-const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n"); let buffer="", next=0; const pending=new Map();
-process.stdin.setEncoding("utf8"); process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)};if(m.v!==1)process.exit(74);if(m.t==="start")run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.value):p.reject(new Error(m.error))}}}});
-const rpc=(method,value)=>new Promise((resolve,reject)=>{const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,method,value})});
-async function run(m){const phase=n=>rpc("phase",{name:n});const log=x=>rpc("log",{message:String(x)});const agent=(prompt,options={})=>rpc("agent",{prompt,options});const parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);const pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};
-const context=vm.createContext(Object.freeze({agent,pipeline,parallel,phase,log,args:Object.freeze(m.args??null),JSON,Math,Promise,Object,Array,String,Number,Boolean,undefined}),{codeGeneration:{strings:false,wasm:false}});try{const wrapped='(async()=>{'+m.script+'\n})()';const result=await new vm.Script(wrapped,{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,value:result})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
+const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map();
+process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(Error(String(m.error)))}}}});
+const host=json=>new Promise((resolve,reject)=>{let request;try{request=JSON.parse(json)}catch(e){reject(e);return}const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,...request})});
+async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{const result=await new vm.Script('(async()=>{'+m.script+'\n})()',{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
-    const runs = new Map<string, ActiveRun>();
-    const listeners = new Set<(run: WorkflowRunSummaryV1) => void>();
-    let shuttingDown = false;
-    const now = options.now ?? Date.now;
-    const publish = (active: ActiveRun) => {
-        active.summary.updatedAt = now();
-        const copy = structuredClone(active.summary);
+    const runs = new Map<string, ActiveRun>(),
+        listeners = new Set<(run: WorkflowRunSummaryV1) => void>();
+    let shuttingDown = false,
+        executing = 0;
+    const queue: (() => void)[] = [],
+        now = options.now ?? Date.now;
+    const acquire = (signal: AbortSignal) =>
+        new Promise<() => void>((resolve, reject) => {
+            const enter = () => {
+                if (signal.aborted) return reject(new Error("cancelled"));
+                executing++;
+                resolve(() => {
+                    executing--;
+                    queue.shift()?.();
+                });
+            };
+            executing < DEFAULT_WORKFLOW_LIMITS.maxConcurrency ? enter() : queue.push(enter);
+        });
+    const publish = (a: ActiveRun) => {
+        a.summary.updatedAt = now();
+        const copy = structuredClone(a.summary);
         options.eventSink?.(copy);
         for (const listener of listeners) listener(copy);
     };
-    const launch = async (input: WorkflowLaunch) => {
-        if (shuttingDown) throw new Error("Workflow backend is shutting down.");
-        preflightWorkflow(input.script);
-        const node = await resolveWorkflowNode({ environment: options.environment, configuredPath: options.nodePath });
-        const id = crypto.randomUUID(),
-            timestamp = now(),
-            controller = new AbortController();
-        const summary: WorkflowRunSummaryV1 = {
-            schema: "pi.workflow",
-            version: 1,
-            id,
-            name: input.name,
-            sessionId: input.sessionId,
-            cwd: input.cwd,
-            status: "queued",
-            phases: [],
-            agents: [],
-            usage: emptyUsage(),
-            limits: { ...DEFAULT_WORKFLOW_LIMITS },
-            recentActivity: [],
-            updatedAt: timestamp,
-        };
-        const active: ActiveRun = { summary, script: input.script, controller, settlement: Promise.resolve() };
-        runs.set(id, active);
-        publish(active);
-        active.settlement = execute(active, input, node);
-        return { runId: id };
+    const finishPhase = (a: ActiveRun, status: "succeeded" | "failed" | "cancelled", error?: string) => {
+        const phase = a.summary.phases.find((p) => p.id === a.summary.currentPhase);
+        if (phase?.status === "running") {
+            phase.status = status;
+            phase.endedAt = phase.updatedAt = now();
+            if (error) phase.error = error;
+        }
     };
     const execute = async (active: ActiveRun, input: WorkflowLaunch, node: string) => {
-        const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
-        const worker = path.join(directory, "worker.mjs");
-        await fs.promises.writeFile(worker, WORKER_SOURCE, { mode: 0o600 });
-        const canonical = await realpath(worker);
-        let child: ReturnType<typeof spawn> | undefined;
+        let directory: string | undefined,
+            terminal = false,
+            stderr = "";
+        const finish = (status: "succeeded" | "failed" | "cancelled", error?: string, json?: string) => {
+            if (terminal) return;
+            terminal = true;
+            active.summary.status = status;
+            active.summary.endedAt = now();
+            if (error) active.summary.error = error.slice(0, 2000);
+            if (json !== undefined) active.result = json;
+            finishPhase(active, status, error);
+            publish(active);
+        };
         try {
-            child = spawn(
+            directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
+            const worker = path.join(directory, "worker.mjs");
+            await fs.promises.writeFile(worker, WORKER_SOURCE, { mode: 0o600 });
+            const canonical = await realpath(worker);
+            const child = spawn(
                 node,
                 ["--permission", `--allow-fs-read=${canonical}`, "--max-old-space-size=128", canonical],
                 { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", env: {} },
@@ -208,37 +229,37 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             active.summary.startedAt = now();
             publish(active);
             if (!child.stdin || !child.stdout) throw new Error("Workflow worker pipes were not created.");
-            const stdin = child.stdin,
-                stdout = child.stdout;
             let buffer = "",
                 pending = 0,
                 agents = 0,
-                phaseId: string | undefined;
-            let terminal = false;
-            const finish = (status: "succeeded" | "failed" | "cancelled", error?: string, result?: unknown) => {
-                if (terminal) return;
-                terminal = true;
-                active.summary.status = status;
-                active.summary.endedAt = now();
-                if (error) active.summary.error = error;
-                if (result !== undefined) {
-                    active.result = bounded(result);
-                }
-                publish(active);
+                phaseId: string | undefined,
+                ready = false,
+                lastBeat = now();
+            const send = (frame: unknown) => child.stdin.write(`${bounded(frame)}\n`);
+            const tracked = <T>(p: Promise<T>) => {
+                active.tasks.add(p);
+                p.finally(() => active.tasks.delete(p)).catch(() => {});
+                return p;
             };
-            const send = (frame: unknown) => stdin.write(`${bounded(frame)}\n`);
             const handle = async (frame: any) => {
                 if (!frame || frame.v !== 1 || typeof frame.t !== "string")
                     throw new Error("Malformed workflow worker frame.");
                 if (frame.t === "ready") {
+                    ready = true;
+                    lastBeat = now();
                     send({ v: 1, t: "start", script: input.script, args: input.args });
                     return;
                 }
-                if (frame.t === "heartbeat") return;
+                if (frame.t === "heartbeat") {
+                    lastBeat = now();
+                    return;
+                }
                 if (frame.t === "terminal") {
-                    frame.ok ? finish("succeeded", undefined, frame.value) : finish("failed", String(frame.error));
-                    stdin.end();
-                    child?.kill("SIGTERM");
+                    if (typeof frame.json === "string" && Buffer.byteLength(frame.json) > MAX_FRAME_BYTES)
+                        throw new Error("Oversized workflow result.");
+                    frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", String(frame.error));
+                    child.stdin.end();
+                    child.kill("SIGTERM");
                     return;
                 }
                 if (
@@ -249,8 +270,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 )
                     throw new Error("Invalid or excessive workflow RPC request.");
                 try {
-                    let value: any = null;
+                    let value: unknown = null;
                     if (frame.method === "phase") {
+                        finishPhase(active, "succeeded");
                         const name = String(frame.value?.name ?? "").slice(0, 512);
                         if (!name) throw new Error("Invalid phase");
                         phaseId = `phase-${active.summary.phases.length + 1}`;
@@ -259,6 +281,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             id: phaseId,
                             name,
                             status: "running",
+                            startedAt: now(),
                             updatedAt: now(),
                             agentIds: [],
                         });
@@ -281,20 +304,25 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             typeof prompt !== "string" ||
                             !prompt.trim() ||
                             Buffer.byteLength(prompt) > 8000 ||
+                            !opts ||
                             typeof opts !== "object"
                         )
                             throw new Error("Invalid agent request.");
-                        const agentId = `agent-${agents}`,
-                            retries = Math.min(3, Math.max(0, Number(opts.retries) || 0)),
-                            timeoutMs = Math.min(
-                                DEFAULT_WORKFLOW_LIMITS.timeoutMs,
-                                Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                            );
-                        const agent: any = {
-                            id: agentId,
+                        const role = String(opts.role || "generic");
+                        if (options.policy?.roles && !options.policy.roles.includes(role))
+                            throw new Error(`Agent role is not allowed by host policy: ${role}`);
+                        const model =
+                            options.policy?.resolveModel?.(
+                                role,
+                                typeof opts.model === "string" ? opts.model : undefined,
+                            ) ?? (typeof opts.model === "string" ? opts.model : undefined);
+                        if (model && options.policy?.models && !options.policy.models.includes(model))
+                            throw new Error(`Agent model is not allowed by host policy: ${model}`);
+                        const agent: WorkflowAgentSummaryV1 = {
+                            id: `agent-${agents}`,
                             label: String(opts.label || prompt).slice(0, 512),
-                            role: String(opts.role || "generic").slice(0, 128),
-                            ...(typeof opts.model === "string" ? { model: opts.model.slice(0, 256) } : {}),
+                            role,
+                            ...(model ? { model } : {}),
                             status: "running",
                             phaseId,
                             startedAt: now(),
@@ -304,42 +332,84 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             recentActivity: [],
                         };
                         active.summary.agents.push(agent);
-                        if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agentId);
+                        if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
                         publish(active);
-                        let last: any;
-                        for (let attempt = 0; attempt <= retries; attempt++) {
-                            const timeout = AbortSignal.timeout(timeoutMs),
-                                signal = AbortSignal.any([active.controller.signal, timeout]);
+                        const release = await acquire(active.controller.signal);
+                        try {
+                            const timeoutMs = Math.min(
+                                    DEFAULT_WORKFLOW_LIMITS.timeoutMs,
+                                    Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
+                                ),
+                                controller = new AbortController(),
+                                signal = AbortSignal.any([active.controller.signal, controller.signal]);
+                            let timer: NodeJS.Timeout | undefined;
+                            const timeout = new Promise<never>((_, reject) => {
+                                timer = setTimeout(() => {
+                                    controller.abort();
+                                    reject(new Error("Agent timed out."));
+                                }, timeoutMs);
+                            });
                             try {
-                                last = await options.agentExecutor({
-                                    prompt,
-                                    role: agent.role,
-                                    model: agent.model,
-                                    schema: opts.schema,
-                                    signal,
-                                    timeoutMs,
-                                });
-                                if (!schemaValid(last.value, opts.schema))
-                                    throw new Error("Agent result does not match schema.");
-                                break;
-                            } catch (e) {
-                                if (attempt === retries) throw e;
+                                let result: AgentResult | undefined;
+                                const retries = Math.min(3, Math.max(0, Number(opts.retries) || 0));
+                                for (let attempt = 0; attempt <= retries; attempt++)
+                                    try {
+                                        result = await Promise.race([
+                                            tracked(
+                                                Promise.resolve(
+                                                    options.agentExecutor({
+                                                        prompt,
+                                                        role,
+                                                        model,
+                                                        schema: opts.schema,
+                                                        signal,
+                                                        timeoutMs,
+                                                        cwd: input.cwd,
+                                                    }),
+                                                ),
+                                            ),
+                                            timeout,
+                                        ]);
+                                        if (!schemaValid(result.value, opts.schema))
+                                            throw new Error("Agent result does not match schema.");
+                                        break;
+                                    } catch (e) {
+                                        if (attempt === retries || signal.aborted) throw e;
+                                    }
+                                if (!result) throw new Error("Agent produced no result.");
+                                value = result.value;
+                                addUsage(agent.usage, result.usage);
+                                addUsage(active.summary.usage, result.usage);
+                                agent.status = "succeeded";
+                            } finally {
+                                if (timer) clearTimeout(timer);
                             }
+                        } catch (e) {
+                            agent.status = active.controller.signal.aborted
+                                ? "cancelled"
+                                : errorMessage(e).includes("timed out")
+                                  ? "timed_out"
+                                  : "failed";
+                            agent.error = errorMessage(e).slice(0, 2000);
+                            throw e;
+                        } finally {
+                            agent.endedAt = agent.updatedAt = now();
+                            publish(active);
+                            release();
                         }
-                        value = last.value;
-                        agent.status = "succeeded";
-                        agent.endedAt = agent.updatedAt = now();
-                        publish(active);
                     } else throw new Error(`Unknown workflow RPC method: ${frame.method}`);
-                    send({ v: 1, t: "reply", id: frame.id, ok: true, value });
-                } catch (error) {
-                    send({ v: 1, t: "reply", id: frame.id, ok: false, error: message(error) });
+                    send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                } catch (e) {
+                    send({ v: 1, t: "reply", id: frame.id, ok: false, error: errorMessage(e).slice(0, 2000) });
                 } finally {
                     pending--;
                 }
             };
-            stdout.setEncoding("utf8");
-            stdout.on("data", (chunk) => {
+            child.stderr?.on("data", (c) => {
+                stderr = Buffer.from(`${stderr}${c}`).subarray(-STDERR_BYTES).toString();
+            });
+            child.stdout.setEncoding("utf8");
+            child.stdout.on("data", (chunk) => {
                 buffer += chunk;
                 if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) {
                     finish("failed", "Oversized workflow worker frame.");
@@ -352,28 +422,42 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     buffer = buffer.slice(index + 1);
                     index = buffer.indexOf("\n");
                     try {
-                        void handle(JSON.parse(line)).catch((e) => {
-                            finish("failed", message(e));
+                        void tracked(handle(JSON.parse(line))).catch((e) => {
+                            finish("failed", errorMessage(e));
                             active.controller.abort();
                         });
-                    } catch (e) {
+                    } catch {
                         finish("failed", "Malformed workflow worker output.");
                         active.controller.abort();
                     }
                 }
             });
+            const watchdog = setInterval(() => {
+                const limit = ready ? (options.watchdogMs ?? HEARTBEAT_TIMEOUT_MS) : READY_TIMEOUT_MS;
+                if (now() - lastBeat > limit) {
+                    finish(
+                        "failed",
+                        ready ? "Workflow worker heartbeat timed out." : "Workflow worker did not become ready.",
+                    );
+                    active.controller.abort();
+                }
+            }, 250);
+            const total = setTimeout(() => {
+                finish("failed", "Workflow run timed out.");
+                active.controller.abort();
+            }, options.runTimeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs);
             await new Promise<void>((resolve) => {
-                child!.once("error", (e) => {
-                    finish("failed", message(e));
+                child.once("error", (e) => {
+                    finish("failed", errorMessage(e));
                     resolve();
                 });
-                child!.once("close", () => {
+                child.once("close", () => {
                     if (!terminal)
                         finish(
                             active.controller.signal.aborted ? "cancelled" : "failed",
                             active.controller.signal.aborted
                                 ? undefined
-                                : "Workflow worker exited without a terminal result.",
+                                : `Workflow worker exited without a terminal result.${stderr ? ` ${stderr}` : ""}`,
                         );
                     resolve();
                 });
@@ -381,35 +465,85 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     "abort",
                     () => {
                         try {
-                            process.platform !== "win32" && child!.pid
-                                ? process.kill(-child!.pid, "SIGTERM")
-                                : child!.kill("SIGTERM");
+                            process.platform !== "win32" && child.pid
+                                ? process.kill(-child.pid, "SIGTERM")
+                                : child.kill("SIGTERM");
                         } catch {}
                         setTimeout(() => {
                             try {
-                                process.platform !== "win32" && child!.pid
-                                    ? process.kill(-child!.pid, "SIGKILL")
-                                    : child!.kill("SIGKILL");
+                                process.platform !== "win32" && child.pid
+                                    ? process.kill(-child.pid, "SIGKILL")
+                                    : child.kill("SIGKILL");
                             } catch {}
                         }, 500).unref();
                     },
                     { once: true },
                 );
             });
+            clearInterval(watchdog);
+            clearTimeout(total);
+        } catch (e) {
+            finish(active.controller.signal.aborted ? "cancelled" : "failed", errorMessage(e));
         } finally {
             active.child = undefined;
-            await fs.promises.rm(directory, { recursive: true, force: true });
+            if (directory) await fs.promises.rm(directory, { recursive: true, force: true });
         }
     };
     return {
-        launch,
+        async launch(input) {
+            if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+            preflightWorkflow(input.script);
+            const node = await resolveWorkflowNode({
+                    environment: options.environment,
+                    configuredPath: options.nodePath,
+                }),
+                id = crypto.randomUUID(),
+                timestamp = now(),
+                controller = new AbortController();
+            const summary: WorkflowRunSummaryV1 = {
+                schema: "pi.workflow",
+                version: 1,
+                id,
+                name: input.name,
+                sessionId: input.sessionId,
+                cwd: input.cwd,
+                status: "queued",
+                phases: [],
+                agents: [],
+                usage: emptyUsage(),
+                limits: { ...DEFAULT_WORKFLOW_LIMITS },
+                recentActivity: [],
+                updatedAt: timestamp,
+            };
+            const active: ActiveRun = {
+                summary,
+                script: input.script,
+                controller,
+                settlement: Promise.resolve(),
+                tasks: new Set(),
+            };
+            runs.set(id, active);
+            publish(active);
+            active.settlement = execute(active, input, node).catch((e) => {
+                if (!TERMINAL.has(active.summary.status)) {
+                    active.summary.status = "failed";
+                    active.summary.error = errorMessage(e);
+                    publish(active);
+                }
+            });
+            return { runId: id };
+        },
         list: () => [...runs.values()].map((r) => structuredClone(r.summary)),
-        inspect: (id) => {
+        inspect(id) {
             const r = runs.get(id);
             if (!r) throw new Error(`Unknown workflow run: ${id}`);
-            return { run: structuredClone(r.summary), script: r.script, ...(r.result ? { result: r.result } : {}) };
+            return {
+                run: structuredClone(r.summary),
+                script: r.script,
+                ...(r.result !== undefined ? { result: r.result } : {}),
+            };
         },
-        subscribe: (listener) => {
+        subscribe(listener) {
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
@@ -425,7 +559,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (shuttingDown) return;
             shuttingDown = true;
             for (const run of runs.values()) if (!TERMINAL.has(run.summary.status)) run.controller.abort();
-            await Promise.allSettled([...runs.values()].map((run) => run.settlement));
+            await Promise.allSettled([...runs.values()].map((r) => r.settlement));
             listeners.clear();
         },
     };

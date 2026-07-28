@@ -72,6 +72,70 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
+    test("keeps VM constructors and RPC results in-realm without ambient authority", async () => {
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: { safe: true } }) });
+        const { runId } = await backend.launch({
+            name: "adversarial",
+            script: `const result=await agent("safe"); const probes=[agent,phase,log,pipeline,parallel,result,args]; const escaped=[]; for(const value of probes){try{escaped.push(value.constructor("return pro"+"cess")())}catch(e){escaped.push(null)}} let dynamic=false; try{({}).constructor.constructor("return pro"+"cess")()}catch(e){dynamic=true} return {escaped:escaped.every(x=>x===null),dynamic,globals:[globalThis["pro"+"cess"],globalThis["req"+"uire"],globalThis["fet"+"ch"],globalThis["Web"+"Socket"]].every(x=>x===undefined),builtin:typeof globalThis["pro"+"cess"]?.getBuiltinModule,kill:typeof globalThis["pro"+"cess"]?.kill};`,
+            args: {},
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({
+            escaped: true,
+            dynamic: true,
+            globals: true,
+            builtin: "undefined",
+            kill: "undefined",
+        });
+        await backend.shutdown();
+    });
+    test("globally caps parallel agents, enforces ignored-signal timeout, policy, and terminal state", async () => {
+        let active = 0,
+            peak = 0;
+        const backend = createWorkflowBackend({
+            policy: { roles: ["generic"], models: ["allowed"] },
+            agentExecutor: async (request) => {
+                active++;
+                peak = Math.max(peak, active);
+                try {
+                    if (request.prompt === "hang") return await new Promise(() => {});
+                    await Bun.sleep(30);
+                    return { value: request.prompt, usage: { input: 1, totalTokens: 1 } };
+                } finally {
+                    active--;
+                }
+            },
+        });
+        const parallel = await backend.launch({
+            name: "parallel",
+            script: `return await parallel(Array.from({length:8},(_,i)=>agent(String(i),{model:"allowed"})))`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(parallel.runId).run.status === "succeeded");
+        expect(peak).toBe(4);
+        const denied = await backend.launch({
+            name: "denied",
+            script: `await agent("x",{role:"admin"})`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(denied.runId).run.status === "failed");
+        expect(backend.inspect(denied.runId).run.error).toContain("host policy");
+        const timed = await backend.launch({
+            name: "timed",
+            script: `await agent("hang",{model:"allowed",timeoutMs:20})`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(timed.runId).run.status === "failed");
+        expect(backend.inspect(timed.runId).run.agents[0]?.status).toBe("timed_out");
+        // The deliberately non-settling injected promise is tracked, but cannot block host-side timeout.
+        await backend.control(timed.runId, "stop");
+        await backend.shutdown();
+    });
     test("cancellation aborts active executors and shutdown tracks every run", async () => {
         let aborted = 0;
         const backend = createWorkflowBackend({
