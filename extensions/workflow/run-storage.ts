@@ -107,7 +107,7 @@ export class WorkflowRunStorage {
             await fs.promises.mkdir(this.root, { recursive: true, mode: 0o700 });
             const rootStat = await fs.promises.lstat(this.root);
             if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Unsafe workflow storage root.");
-            await fs.promises.mkdir(directory, { mode: 0o700 });
+            await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
             await fs.promises.chmod(this.root, 0o700);
             await fs.promises.chmod(directory, 0o700);
         }

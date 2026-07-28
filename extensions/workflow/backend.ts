@@ -751,7 +751,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     await options.storage.worktree(stored.directory, operation, null, now());
                 }
                 const controller = new AbortController(),
-                    limits = stored.launch.limits as typeof DEFAULT_WORKFLOW_LIMITS;
+                    limits = { ...DEFAULT_WORKFLOW_LIMITS, ...(stored.launch.limits as object) };
                 const summary = structuredClone(stored.snapshot);
                 if (!TERMINAL.has(summary.status)) {
                     // A snapshot can lag the journal. Keep only durable agents and rebuild references;
