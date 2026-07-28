@@ -43,7 +43,9 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
                 listener = undefined;
             };
         },
-        async control() {},
+        async control() {
+            return undefined;
+        },
         async shutdown() {
             shutdowns++;
         },

@@ -914,7 +914,7 @@ export class PuiController {
                 });
                 if (!result || result.requestId !== requestId) return;
                 cleanup();
-                result.ok ? resolve(result.linkedRunId) : reject(new Error(result.error!));
+                result.ok ? resolve(result.linkedRunId) : reject(new Error(result.error ?? "Workflow control failed."));
             });
             timer = setTimeout(() => cancel(new Error("Workflow control request timed out.")), 5_000);
             const control = parseWorkflowControl(
@@ -937,11 +937,11 @@ export class PuiController {
     }
 
     controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
+        const run = this.workflowState.runs.get(runId);
         const available =
             !!this.workflowState.instanceId &&
-            this.workflowState.runs.has(runId) &&
-            (action !== "restart-agent" ||
-                this.workflowState.runs.get(runId)!.agents.some((agent) => agent.id === agentId));
+            !!run &&
+            (action !== "restart-agent" || run.agents.some((agent) => agent.id === agentId));
         if (available) void this.controlWorkflowAsync(runId, action, agentId).catch(() => {});
         return available;
     }
@@ -1000,7 +1000,8 @@ export class PuiController {
                 });
                 if (!value || value.requestId !== requestId) return;
                 cleanup();
-                value.ok ? resolve(value.path!) : reject(new Error(value.error!));
+                if (value.ok && value.path) resolve(value.path);
+                else reject(new Error(value.error ?? "Workflow save failed."));
             });
             timer = setTimeout(() => cancel(new Error("Workflow save request timed out.")), 5_000);
             const request = parseWorkflowSave(

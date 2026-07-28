@@ -75,7 +75,7 @@ async function atomic(file: string, value: unknown) {
         await fs.promises.rm(temp, { force: true });
     }
 }
-async function boundedJson(file: string): Promise<any> {
+async function boundedJson<T = unknown>(file: string): Promise<T> {
     const stat = await fs.promises.lstat(file);
     if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
         throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
@@ -204,9 +204,9 @@ export class WorkflowRunStorage {
             await h.close();
             await syncDirectory(directory);
             return true;
-        } catch (e: any) {
-            if (e?.code === "EEXIST") {
-                const state = await boundedJson(marker);
+        } catch (e: unknown) {
+            if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+                const state = await boundedJson<DeliveryState>(marker);
                 // A claim owned by another backend process is abandoned on startup/recovery.
                 // The same instance still suppresses duplicate concurrent delivery attempts.
                 if (state?.claimed && !state.delivered && state.owner !== this.instanceToken) {
@@ -226,7 +226,7 @@ export class WorkflowRunStorage {
     }
     async releaseClaim(directory: string) {
         const file = path.join(await this.assertDirectory(directory), "delivery.json");
-        const state = await boundedJson(file).catch(() => undefined);
+        const state = await boundedJson<DeliveryState>(file).catch(() => undefined);
         if (state?.claimed && !state.delivered) await fs.promises.rm(file, { force: true });
     }
     async discover(cwd: string): Promise<StoredRun[]> {
@@ -234,8 +234,8 @@ export class WorkflowRunStorage {
         let entries: fs.Dirent[];
         try {
             entries = await fs.promises.readdir(project, { withFileTypes: true });
-        } catch (e: any) {
-            if (e?.code === "ENOENT") return [];
+        } catch (e: unknown) {
+            if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
             throw e;
         }
         const runs: StoredRun[] = [];
@@ -248,9 +248,17 @@ export class WorkflowRunStorage {
                     throw new Error(`Unsafe workflow source in ${entry.name}.`);
                 const script = await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8"),
                     args = await boundedJson(path.join(directory, "args.json")),
-                    meta = await boundedJson(path.join(directory, "launch.json")),
-                    rawSnapshot = await boundedJson(path.join(directory, "summary.json")).catch((e: any) =>
-                        e?.code === "ENOENT" ? boundedJson(path.join(directory, "snapshot.json")) : Promise.reject(e),
+                    meta = await boundedJson<
+                        Partial<Omit<ImmutableRunLaunch, "script" | "args">> & {
+                            name?: string;
+                            sessionId?: string;
+                            cwd?: string;
+                        }
+                    >(path.join(directory, "launch.json")),
+                    rawSnapshot = await boundedJson(path.join(directory, "summary.json")).catch((e: unknown) =>
+                        (e as NodeJS.ErrnoException).code === "ENOENT"
+                            ? boundedJson(path.join(directory, "snapshot.json"))
+                            : Promise.reject(e),
                     ),
                     snapshot = parseWorkflowRunV1(rawSnapshot);
                 if (!snapshot || snapshot.id !== entry.name)
@@ -263,7 +271,14 @@ export class WorkflowRunStorage {
                 const completions = new Map<string, unknown>(),
                     worktrees = new Map<string, OwnedWorktree>();
                 for (const line of raw.split("\n").filter(Boolean)) {
-                    let item: any;
+                    let item: {
+                        version?: unknown;
+                        type?: unknown;
+                        operation?: unknown;
+                        value?: unknown;
+                        at?: unknown;
+                        owned?: Partial<OwnedWorktree>;
+                    };
                     try {
                         item = JSON.parse(line);
                     } catch {
@@ -290,13 +305,16 @@ export class WorkflowRunStorage {
                             typeof item.owned.ref !== "string"
                         )
                             throw new Error(`Invalid workflow journal in ${entry.name}.`);
-                        worktrees.set(item.operation, item.owned);
+                        worktrees.set(item.operation, item.owned as OwnedWorktree);
                     } else if (item.type === "worktree-released") worktrees.delete(item.operation);
                     else throw new Error(`Invalid workflow journal in ${entry.name}.`);
                 }
-                const delivery = await boundedJson(path.join(directory, "delivery.json")).catch((e: any) =>
-                    e?.code === "ENOENT" ? {} : Promise.reject(e),
-                );
+                const delivery = await boundedJson<DeliveryState & { version?: number }>(
+                    path.join(directory, "delivery.json"),
+                ).catch((e: unknown): DeliveryState & { version?: number } => {
+                    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+                    throw e;
+                });
                 if (
                     delivery.version !== undefined &&
                     (delivery.version !== 1 ||

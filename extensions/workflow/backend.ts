@@ -96,7 +96,7 @@ export interface WorkflowBackend {
             | "restart-agent"
             | "retry"
             | { action: "pause" | "resume" | "stop" | "restart-agent" | "retry"; agentId?: string },
-    ): Promise<{ runId?: string } | void>;
+    ): Promise<{ runId?: string } | undefined>;
     claimTerminalDelivery?(id: string): Promise<boolean>;
     markTerminalDelivered?(id: string): Promise<void>;
     releaseTerminalDelivery?(id: string): Promise<void>;
@@ -261,8 +261,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         const copy = structuredClone(a.summary);
         options.eventSink?.(copy);
         for (const listener of listeners) listener(copy);
-        if (a.directory && options.storage)
-            void persist(a, () => options.storage!.snapshot(a.directory!, copy)).catch((error) =>
+        const directory = a.directory;
+        const storage = options.storage;
+        if (directory && storage)
+            void persist(a, () => storage.snapshot(directory, copy)).catch((error) =>
                 console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
     };
@@ -298,10 +300,12 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (json !== undefined) active.result = json;
             finishPhase(active, status, error);
             publish(active);
-            if (active.directory && options.storage)
+            const activeDirectory = active.directory;
+            const storage = options.storage;
+            if (activeDirectory && storage)
                 void persist(active, () =>
-                    options.storage!.terminal(
-                        active.directory!,
+                    storage.terminal(
+                        activeDirectory,
                         json === undefined ? null : JSON.parse(json),
                         structuredClone(active.summary),
                     ),
@@ -882,10 +886,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     run.summary.status = "cancelled";
                     run.summary.endedAt = now();
                     publish(run);
-                    if (run.directory && options.storage)
-                        await persist(run, () =>
-                            options.storage!.terminal(run.directory!, null, structuredClone(run.summary)),
-                        );
+                    const runDirectory = run.directory;
+                    const storage = options.storage;
+                    if (runDirectory && storage)
+                        await persist(run, () => storage.terminal(runDirectory, null, structuredClone(run.summary)));
                 }
             } else if (action === "pause") {
                 if (run.summary.status !== "running") throw new Error("Only a running workflow can be paused.");
@@ -945,8 +949,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 run.summary.endedAt = undefined;
                 run.summary.error = undefined;
                 run.summary.updatedAt = now();
-                if (run.directory && options.storage)
-                    await persist(run, () => options.storage!.snapshot(run.directory!, structuredClone(run.summary)));
+                const runDirectory = run.directory;
+                const storage = options.storage;
+                if (runDirectory && storage)
+                    await persist(run, () => storage.snapshot(runDirectory, structuredClone(run.summary)));
             }
             for (const run of interrupted) run.controller.abort();
             await Promise.allSettled([...runs.values()].map((r) => r.settlement));

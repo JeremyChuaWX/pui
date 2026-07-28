@@ -1,5 +1,10 @@
 import * as fs from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+    ExtensionAPI,
+    ExtensionCommandContext,
+    ExtensionContext,
+    ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { AGENTS, childArgs, type ResolvedAgentName, resolveModel } from "../subagent/presets.js";
 import { createInitialSubagentDetails } from "../subagent/protocol.js";
@@ -138,15 +143,14 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         cwd = await fs.promises.realpath(ctx.cwd);
         const recovered = await manager.initialize(cwd);
         for (const run of recovered.filter((item) => !["succeeded", "failed", "cancelled"].includes(item.status))) {
-            const choice = await (ctx.ui as any)?.select?.(`Interrupted workflow: ${run.name}`, [
+            const choice = await ctx.ui.select(`Interrupted workflow: ${run.name}`, [
                 "Resume",
                 "Inspect",
                 "Stop",
                 "Later",
             ]);
             if (choice === "Resume") await backend.recover?.(run.id);
-            else if (choice === "Inspect")
-                (ctx.ui as any)?.notify?.(JSON.stringify(backend.inspect(run.id).run), "info");
+            else if (choice === "Inspect") ctx.ui.notify(JSON.stringify(backend.inspect(run.id).run), "info");
             else if (choice === "Stop") await backend.control(run.id, "stop");
         }
         unsubscribeControl?.();
@@ -232,16 +236,16 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         await manager.shutdown();
         emitEnvelope("reset");
     });
-    const authorize = async (key: string, title: string, body: string, ui: any) => {
+    const authorize = async (key: string, title: string, body: string, ui: Partial<ExtensionUIContext>) => {
         if (await approvalStore.has(key)) return;
-        if (!ui?.confirm || !(await ui.confirm(title, body))) throw new Error("Workflow launch was denied.");
+        if (!ui.confirm || !(await ui.confirm(title, body))) throw new Error("Workflow launch was denied.");
         // Confirmation-only hosts can authorize this run but cannot express durable trust.
-        if (!ui?.select) return;
+        if (!ui.select) return;
         const choice = await ui.select(title, ["Run once", "Trust unchanged script in this project"]);
         if (choice === undefined) throw new Error("Workflow launch was denied.");
         if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
     };
-    const launchSaved = async (name: string, args: unknown, ctx: any) => {
+    const launchSaved = async (name: string, args: unknown, ctx: ExtensionContext) => {
         const canonical = await fs.promises.realpath(ctx.cwd);
         const saved = (await discoverWorkflows(canonical, dependencies.storageOptions)).find(
             (item) => item.name === name,
@@ -266,7 +270,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             (await discoverWorkflows(cwd || process.cwd(), dependencies.storageOptions))
                 .filter((item) => item.name.startsWith(prefix.trim().split(/\s+/, 1)[0] ?? ""))
                 .map((item) => ({ value: item.name, label: item.name, description: item.description })),
-        handler: async (text: string, ctx: any) => {
+        handler: async (text: string, ctx: ExtensionCommandContext) => {
             const [name, ...rest] = text.trim().split(/\s+/);
             if (!name) {
                 ctx.ui.notify("Usage: /workflow <name> [JSON args]", "warning");
@@ -282,7 +286,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 }
             }
             const launched = await launchSaved(name, args, ctx);
-            ctx.ui.notify(`Started workflow ${launched.runId}.`, "success");
+            ctx.ui.notify(`Started workflow ${launched.runId}.`, "info");
         },
     });
     pi.registerTool({
@@ -301,9 +305,10 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                     details: { schema: "pi.workflow.launch", version: 1, runId: launched.runId },
                 };
             }
-            const script = params.script!;
+            const script = params.script;
+            if (!script) throw new Error("Provide exactly one of script or saved workflow name.");
             const preview = preflightWorkflow(script);
-            const ui = (ctx as any).ui;
+            const ui = ctx.ui;
             const canonical = await fs.promises.realpath(ctx.cwd);
             const project = (await findRepositoryRoot(canonical)) ?? canonical;
             let inlineName = "Inline workflow";

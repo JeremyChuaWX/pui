@@ -35,7 +35,7 @@ function parseStaticString(literal: string, source: string): string {
     if (literal.startsWith('"')) return JSON.parse(literal);
     let result = "";
     for (let index = 1; index < literal.length - 1; index++) {
-        const character = literal[index]!;
+        const character = literal[index];
         if (character !== "\\") {
             result += character;
             continue;
@@ -65,8 +65,9 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
     const declarations = [...script.matchAll(/\bexport\s+const\s+meta\s*=/g)];
     if (declarations.length !== 1)
         throw new Error(`${source}: expected exactly one static export const meta declaration.`);
-    const declaration = declarations[0]!,
-        start = declaration.index!,
+    const declaration = declarations[0];
+    if (!declaration || declaration.index === undefined) throw new Error(`${source}: invalid meta declaration.`);
+    const start = declaration.index,
         tail = script.slice(start);
     const expression = new RegExp(
         String.raw`^export\s+const\s+meta\s*=\s*\{\s*name\s*:\s*${JS_STRING}\s*,\s*description\s*:\s*${JS_STRING}\s*,?\s*\}\s*;?`,
@@ -77,8 +78,11 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
         );
     let name: string, description: string;
     try {
-        name = parseStaticString(expression[1]!, source);
-        description = parseStaticString(expression[2]!, source);
+        const nameLiteral = expression[1],
+            descriptionLiteral = expression[2];
+        if (!nameLiteral || !descriptionLiteral) throw new Error("Missing metadata strings.");
+        name = parseStaticString(nameLiteral, source);
+        description = parseStaticString(descriptionLiteral, source);
     } catch {
         throw new Error(`${source}: meta contains an invalid escaped string literal.`);
     }
@@ -100,8 +104,8 @@ export async function findRepositoryRoot(cwd: string): Promise<string | undefine
         try {
             await fs.promises.lstat(path.join(current, ".git"));
             return current;
-        } catch (error: any) {
-            if (error?.code !== "ENOENT") throw error;
+        } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
         const parent = path.dirname(current);
         if (parent === current) return undefined;
@@ -124,8 +128,8 @@ async function assertPlainDirectory(directory: string, boundary: string): Promis
 async function readLevel(directory: string, boundary: string, scope: SavedWorkflow["scope"], projectRoot?: string) {
     try {
         await assertPlainDirectory(directory, boundary);
-    } catch (error: any) {
-        if (error?.code === "ENOENT") return [];
+    } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
         throw error;
     }
     const definitions: SavedWorkflow[] = [];
@@ -189,8 +193,8 @@ async function ensureSafeDirectory(directory: string, boundary: string, mode: nu
         try {
             const stat = await fs.promises.lstat(current);
             if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Unsafe workflow directory: ${current}`);
-        } catch (error: any) {
-            if (error?.code !== "ENOENT") throw error;
+        } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
             await fs.promises.mkdir(current, { mode });
         }
     }
@@ -226,8 +230,8 @@ export async function saveWorkflow(
             throw new Error(`Unsafe workflow destination: ${destination}`);
         if (!input.overwrite)
             throw new Error(`Workflow "${input.name}" already exists; confirm overwrite to replace it.`);
-    } catch (error: any) {
-        if (error?.code !== "ENOENT") throw error;
+    } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const temp = path.join(directory, `.${input.name}.${crypto.randomUUID()}.tmp`);
     try {
@@ -238,8 +242,8 @@ export async function saveWorkflow(
         if (!input.overwrite) {
             try {
                 await fs.promises.link(temp, destination);
-            } catch (error: any) {
-                if (error?.code === "EEXIST")
+            } catch (error: unknown) {
+                if ((error as NodeJS.ErrnoException).code === "EEXIST")
                     throw new Error(`Workflow "${input.name}" already exists; confirm overwrite to replace it.`);
                 throw error;
             }

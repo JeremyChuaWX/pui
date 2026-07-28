@@ -28,8 +28,8 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
                 const stat = await fs.promises.lstat(current);
                 if (stat.isSymbolicLink() || !stat.isDirectory())
                     throw new Error(`Unsafe approval directory: ${current}`);
-            } catch (error: any) {
-                if (error?.code !== "ENOENT" || !create) throw error;
+            } catch (error: unknown) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT" || !create) throw error;
                 await fs.promises.mkdir(current, { mode: 0o700 });
             }
         }
@@ -49,8 +49,8 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
             )
                 throw new Error(`Corrupt workflow approval store: ${this.file}`);
             return new Set(value.keys);
-        } catch (error: any) {
-            if (error?.code === "ENOENT") return new Set();
+        } catch (error: unknown) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
             throw error;
         }
     }

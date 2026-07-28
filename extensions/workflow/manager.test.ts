@@ -34,7 +34,7 @@ test("manager delivers a repeated terminal snapshot exactly once and shuts backe
             listener = fn;
             return () => unsubscribed++;
         },
-        control: async () => {},
+        control: async () => undefined,
         shutdown: async () => {
             shutdown++;
         },
