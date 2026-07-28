@@ -60,7 +60,16 @@ describe("workflow host protocol", () => {
         expect(removed.runs.size).toBe(0);
         expect(upsert.runs.size).toBe(1);
         const reset = reduceWorkflowEvent(upsert, parse(payload("reset")), route);
-        expect(reset).toEqual({ runs: new Map() });
+        expect(reset).toEqual({ instanceId: "instance-1", runs: new Map() });
+    });
+
+    test("accepts authoritative upserts directly after reset and still rejects stale instances", () => {
+        const ready = reduceWorkflowEvent({ runs: new Map() }, parse(payload("ready")), route);
+        const reset = reduceWorkflowEvent(ready, parse(payload("reset")), route);
+        const upsert = reduceWorkflowEvent(reset, parse(payload("upsert")), route);
+
+        expect(upsert.runs.get("run-1")?.name).toBe("Review");
+        expect(reduceWorkflowEvent(reset, parse(payload("upsert", { instanceId: "old" })), route)).toBe(reset);
     });
 
     test("returns the same state for stale routes and instances", () => {
