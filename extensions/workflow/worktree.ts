@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const OUTPUT_LIMIT = 16 * 1024;
 export interface WorktreeManagerOptions {
     git?: string;
     timeoutMs?: number;
+    trustedBoundary?: string;
 }
 export interface OwnedWorktree {
     cwd: string;
@@ -18,12 +20,14 @@ export interface OwnedWorktree {
 export class WorkflowWorktreeManager {
     private readonly gitExecutable: string;
     private readonly timeoutMs: number;
+    private readonly trustedBoundary?: string;
     constructor(
         private readonly base: string,
         options: WorktreeManagerOptions = {},
     ) {
         this.gitExecutable = options.git ?? "git";
         this.timeoutMs = options.timeoutMs ?? 10_000;
+        this.trustedBoundary = options.trustedBoundary;
     }
     private command(cwd: string, args: string[]): Promise<string> {
         return new Promise((resolve, reject) => {
@@ -66,13 +70,8 @@ export class WorkflowWorktreeManager {
         return fs.promises.realpath(top);
     }
     private async canonicalBase() {
-        const parent = path.dirname(path.resolve(this.base));
-        const parentStat = await fs.promises.lstat(parent).catch(() => undefined);
-        if (parentStat?.isSymbolicLink()) throw new Error("Unsafe worktree base parent.");
-        await fs.promises.mkdir(this.base, { recursive: true, mode: 0o700 });
-        const stat = await fs.promises.lstat(this.base);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Unsafe worktree base.");
-        return fs.promises.realpath(this.base);
+        const boundary = this.trustedBoundary ?? (await inferDirectoryBoundary(this.base));
+        return safeDirectory(this.base, boundary, true);
     }
     async create(repository: string, runId: string, operation: string): Promise<OwnedWorktree> {
         if (!SAFE.test(runId) || !SAFE.test(operation)) throw new Error("Unsafe worktree identity.");
@@ -126,6 +125,7 @@ export class WorkflowWorktreeManager {
             rel = path.relative(base, resolved);
         if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("Refusing unsafe worktree cleanup.");
         const stat = await fs.promises.lstat(resolved).catch(() => undefined);
+        if (stat) await safeDirectory(resolved, base, false);
         if (stat?.isSymbolicLink()) throw new Error("Refusing symlink worktree cleanup.");
         await this.command(root, ["worktree", "remove", "--force", "--", resolved]).catch((e) => {
             if (stat) throw e;

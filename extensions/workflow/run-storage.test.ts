@@ -45,6 +45,48 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
+test("rejects symlinked storage ancestors and project directories", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-boundary-")),
+        project = path.join(temp, "project"),
+        outside = path.join(temp, "outside");
+    await fs.promises.mkdir(project);
+    await fs.promises.mkdir(outside);
+    try {
+        const linkedRoot = path.join(temp, ".pi", "agent", "runs");
+        await fs.promises.symlink(outside, path.join(temp, ".pi"));
+        await expect(
+            new WorkflowRunStorage(linkedRoot, temp).create(
+                project,
+                "run-1",
+                { script: "", policy: {}, roles: [], models: [], limits: {} },
+                { ...summary, cwd: project },
+            ),
+        ).rejects.toThrow("Unsafe directory component");
+        await fs.promises.rm(path.join(temp, ".pi"));
+
+        const storage = new WorkflowRunStorage(path.join(temp, "runs"), temp);
+        const directory = await storage.create(
+            project,
+            "run-1",
+            { script: "", policy: {}, roles: [], models: [], limits: {} },
+            { ...summary, cwd: project },
+        );
+        const hashedProject = path.dirname(directory);
+        await fs.promises.rm(hashedProject, { recursive: true });
+        await fs.promises.symlink(outside, hashedProject);
+        await expect(
+            storage.create(
+                project,
+                "run-2",
+                { script: "", policy: {}, roles: [], models: [], limits: {} },
+                { ...summary, id: "run-2", cwd: project },
+            ),
+        ).rejects.toThrow("Unsafe directory component");
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("isolates a corrupt journal as a bounded failed diagnostic", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-corrupt-")),
         project = path.join(temp, "project");

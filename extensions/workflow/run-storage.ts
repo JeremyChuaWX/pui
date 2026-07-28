@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
+import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 import { findRepositoryRoot } from "./storage.js";
 import type { OwnedWorktree } from "./worktree.js";
 
@@ -93,25 +94,36 @@ function projectHash(cwd: string) {
 export class WorkflowRunStorage {
     readonly root: string;
     private readonly instanceToken = crypto.randomUUID();
-    constructor(root = path.join(os.homedir(), ".pi", "agent", "workflow-runs")) {
-        this.root = path.resolve(root);
+    private readonly trustedBoundary?: string;
+    constructor(root?: string, trustedBoundary?: string) {
+        this.root = path.resolve(root ?? path.join(os.homedir(), ".pi", "agent", "workflow-runs"));
+        this.trustedBoundary = trustedBoundary ?? (root === undefined ? os.homedir() : undefined);
+    }
+    private async boundary() {
+        return this.trustedBoundary ?? inferDirectoryBoundary(this.root);
     }
     private async project(cwd: string, create = false) {
         const canonical = await fs.promises.realpath(cwd),
             repository = (await findRepositoryRoot(canonical)) ?? canonical,
             directory = path.join(this.root, projectHash(await fs.promises.realpath(repository)));
+        const boundary = await this.boundary();
         if (create) {
-            const parent = path.dirname(this.root);
-            const parentStat = await fs.promises.lstat(parent).catch(() => undefined);
-            if (parentStat?.isSymbolicLink()) throw new Error("Unsafe workflow storage parent.");
-            await fs.promises.mkdir(this.root, { recursive: true, mode: 0o700 });
-            const rootStat = await fs.promises.lstat(this.root);
-            if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Unsafe workflow storage root.");
-            await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
-            await fs.promises.chmod(this.root, 0o700);
-            await fs.promises.chmod(directory, 0o700);
+            const root = await safeDirectory(this.root, boundary, true),
+                project = await safeDirectory(directory, boundary, true);
+            await fs.promises.chmod(root, 0o700);
+            await fs.promises.chmod(project, 0o700);
+            return project;
         }
-        return directory;
+        try {
+            return await safeDirectory(directory, boundary, false);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            const root = await safeDirectory(this.root, boundary, false).catch((rootError: NodeJS.ErrnoException) => {
+                if (rootError.code === "ENOENT") return this.root;
+                throw rootError;
+            });
+            return path.join(root, path.basename(directory));
+        }
     }
     async create(cwd: string, id: string, launch: ImmutableRunLaunch, snapshot: WorkflowRunSummaryV1): Promise<string> {
         if (!RUN_ID.test(id)) throw new Error("Invalid workflow run id.");
@@ -391,14 +403,12 @@ export class WorkflowRunStorage {
     }
     private async assertDirectory(directory: string) {
         const resolved = path.resolve(directory),
-            rel = path.relative(this.root, resolved);
-        if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error("Workflow artifact escapes storage root.");
-        const stat = await fs.promises.lstat(resolved);
+            stat = await fs.promises.lstat(resolved);
         if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Unsafe workflow run directory.");
-        const canonicalRoot = await fs.promises.realpath(this.root),
-            canonical = await fs.promises.realpath(resolved);
+        const canonicalRoot = await safeDirectory(this.root, await this.boundary(), false),
+            canonical = await safeDirectory(resolved, canonicalRoot, false);
         if (path.relative(canonicalRoot, canonical).startsWith(".."))
             throw new Error("Workflow artifact escapes canonical storage root.");
-        return resolved;
+        return canonical;
     }
 }
