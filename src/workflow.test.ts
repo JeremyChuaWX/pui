@@ -63,16 +63,18 @@ describe("workflow host protocol", () => {
         expect(reset).toEqual({ instanceId: "instance-1", acceptingInstance: true, runs: new Map() });
     });
 
-    test("accepts authoritative upserts directly after reset and still rejects stale instances", () => {
+    test("rejects stale mutations after reset until ready establishes replacement authority", () => {
         const ready = reduceWorkflowEvent({ runs: new Map() }, parse(payload("ready")), route);
-        const reset = reduceWorkflowEvent(ready, parse(payload("reset")), route);
-        const upsert = reduceWorkflowEvent(reset, parse(payload("upsert")), route);
-        const removed = reduceWorkflowEvent(upsert, parse(payload("remove")), route);
+        const populated = reduceWorkflowEvent(ready, parse(payload("upsert")), route);
+        const reset = reduceWorkflowEvent(populated, parse(payload("reset")), route);
 
+        expect(reduceWorkflowEvent(reset, parse(payload("upsert")), route)).toBe(reset);
+        expect(reduceWorkflowEvent(reset, parse(payload("remove")), route)).toBe(reset);
+
+        const replacement = reduceWorkflowEvent(reset, parse(payload("ready", { instanceId: "instance-2" })), route);
+        const upsert = reduceWorkflowEvent(replacement, parse(payload("upsert", { instanceId: "instance-2" })), route);
+        expect(replacement).toEqual({ instanceId: "instance-2", runs: new Map() });
         expect(upsert.runs.get("run-1")?.name).toBe("Review");
-        expect(upsert.acceptingInstance).toBe(true);
-        expect(removed.acceptingInstance).toBe(true);
-        expect(reduceWorkflowEvent(reset, parse(payload("upsert", { instanceId: "old" })), route)).toBe(reset);
     });
 
     test("returns the same state for stale routes and instances", () => {

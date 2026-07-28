@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
-const OWNED_REF = /^refs\/pui\/workflows\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+const OWNED_REF = /^refs\/pui\/workflows\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$/;
 const OUTPUT_LIMIT = 16 * 1024;
 export interface WorktreeManagerOptions {
     git?: string;
@@ -127,7 +127,14 @@ export class WorkflowWorktreeManager {
         }
     }
     async cleanup(repository: string, owned: OwnedWorktree): Promise<void> {
-        if (!OWNED_REF.test(owned.ref)) throw new Error("Unsafe ownership ref.");
+        const identity = OWNED_REF.exec(owned.ref);
+        if (!identity) throw new Error("Unsafe ownership ref.");
+        const [, runId, operation] = identity;
+        if (
+            owned.branch !== `pui-workflow/${runId}/${operation}` ||
+            path.basename(path.resolve(owned.cwd)) !== `${runId}-${operation}`
+        )
+            throw new Error("Mismatched worktree ownership.");
         const root = await this.repository(repository),
             base = await this.canonicalBase(),
             resolved = path.resolve(owned.cwd),

@@ -111,22 +111,29 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         });
     let sessionId = "unbound",
         cwd = "",
+        lifecycleGeneration = 0,
+        recoveryAbort: AbortController | undefined,
+        initializationQueue: Promise<void> = Promise.resolve(),
         unsubscribeControl: (() => void) | undefined,
         unsubscribeSave: (() => void) | undefined,
         manager: WorkflowRunManager;
-    const emitEnvelope = (type: "ready" | "reset" | "upsert" | "remove", extra: object = {}) =>
+    const emitEnvelope = (
+        type: "ready" | "reset" | "upsert" | "remove",
+        extra: object = {},
+        route = { sessionId, cwd },
+    ) =>
         pi.events?.emit(BACKGROUND_WORKFLOW_CHANNEL, {
             schema: BACKGROUND_WORKFLOW_SCHEMA,
             version: BACKGROUND_WORKFLOW_VERSION,
-            sessionId,
+            sessionId: route.sessionId,
             instanceId,
-            cwd,
+            cwd: route.cwd,
             type,
             ...extra,
         });
     manager = new WorkflowRunManager({
         backend,
-        emit: (run) => emitEnvelope("upsert", { run }),
+        emit: (run) => emitEnvelope("upsert", { run }, { sessionId: run.sessionId, cwd: run.cwd }),
         deliver: (run, result) =>
             pi.sendMessage(
                 {
@@ -139,32 +146,42 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             ),
     });
     pi.on("session_start", async (_event, ctx) => {
-        sessionId = ctx.sessionManager.getSessionId();
-        cwd = await fs.promises.realpath(ctx.cwd);
+        const generation = ++lifecycleGeneration;
+        recoveryAbort?.abort();
+        const abort = new AbortController();
+        recoveryAbort = abort;
+        const route = {
+            sessionId: ctx.sessionManager.getSessionId(),
+            cwd: await fs.promises.realpath(ctx.cwd),
+        };
+        if (generation !== lifecycleGeneration || abort.signal.aborted) return;
+        sessionId = route.sessionId;
+        cwd = route.cwd;
         unsubscribeControl?.();
         unsubscribeControl = pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
-            const control = parseBackgroundWorkflowControl(payload, { sessionId, instanceId, cwd });
+            if (generation !== lifecycleGeneration) return;
+            const control = parseBackgroundWorkflowControl(payload, { ...route, instanceId });
             if (!control) return;
             void (async () => {
                 try {
                     const result = await manager.control(control.runId, control.action, control.agentId);
+                    if (generation !== lifecycleGeneration) return;
                     pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
                         schema: "pi.workflow.background.control.result",
                         version: 1,
-                        sessionId,
+                        ...route,
                         instanceId,
-                        cwd,
                         requestId: control.requestId,
                         ok: true,
                         ...(result?.runId ? { linkedRunId: result.runId } : {}),
                     });
                 } catch (error) {
+                    if (generation !== lifecycleGeneration) return;
                     pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
                         schema: "pi.workflow.background.control.result",
                         version: 1,
-                        sessionId,
+                        ...route,
                         instanceId,
-                        cwd,
                         requestId: control.requestId,
                         ok: false,
                         error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
@@ -174,7 +191,8 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         });
         unsubscribeSave?.();
         unsubscribeSave = pi.events?.on(BACKGROUND_WORKFLOW_SAVE_CHANNEL, (payload) => {
-            const value = parseBackgroundWorkflowSave(payload, { sessionId, instanceId, cwd });
+            if (generation !== lifecycleGeneration) return;
+            const value = parseBackgroundWorkflowSave(payload, { ...route, instanceId });
             if (!value) return;
             void (async () => {
                 try {
@@ -182,7 +200,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                     const metadata = parseWorkflowMetadata(inspected.script, "inspected workflow");
                     const savedPath = await saveWorkflow(
                         {
-                            cwd,
+                            cwd: route.cwd,
                             name: metadata.name,
                             script: inspected.script,
                             scope: value.scope,
@@ -190,23 +208,23 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                         },
                         dependencies.storageOptions,
                     );
+                    if (generation !== lifecycleGeneration) return;
                     pi.events?.emit(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, {
                         schema: "pi.workflow.background.save.result",
                         version: 1,
-                        sessionId,
+                        ...route,
                         instanceId,
-                        cwd,
                         requestId: value.requestId,
                         ok: true,
                         path: savedPath,
                     });
                 } catch (error) {
+                    if (generation !== lifecycleGeneration) return;
                     pi.events?.emit(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, {
                         schema: "pi.workflow.background.save.result",
                         version: 1,
-                        sessionId,
+                        ...route,
                         instanceId,
-                        cwd,
                         requestId: value.requestId,
                         ok: false,
                         ...((error as { code?: unknown })?.code === "overwrite_required"
@@ -217,36 +235,54 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 }
             })();
         });
-        const recovered = await manager.initialize(cwd);
-        emitEnvelope("ready");
+        let recovered: Awaited<ReturnType<WorkflowRunManager["initialize"]>> | undefined;
+        const initialize = initializationQueue.then(async () => {
+            if (generation !== lifecycleGeneration || abort.signal.aborted) return;
+            recovered = await manager.initialize(route.cwd);
+        });
+        initializationQueue = initialize.catch(() => {});
+        await initialize;
+        if (generation !== lifecycleGeneration || abort.signal.aborted || !recovered) return;
+        emitEnvelope("ready", {}, route);
         for (const run of recovered.filter(
             (item) => !["succeeded", "failed", "cancelled", "timed_out"].includes(item.status),
         )) {
+            if (generation !== lifecycleGeneration || abort.signal.aborted) return;
             try {
-                const choice = await ctx.ui.select(`Interrupted workflow: ${run.name}`, [
-                    "Resume",
-                    "Inspect",
-                    "Stop",
-                    "Later",
-                ]);
+                const choice = await ctx.ui.select(
+                    `Interrupted workflow: ${run.name}`,
+                    ["Resume", "Inspect", "Stop", "Later"],
+                    { signal: abort.signal },
+                );
+                if (generation !== lifecycleGeneration || abort.signal.aborted) return;
                 if (choice === "Resume") await backend.recover?.(run.id);
                 else if (choice === "Inspect") ctx.ui.notify(JSON.stringify(backend.inspect(run.id).run), "info");
                 else if (choice === "Stop") await backend.control(run.id, "stop");
             } catch (error) {
+                if (generation !== lifecycleGeneration || abort.signal.aborted) return;
                 ctx.ui.notify(
                     `Could not recover workflow ${run.name}: ${error instanceof Error ? error.message : String(error)}`,
                     "warning",
                 );
             }
         }
+        if (generation !== lifecycleGeneration || abort.signal.aborted) return;
         for (const run of manager.list())
-            if (run.sessionId === sessionId && run.cwd === cwd) emitEnvelope("upsert", { run });
+            if (run.sessionId === route.sessionId && run.cwd === route.cwd) emitEnvelope("upsert", { run }, route);
     });
     pi.on("session_shutdown", async () => {
+        const generation = ++lifecycleGeneration;
+        recoveryAbort?.abort();
+        recoveryAbort = undefined;
         unsubscribeControl?.();
+        unsubscribeControl = undefined;
         unsubscribeSave?.();
-        await manager.shutdown();
-        emitEnvelope("reset");
+        unsubscribeSave = undefined;
+        const route = { sessionId, cwd };
+        const shutdown = initializationQueue.then(() => manager.shutdown());
+        initializationQueue = shutdown.catch(() => {});
+        await shutdown;
+        if (generation === lifecycleGeneration) emitEnvelope("reset", {}, route);
     });
     const authorize = async (key: string, title: string, body: string, ui: Partial<ExtensionUIContext>) => {
         if (await approvalStore.has(key)) return;

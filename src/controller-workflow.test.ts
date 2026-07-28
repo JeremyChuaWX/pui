@@ -95,6 +95,52 @@ function harness(cwd: string) {
 }
 
 describe("PuiController workflow bridge", () => {
+    test("does not finish an out-of-order stale session bind", async () => {
+        const h = harness(process.cwd());
+        let releaseOld!: () => void;
+        const oldBinding = new Promise<void>((resolve) => {
+            releaseOld = resolve;
+        });
+        let oldSubscriptions = 0;
+        h.session.bindExtensions = () => oldBinding;
+        h.session.subscribe = () => {
+            oldSubscriptions += 1;
+            return () => {};
+        };
+
+        let newSubscriptions = 0;
+        const replacement = {
+            ...h.session,
+            sessionId: "session-2",
+            bindExtensions: async () => {},
+            subscribe: () => {
+                newSubscriptions += 1;
+                return () => {};
+            },
+        };
+        let autocompleteSetups = 0;
+        const controller = h.controller as any;
+        const setupAutocomplete = controller.setupAutocompleteProvider.bind(controller);
+        controller.setupAutocompleteProvider = () => {
+            autocompleteSetups += 1;
+            setupAutocomplete();
+        };
+
+        const staleBind = h.bind();
+        (h.runtime as any).session = replacement;
+        await h.bind(replacement);
+        const snapshot = h.controller.snapshot();
+        releaseOld();
+        await staleBind;
+
+        expect(oldSubscriptions).toBe(0);
+        expect(newSubscriptions).toBe(1);
+        expect(autocompleteSetups).toBe(1);
+        expect(h.controller.snapshot()).toBe(snapshot);
+        expect(h.controller.snapshot().sessionId).toBe("session-2");
+        await h.controller.dispose();
+    });
+
     test("binds authoritative snapshots, routes controls, and disposes cleanly", async () => {
         const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-controller-"));
         const h = harness(temp);

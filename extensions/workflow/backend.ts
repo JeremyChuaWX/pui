@@ -24,6 +24,7 @@ export const DEFAULT_WORKFLOW_LIMITS = {
 } as const;
 const MAX_SCRIPT_BYTES = 64 * 1024,
     MAX_FRAME_BYTES = 256 * 1024,
+    MAX_FRAME_LINE_BYTES = MAX_FRAME_BYTES * 2 + 1024,
     MAX_PENDING = 16,
     STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
@@ -754,16 +755,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             child.stdout.setEncoding("utf8");
             child.stdout.on("data", (chunk) => {
                 buffer += chunk;
-                if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) {
-                    finish("failed", "Oversized workflow worker frame.");
-                    active.controller.abort();
-                    return;
-                }
                 let index = buffer.indexOf("\n");
                 while (index >= 0) {
                     const line = buffer.slice(0, index);
                     buffer = buffer.slice(index + 1);
                     index = buffer.indexOf("\n");
+                    if (Buffer.byteLength(line) > MAX_FRAME_LINE_BYTES) {
+                        finish("failed", "Oversized workflow worker frame.");
+                        active.controller.abort();
+                        return;
+                    }
                     try {
                         void handle(JSON.parse(line)).catch((e) => {
                             finish("failed", errorMessage(e));
@@ -773,6 +774,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         finish("failed", "Malformed workflow worker output.");
                         active.controller.abort();
                     }
+                }
+                if (Buffer.byteLength(buffer) > MAX_FRAME_LINE_BYTES) {
+                    finish("failed", "Oversized workflow worker frame.");
+                    active.controller.abort();
                 }
             });
             const watchdog = setInterval(() => {

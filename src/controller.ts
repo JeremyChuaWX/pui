@@ -183,6 +183,7 @@ export class PuiController {
     private toastTimers = new Set<ReturnType<typeof setTimeout>>();
     private refreshTimer?: ReturnType<typeof setTimeout>;
     private disposed = false;
+    private bindGeneration = 0;
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
@@ -281,6 +282,7 @@ export class PuiController {
     }
 
     private async bindSession(session: AgentSession): Promise<void> {
+        const generation = ++this.bindGeneration;
         this.dismissExtensionDialogs();
         for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
             reject(new Error("Workflow session changed."));
@@ -345,6 +347,7 @@ export class PuiController {
             onError: (error) => this.notify(`${path.basename(error.extensionPath)}: ${error.error}`, "error"),
         });
 
+        if (this.disposed || generation !== this.bindGeneration || this.runtime.session !== session) return;
         this.setupAutocompleteProvider();
         this.unsubscribeSession = session.subscribe((event) => this.handleEvent(event));
         this.refresh();

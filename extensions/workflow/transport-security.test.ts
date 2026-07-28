@@ -52,6 +52,14 @@ describe("workflow hostile transport and watchdog", () => {
             expect(result.error?.length).toBeLessThanOrEqual(2_000);
         });
 
+    test("accepts coalesced frames containing a terminal value at the JSON size limit", async () => {
+        const result = await run(
+            `const json=JSON.stringify("x".repeat(262142));process.stdout.write([JSON.stringify({v:1,t:"ready"}),JSON.stringify({v:1,t:"heartbeat"}),JSON.stringify({v:1,t:"terminal",ok:true,json})].join("\\n")+"\\n")`,
+        );
+        expect(Buffer.byteLength(JSON.stringify("x".repeat(262142)))).toBe(262144);
+        expect(result.status).toBe("succeeded");
+    });
+
     test("caps concurrent pending RPC requests with a hanging executor", async () => {
         const requests = Array.from({ length: 17 }, (_, index) =>
             JSON.stringify({

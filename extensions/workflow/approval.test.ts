@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,6 +26,105 @@ describe("FileWorkflowApprovalStore", () => {
             await fs.promises.rm(root, { recursive: true, force: true });
         }
     });
+
+    test("a stale owner cannot release a replacement lock", async () => {
+        const root = await temporary();
+        const file = path.join(root, "store.json"),
+            lock = `${file}.lock`,
+            first = new FileWorkflowApprovalStore(file, root),
+            second = new FileWorkflowApprovalStore(file, root);
+        let releaseFirst: (() => Promise<void>) | undefined, releaseSecond: (() => Promise<void>) | undefined;
+        try {
+            const firstRelease = (await (first as any).acquireLock()) as () => Promise<void>;
+            releaseFirst = firstRelease;
+            const ownerFile = path.join(lock, "owner.json"),
+                owner = JSON.parse(await fs.promises.readFile(ownerFile, "utf8")),
+                old = new Date(Date.now() - 120_000),
+                exited = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" }),
+                deadPid = exited.pid;
+            if (!deadPid) throw new Error("Expected approval lock fixture pid");
+            await new Promise<void>((resolve, reject) => {
+                exited.once("error", reject);
+                exited.once("exit", (code) =>
+                    code === 0 ? resolve() : reject(new Error(`dead-pid fixture exited ${code}`)),
+                );
+            });
+            await fs.promises.writeFile(ownerFile, JSON.stringify({ ...owner, pid: deadPid, host: os.hostname() }));
+            await fs.promises.utimes(lock, old, old);
+            const secondRelease = (await (second as any).acquireLock()) as () => Promise<void>;
+            releaseSecond = secondRelease;
+            await firstRelease();
+            expect((await fs.promises.lstat(lock)).isDirectory()).toBe(true);
+            await secondRelease();
+            await expect(fs.promises.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+            await releaseFirst?.();
+            await releaseSecond?.();
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("retains additions made concurrently by separate processes", async () => {
+        const root = await temporary();
+        const file = path.join(root, "store.json");
+        const gate = path.join(root, "gate");
+        const keys = Array.from({ length: 12 }, (_, index) => `process-key-${index}`);
+        const children: ReturnType<typeof spawn>[] = [],
+            completions: Promise<void>[] = [];
+        let childFailure: Error | undefined;
+        try {
+            children.push(
+                ...keys.map((key, index) =>
+                    spawn(
+                        process.execPath,
+                        [
+                            path.join(import.meta.dir, "approval-process-helper.ts"),
+                            file,
+                            root,
+                            key,
+                            path.join(root, `ready-${index}`),
+                            gate,
+                        ],
+                        { stdio: "ignore" },
+                    ),
+                ),
+            );
+            completions.push(
+                ...children.map(
+                    (child) =>
+                        new Promise<void>((resolve) => {
+                            let settled = false;
+                            const finish = (error?: Error) => {
+                                if (settled) return;
+                                settled = true;
+                                childFailure ??= error;
+                                resolve();
+                            };
+                            child.once("error", finish);
+                            child.once("exit", (code) =>
+                                finish(code === 0 ? undefined : new Error(`helper exited ${code}`)),
+                            );
+                        }),
+                ),
+            );
+            const readyDeadline = Date.now() + 10_000;
+            while ((await fs.promises.readdir(root)).filter((name) => name.startsWith("ready-")).length < keys.length) {
+                if (childFailure) throw childFailure;
+                if (Date.now() >= readyDeadline) throw new Error("Timed out waiting for approval helper readiness");
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            await fs.promises.writeFile(gate, "");
+            await Promise.all(completions);
+            if (childFailure) throw childFailure;
+            expect(new Set(JSON.parse(await fs.promises.readFile(file, "utf8")).keys)).toEqual(new Set(keys));
+        } finally {
+            for (const child of children) {
+                if (child.exitCode === null && child.signalCode === null) child.kill();
+            }
+            await Promise.all(completions);
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    }, 30_000);
 
     test("serializes concurrent additions without losing keys", async () => {
         const root = await temporary();

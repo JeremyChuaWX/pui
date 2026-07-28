@@ -21,7 +21,7 @@ const summary = (status: "running" | "succeeded") => ({
     updatedAt: 1,
 });
 
-function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
+function fixture(enabled: boolean, dependencies: { backend?: Partial<WorkflowBackend>; [key: string]: unknown } = {}) {
     const handlers = new Map<string, (...args: any[]) => any>(),
         eventHandlers = new Map<string, (payload: any) => void>(),
         emitted: any[] = [],
@@ -31,7 +31,7 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
         command: any,
         listener: ((run: any) => void) | undefined,
         shutdowns = 0;
-    const backend: WorkflowBackend = {
+    const defaultBackend: WorkflowBackend = {
         async launch(input) {
             launches.push(input);
             return { runId: "run-1" };
@@ -51,6 +51,8 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
             shutdowns++;
         },
     };
+    const { backend: backendOverrides, ...extensionDependencies } = dependencies,
+        backend: WorkflowBackend = { ...defaultBackend, ...backendOverrides };
     const pi: any = {
         on: (name: string, fn: any) => handlers.set(name, fn),
         registerTool: (value: any) => {
@@ -72,7 +74,7 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
         backend,
         environment: enabled ? { PUI_WORKFLOWS: "1" } : {},
         instanceId: "instance-1",
-        ...dependencies,
+        ...extensionDependencies,
     });
     return {
         handlers,
@@ -140,13 +142,63 @@ describe("workflow extension", () => {
         expect(f.emitted.at(-1)?.[1].type).toBe("reset");
     });
 
+    test("publishes readiness only for the latest overlapping session start", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-lifecycle-")),
+            firstCwd = path.join(root, "first"),
+            secondCwd = path.join(root, "second");
+        await fs.promises.mkdir(firstCwd);
+        await fs.promises.mkdir(secondCwd);
+        let initializeCalls = 0,
+            resolveStarted: () => void = () => {},
+            resolveInitialization: () => void = () => {};
+        const started = new Promise<void>((resolve) => (resolveStarted = resolve)),
+            initialization = new Promise<void>((resolve) => (resolveInitialization = resolve));
+        const f = fixture(true, {
+            backend: {
+                async initialize() {
+                    initializeCalls++;
+                    if (initializeCalls === 1) {
+                        resolveStarted();
+                        await initialization;
+                    }
+                    return [];
+                },
+            },
+        });
+        try {
+            const first = f.handlers.get("session_start")!(
+                {},
+                { cwd: firstCwd, sessionManager: { getSessionId: () => "session-first" } },
+            );
+            await started;
+            const second = f.handlers.get("session_start")!(
+                {},
+                { cwd: secondCwd, sessionManager: { getSessionId: () => "session-second" } },
+            );
+            resolveInitialization();
+            await Promise.all([first, second]);
+            expect(initializeCalls).toBe(2);
+            expect(f.emitted.filter(([, value]) => value.type === "ready").map(([, value]) => value)).toEqual([
+                expect.objectContaining({
+                    sessionId: "session-second",
+                    cwd: await fs.promises.realpath(secondCwd),
+                }),
+            ]);
+        } finally {
+            resolveInitialization();
+            await f.handlers.get("session_shutdown")!();
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("control and save channels return routed success and bounded structured failures", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
         const longError = "x".repeat(3_000);
         try {
-            const backend = {
-                async control(_id: string, request: { action: string }) {
-                    if (request.action === "pause") return { runId: "linked-run" };
+            const backend: Partial<WorkflowBackend> = {
+                async control(_id, request) {
+                    const action = typeof request === "string" ? request : request.action;
+                    if (action === "pause") return { runId: "linked-run" };
                     throw new Error(longError);
                 },
                 inspect: () => ({
@@ -154,7 +206,7 @@ describe("workflow extension", () => {
                     script: `export const meta={name:"demo",description:"Demo"}; return 1`,
                 }),
             };
-            const f = fixture(true, { backend: { ...fixture(true).backend, ...backend } });
+            const f = fixture(true, { backend });
             await f.handlers.get("session_start")!(
                 {},
                 {

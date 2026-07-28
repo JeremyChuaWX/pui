@@ -53,6 +53,26 @@ describe("workflow worktree isolation", () => {
         expect((await Bun.$`git -C ${root} for-each-ref refs/pui/workflows`.text()).includes(a.ref)).toBe(false);
         await manager.cleanup(root, b);
     });
+    test("rejects mismatched ownership before running git commands", async () => {
+        const root = await repository(),
+            base = `${root}-owned`,
+            commandLog = path.join(root, "git-commands"),
+            recorder = path.join(root, "record-git");
+        temporary.push(base);
+        await fs.promises.writeFile(
+            recorder,
+            `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\nexit 99\n`,
+            { mode: 0o755 },
+        );
+        const owner = new WorkflowWorktreeManager(base),
+            owned = await owner.create(root, "run", "operation"),
+            guarded = new WorkflowWorktreeManager(base, { git: recorder });
+        await expect(guarded.cleanup(root, { ...owned, branch: "pui-workflow/run/other" })).rejects.toThrow(
+            "Mismatched worktree ownership",
+        );
+        expect(await fs.promises.readFile(commandLog, "utf8").catch(() => "")).toBe("");
+        await owner.cleanup(root, owned);
+    });
     test("rejects a symlink in the direct worktree-base ancestry", async () => {
         const boundary = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-worktree-boundary-")),
             outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-worktree-outside-")),

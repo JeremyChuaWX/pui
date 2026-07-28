@@ -246,7 +246,7 @@ export function reduceWorkflowEvent(
         if (event.instanceId !== state.instanceId) return state;
         return { instanceId: state.instanceId, acceptingInstance: true, runs: new Map() };
     }
-    if (event.instanceId !== state.instanceId) return state;
+    if (state.acceptingInstance || event.instanceId !== state.instanceId) return state;
     const runs = new Map(state.runs);
     if (event.type === "upsert") {
         if (!runs.has(event.run.id) && runs.size >= MAX_WORKFLOW_RUNS) return state;
