@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createWorkflowBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
+import type { WorkflowBackendOptions } from "./backend.js";
+import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
+
+// Legacy backend fixtures intentionally exercise the unsafe shared-checkout mode.
+const createWorkflowBackend = (options: WorkflowBackendOptions) =>
+    createBackend({ ...options, policy: { allowUnsafeSharedCheckout: true, ...options.policy } });
 
 async function waitFor(predicate: () => boolean, timeout = 5_000) {
     const end = Date.now() + timeout;

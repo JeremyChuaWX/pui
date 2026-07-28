@@ -12,6 +12,7 @@ import {
 } from "./protocol.js";
 import type { WorkflowRunStorage } from "./run-storage.js";
 import { executableWorkflowScript } from "./storage.js";
+import { WorkflowWorktreeManager } from "./worktree.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
     maxConcurrency: 4,
@@ -53,6 +54,7 @@ export interface WorkflowLaunch {
 }
 export interface WorkflowHostPolicy {
     roles?: readonly string[];
+    allowUnsafeSharedCheckout?: boolean;
     models?: readonly string[];
     resolveModel?: (role: string, requested?: string) => string | undefined;
 }
@@ -69,6 +71,7 @@ export interface WorkflowBackendOptions {
     cooperativeExecutor?: boolean;
     shutdownGraceMs?: number;
     storage?: WorkflowRunStorage;
+    worktreeManager?: WorkflowWorktreeManager;
     /** Test-only fault injection, called after an operation is durable but before replying. */
     afterDurableCompletion?: (operationId: string) => Promise<void> | void;
 }
@@ -222,7 +225,14 @@ async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const runs = new Map<string, ActiveRun>(),
-        listeners = new Set<(run: WorkflowRunSummaryV1) => void>();
+        listeners = new Set<(run: WorkflowRunSummaryV1) => void>(),
+        worktrees =
+            options.worktreeManager ??
+            new WorkflowWorktreeManager(
+                options.storage
+                    ? path.join(path.dirname(options.storage.root), "workflow-worktrees")
+                    : path.join(os.homedir(), ".pi", "agent", "workflow-worktrees"),
+            );
     let shuttingDown = false;
     const now = options.now ?? Date.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
@@ -395,7 +405,18 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             typeof opts !== "object"
                         )
                             throw new Error("Invalid agent request.");
-                        const role = String(opts.role || "generic");
+                        const role = String(opts.role || "generic"),
+                            isolation = opts.isolation;
+                        if (isolation !== undefined && isolation !== "worktree")
+                            throw new Error(`Unknown agent isolation: ${String(isolation)}`);
+                        const writeCapable = role !== "explore" && role !== "read-only";
+                        if (
+                            writeCapable &&
+                            active.summary.limits.maxConcurrency > 1 &&
+                            isolation !== "worktree" &&
+                            !options.policy?.allowUnsafeSharedCheckout
+                        )
+                            throw new Error("Parallel write-capable agents require worktree isolation.");
                         if (options.policy?.roles && !options.policy.roles.includes(role))
                             throw new Error(`Agent role is not allowed by host policy: ${role}`);
                         const model =
@@ -445,7 +466,27 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                     reject(new Error("Agent timed out."));
                                 }, timeoutMs);
                             });
+                            let owned: Awaited<ReturnType<WorkflowWorktreeManager["create"]>> | undefined,
+                                operationKey: string | undefined;
                             try {
+                                if (isolation === "worktree") {
+                                    operationKey = `${operationId.slice(0, 35)}-${crypto.randomUUID().slice(0, 8)}`;
+                                    owned = await worktrees.create(
+                                        input.cwd,
+                                        active.summary.id.slice(0, 63),
+                                        operationKey,
+                                    );
+                                    if (active.directory && options.storage)
+                                        await options.storage.worktree(active.directory, operationKey, owned, now());
+                                    agent.worktree = { cwd: owned.cwd, branch: owned.branch };
+                                    agent.recentActivity.push({
+                                        sequence: 1,
+                                        timestamp: now(),
+                                        kind: "diagnostic",
+                                        title: `Worktree ${owned.branch} at ${owned.cwd}`.slice(0, 2000),
+                                    });
+                                    publish(active);
+                                }
                                 let result: AgentResult | undefined;
                                 const retries = Math.min(3, Math.max(0, Number(opts.retries) || 0));
                                 for (let attempt = 0; attempt <= retries; attempt++)
@@ -458,7 +499,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                                 schema: opts.schema,
                                                 signal,
                                                 timeoutMs,
-                                                cwd: input.cwd,
+                                                cwd: owned?.cwd ?? input.cwd,
                                             }),
                                         );
                                         if (options.cooperativeExecutor) {
@@ -497,6 +538,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 agent.status = "succeeded";
                             } finally {
                                 if (timer) clearTimeout(timer);
+                                if (owned) {
+                                    await worktrees.cleanup(input.cwd, owned);
+                                    if (operationKey && active.directory && options.storage)
+                                        await options.storage.worktree(active.directory, operationKey, null, now());
+                                }
                             }
                         } catch (e) {
                             agent.status = active.controller.signal.aborted
@@ -590,6 +636,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async launch(input) {
             if (shuttingDown) throw new Error("Workflow backend is shutting down.");
             preflightWorkflow(input.script);
+            input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
             const node = await resolveWorkflowNode({
                     environment: options.environment,
                     configuredPath: options.nodePath,
@@ -672,6 +719,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (!options.storage) return [];
             for (const stored of await options.storage.discover(cwd)) {
                 if (runs.has(stored.id)) continue;
+                for (const [operation, owned] of stored.worktrees) {
+                    await worktrees.cleanup(stored.launch.cwd, owned);
+                    await options.storage.worktree(stored.directory, operation, null, now());
+                }
                 const controller = new AbortController(),
                     limits = stored.launch.limits as typeof DEFAULT_WORKFLOW_LIMITS;
                 const summary = structuredClone(stored.snapshot);

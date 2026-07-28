@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { findRepositoryRoot } from "./storage.js";
+import type { OwnedWorktree } from "./worktree.js";
 
 const MAX_ARTIFACT = 16 * 1024 * 1024;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
@@ -36,6 +37,7 @@ export interface StoredRun {
     launch: ImmutableRunLaunch & { name: string; sessionId: string; cwd: string };
     snapshot: WorkflowRunSummaryV1;
     completions: Map<string, unknown>;
+    worktrees: Map<string, OwnedWorktree>;
     delivery: DeliveryState;
 }
 
@@ -162,6 +164,21 @@ export class WorkflowRunStorage {
             await handle.close();
         }
     }
+    async worktree(directory: string, operation: string, owned: OwnedWorktree | null, at = Date.now()) {
+        if (!RUN_ID.test(operation)) throw new Error("Invalid worktree operation identity.");
+        const line = `${json({ version: 1, type: owned ? "worktree-owned" : "worktree-released", operation, owned, at })}\n`;
+        const handle = await fs.promises.open(
+            path.join(await this.assertDirectory(directory), "journal.jsonl"),
+            "a",
+            0o600,
+        );
+        try {
+            await handle.write(line);
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+    }
     async terminal(directory: string, result: unknown, summary: WorkflowRunSummaryV1) {
         await this.assertDirectory(directory);
         await atomic(path.join(directory, "result.json"), result);
@@ -235,7 +252,8 @@ export class WorkflowRunStorage {
                     throw new Error(`Unsafe workflow journal in ${entry.name}.`);
                 const raw = await fs.promises.readFile(path.join(directory, "journal.jsonl"), "utf8");
                 if (raw && !raw.endsWith("\n")) throw new Error(`Truncated workflow journal in ${entry.name}.`);
-                const completions = new Map<string, unknown>();
+                const completions = new Map<string, unknown>(),
+                    worktrees = new Map<string, OwnedWorktree>();
                 for (const line of raw.split("\n").filter(Boolean)) {
                     let item: any;
                     try {
@@ -245,16 +263,28 @@ export class WorkflowRunStorage {
                     }
                     if (
                         item?.version !== 1 ||
-                        item.type !== "completed" ||
                         typeof item.operation !== "string" ||
-                        !item.operation ||
-                        item.operation.length > 256 ||
-                        !Number.isFinite(item.at) ||
-                        completions.has(item.operation)
+                        !RUN_ID.test(item.operation) ||
+                        !Number.isFinite(item.at)
                     )
                         throw new Error(`Invalid workflow journal in ${entry.name}.`);
-                    json(item.value);
-                    completions.set(item.operation, item.value);
+                    if (item.type === "completed") {
+                        if (completions.has(item.operation))
+                            throw new Error(`Invalid workflow journal in ${entry.name}.`);
+                        json(item.value);
+                        completions.set(item.operation, item.value);
+                    } else if (item.type === "worktree-owned") {
+                        if (
+                            worktrees.has(item.operation) ||
+                            !item.owned ||
+                            typeof item.owned.cwd !== "string" ||
+                            typeof item.owned.branch !== "string" ||
+                            typeof item.owned.ref !== "string"
+                        )
+                            throw new Error(`Invalid workflow journal in ${entry.name}.`);
+                        worktrees.set(item.operation, item.owned);
+                    } else if (item.type === "worktree-released") worktrees.delete(item.operation);
+                    else throw new Error(`Invalid workflow journal in ${entry.name}.`);
                 }
                 const delivery = await boundedJson(path.join(directory, "delivery.json")).catch((e: any) =>
                     e?.code === "ENOENT" ? {} : Promise.reject(e),
@@ -283,6 +313,7 @@ export class WorkflowRunStorage {
                     },
                     snapshot,
                     completions,
+                    worktrees,
                     delivery,
                 });
             } catch (error) {
@@ -321,6 +352,7 @@ export class WorkflowRunStorage {
                         ),
                     },
                     completions: new Map(),
+                    worktrees: new Map(),
                     delivery: {},
                 });
             }

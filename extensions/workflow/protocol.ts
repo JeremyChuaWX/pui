@@ -61,6 +61,7 @@ export interface WorkflowAgentSummaryV1 {
     prompt?: string;
     output?: string;
     error?: string;
+    worktree?: { cwd: string; branch: string };
     recentActivity: WorkflowActivityV1[];
 }
 
@@ -210,6 +211,10 @@ function agent(value: unknown): value is WorkflowAgentSummaryV1 {
         optionalString(value.prompt, MAX_WORKFLOW_PROMPT) &&
         optionalString(value.output, MAX_WORKFLOW_DETAIL) &&
         optionalString(value.error, MAX_WORKFLOW_DETAIL) &&
+        (value.worktree === undefined ||
+            (record(value.worktree) &&
+                string(value.worktree.cwd, MAX_WORKFLOW_DETAIL) &&
+                string(value.worktree.branch, MAX_WORKFLOW_DETAIL))) &&
         activities(value.recentActivity)
     );
 }
