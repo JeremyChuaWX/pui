@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
@@ -190,8 +191,16 @@ export async function resolveWorkflowNode(
             if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 19))
                 throw new Error(`found ${version}; need >=22.19.0`);
             if (candidate.includes(path.sep)) return await realpath(candidate);
-            const located = Bun.which(candidate);
-            return located ? await realpath(located) : candidate;
+            const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+            for (const directory of (env.PATH ?? "").split(path.delimiter))
+                for (const extension of extensions) {
+                    const located = path.join(directory || ".", `${candidate}${extension}`);
+                    try {
+                        await fs.promises.access(located, fs.constants.X_OK);
+                        return await realpath(located);
+                    } catch {}
+                }
+            return candidate;
         } catch (e) {
             failures.push(`${source} (${candidate}): ${errorMessage(e)}`);
         }
@@ -382,8 +391,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             !frame.identity.includes("#")
                         )
                             throw new Error("Invalid workflow operation identity.");
-                        // Identities come from bounded source locations, but hash them so protocol IDs remain bounded.
-                        const operationId = `agent-${Bun.hash(frame.identity).toString(36)}`.slice(0, MAX_WORKFLOW_ID);
+                        // Stable across hosts and runtimes while remaining bounded by the protocol.
+                        const operationId = `agent-${createHash("sha256").update(frame.identity).digest("hex")}`.slice(
+                            0,
+                            MAX_WORKFLOW_ID,
+                        );
                         if (active.completions.has(operationId)) {
                             value = structuredClone(active.completions.get(operationId));
                             send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
@@ -763,7 +775,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     controller,
                     settlement: Promise.resolve(),
                     cooperativeTasks: new Set(),
-                    directory: stored.directory,
+                    directory: stored.corrupt ? undefined : stored.directory,
                     completions: new Map(stored.completions),
                     paused: true,
                     resumeWaiters: [],
@@ -779,6 +791,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     },
                     semaphore: new AbortableSemaphore(limits.maxConcurrency),
                     activeSharedWriters: 0,
+                    ...(stored.result !== undefined ? { result: stored.result } : {}),
                 });
             }
             return this.list();
@@ -860,6 +873,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async claimTerminalDelivery(id) {
             const run = runs.get(id);
             if (!run?.directory || !options.storage || !TERMINAL.has(run.summary.status)) return false;
+            await run.persistence;
             return options.storage.claimDelivery(run.directory);
         },
         async markTerminalDelivered(id) {

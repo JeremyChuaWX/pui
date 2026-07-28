@@ -30,6 +30,8 @@ export interface JournalCompletion {
 export interface DeliveryState {
     delivered?: boolean;
     claimed?: boolean;
+    claimedAt?: number;
+    owner?: string;
 }
 export interface StoredRun {
     id: string;
@@ -39,6 +41,8 @@ export interface StoredRun {
     completions: Map<string, unknown>;
     worktrees: Map<string, OwnedWorktree>;
     delivery: DeliveryState;
+    result?: string;
+    corrupt?: boolean;
 }
 
 function json(value: unknown): string {
@@ -88,6 +92,7 @@ function projectHash(cwd: string) {
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
 export class WorkflowRunStorage {
     readonly root: string;
+    private readonly instanceToken = crypto.randomUUID();
     constructor(root = path.join(os.homedir(), ".pi", "agent", "workflow-runs")) {
         this.root = path.resolve(root);
     }
@@ -150,6 +155,8 @@ export class WorkflowRunStorage {
     }
     async snapshot(directory: string, snapshot: WorkflowRunSummaryV1) {
         await this.assertDirectory(directory);
+        // A stale host must not overwrite the durable terminal state produced by recovery.
+        if (await fs.promises.stat(path.join(directory, "summary.json")).catch(() => undefined)) return;
         await atomic(path.join(directory, "snapshot.json"), snapshot);
     }
     async complete(directory: string, operation: string, value: unknown, at = Date.now()) {
@@ -181,15 +188,18 @@ export class WorkflowRunStorage {
     }
     async terminal(directory: string, result: unknown, summary: WorkflowRunSummaryV1) {
         await this.assertDirectory(directory);
+        // Recovery and the dying host can settle concurrently; the first durable terminal wins.
+        const summaryFile = path.join(directory, "summary.json");
+        if (await fs.promises.stat(summaryFile).catch(() => undefined)) return;
         await atomic(path.join(directory, "result.json"), result);
-        await atomic(path.join(directory, "summary.json"), summary);
+        await atomic(summaryFile, summary);
     }
     async claimDelivery(directory: string): Promise<boolean> {
         await this.assertDirectory(directory);
         const marker = path.join(directory, "delivery.json");
         try {
             const h = await fs.promises.open(marker, "wx", 0o600);
-            await h.writeFile(json({ version: 1, claimed: true, claimedAt: Date.now() }));
+            await h.writeFile(json({ version: 1, claimed: true, claimedAt: Date.now(), owner: this.instanceToken }));
             await h.sync();
             await h.close();
             await syncDirectory(directory);
@@ -197,13 +207,9 @@ export class WorkflowRunStorage {
         } catch (e: any) {
             if (e?.code === "EEXIST") {
                 const state = await boundedJson(marker);
-                // Delivery cannot be transactional with the external message API. Expiring an
-                // abandoned claim prefers eventual delivery and admits a small duplicate window.
-                if (
-                    state?.claimed &&
-                    !state.delivered &&
-                    (!Number.isFinite(state.claimedAt) || Date.now() - state.claimedAt > 30_000)
-                ) {
+                // A claim owned by another backend process is abandoned on startup/recovery.
+                // The same instance still suppresses duplicate concurrent delivery attempts.
+                if (state?.claimed && !state.delivered && state.owner !== this.instanceToken) {
                     await fs.promises.rm(marker, { force: true });
                     return this.claimDelivery(directory);
                 }
@@ -243,7 +249,9 @@ export class WorkflowRunStorage {
                 const script = await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8"),
                     args = await boundedJson(path.join(directory, "args.json")),
                     meta = await boundedJson(path.join(directory, "launch.json")),
-                    rawSnapshot = await boundedJson(path.join(directory, "snapshot.json")),
+                    rawSnapshot = await boundedJson(path.join(directory, "summary.json")).catch((e: any) =>
+                        e?.code === "ENOENT" ? boundedJson(path.join(directory, "snapshot.json")) : Promise.reject(e),
+                    ),
                     snapshot = parseWorkflowRunV1(rawSnapshot);
                 if (!snapshot || snapshot.id !== entry.name)
                     throw new Error(`Invalid workflow snapshot in ${entry.name}.`);
@@ -315,6 +323,9 @@ export class WorkflowRunStorage {
                     completions,
                     worktrees,
                     delivery,
+                    ...(snapshot.status === "succeeded"
+                        ? { result: json(await boundedJson(path.join(directory, "result.json"))) }
+                        : {}),
                 });
             } catch (error) {
                 const timestamp = Date.now();
@@ -354,6 +365,7 @@ export class WorkflowRunStorage {
                     completions: new Map(),
                     worktrees: new Map(),
                     delivery: {},
+                    corrupt: true,
                 });
             }
         }

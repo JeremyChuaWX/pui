@@ -17,7 +17,12 @@ export class WorkflowRunManager {
         this.unsubscribe = options.backend.subscribe((run) => {
             if (this.shuttingDown) return;
             options.emit(run);
-            if (terminal(run.status)) void this.deliver(run);
+            if (terminal(run.status))
+                void this.deliver(run).catch((error) =>
+                    console.error(
+                        `Workflow terminal delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+                    ),
+                );
         });
     }
     private async deliver(run: WorkflowRunSummaryV1): Promise<void> {
