@@ -78,6 +78,9 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         createWorkflowBackend({
             ...dependencies.backendOptions,
             agentExecutor: dependencies.backendOptions?.agentExecutor ?? defaultExecutor,
+            cooperativeExecutor: dependencies.backendOptions?.agentExecutor
+                ? dependencies.backendOptions.cooperativeExecutor
+                : true,
             policy: dependencies.backendOptions?.policy ?? {
                 roles: ["generic", "worker", "explore"],
                 resolveModel: (role, requested) =>

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { AbortableSemaphore } from "../subagent/semaphore.js";
 import type { WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
@@ -55,6 +56,9 @@ export interface WorkflowBackendOptions {
     policy?: WorkflowHostPolicy;
     runTimeoutMs?: number;
     watchdogMs?: number;
+    /** True for executors (such as runSubagent) that honor abort and reap their child process. */
+    cooperativeExecutor?: boolean;
+    shutdownGraceMs?: number;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch): Promise<{ runId: string }>;
@@ -71,7 +75,7 @@ interface ActiveRun {
     child?: ReturnType<typeof spawn>;
     result?: string;
     settlement: Promise<void>;
-    tasks: Set<Promise<unknown>>;
+    cooperativeTasks: Set<Promise<unknown>>;
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -108,10 +112,23 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
     return new Promise((resolve, reject) => {
         const child = spawn(command, ["--version"], { stdio: ["ignore", "pipe", "pipe"], env: environment });
-        let output = "";
-        child.stdout.on("data", (c) => (output += c));
-        child.once("error", reject);
-        child.once("close", (code) => (code === 0 ? resolve(output.trim()) : reject(new Error(`exit code ${code}`))));
+        let output = "",
+            settled = false;
+        const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            error ? reject(error) : resolve(output.trim());
+        };
+        const timer = setTimeout(() => {
+            child.kill("SIGKILL");
+            finish(new Error("version probe timed out"));
+        }, 2_000);
+        child.stdout.on("data", (c) => {
+            output = `${output}${c}`.slice(0, 1024);
+        });
+        child.once("error", (e) => finish(e));
+        child.once("close", (code) => finish(code === 0 ? undefined : new Error(`exit code ${code}`)));
     });
 }
 export async function resolveWorkflowNode(
@@ -163,29 +180,16 @@ function schemaValid(value: unknown, schema: unknown): boolean {
 const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,call=(method,value)=>Promise.resolve(bridge(stringify({method,value}))).then(parse);globalThis.phase=n=>call("phase",{name:n});globalThis.log=x=>call("log",{message:String(x)});globalThis.agent=(prompt,options={})=>call("agent",{prompt,options});globalThis.parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);globalThis.pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};globalThis.args=parse(__args);delete globalThis.__bridge;delete globalThis.__args})()`;
 const WORKER_SOURCE = String.raw`import vm from "node:vm";
 const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map();
-process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(Error(String(m.error)))}}}});
+process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(String(m.error).slice(0,2000))}}}});
 const host=json=>new Promise((resolve,reject)=>{let request;try{request=JSON.parse(json)}catch(e){reject(e);return}const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,...request})});
 async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{const result=await new vm.Script('(async()=>{'+m.script+'\n})()',{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const runs = new Map<string, ActiveRun>(),
         listeners = new Set<(run: WorkflowRunSummaryV1) => void>();
-    let shuttingDown = false,
-        executing = 0;
-    const queue: (() => void)[] = [],
+    let shuttingDown = false;
+    const semaphore = new AbortableSemaphore(DEFAULT_WORKFLOW_LIMITS.maxConcurrency),
         now = options.now ?? Date.now;
-    const acquire = (signal: AbortSignal) =>
-        new Promise<() => void>((resolve, reject) => {
-            const enter = () => {
-                if (signal.aborted) return reject(new Error("cancelled"));
-                executing++;
-                resolve(() => {
-                    executing--;
-                    queue.shift()?.();
-                });
-            };
-            executing < DEFAULT_WORKFLOW_LIMITS.maxConcurrency ? enter() : queue.push(enter);
-        });
     const publish = (a: ActiveRun) => {
         a.summary.updatedAt = now();
         const copy = structuredClone(a.summary);
@@ -225,9 +229,27 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", env: {} },
             );
             active.child = child;
-            active.summary.status = "running";
-            active.summary.startedAt = now();
-            publish(active);
+            const terminate = () => {
+                try {
+                    process.platform !== "win32" && child.pid
+                        ? process.kill(-child.pid, "SIGTERM")
+                        : child.kill("SIGTERM");
+                } catch {}
+                setTimeout(() => {
+                    try {
+                        process.platform !== "win32" && child.pid
+                            ? process.kill(-child.pid, "SIGKILL")
+                            : child.kill("SIGKILL");
+                    } catch {}
+                }, 500).unref();
+            };
+            active.controller.signal.addEventListener("abort", terminate, { once: true });
+            if (active.controller.signal.aborted) terminate();
+            else {
+                active.summary.status = "running";
+                active.summary.startedAt = now();
+                publish(active);
+            }
             if (!child.stdin || !child.stdout) throw new Error("Workflow worker pipes were not created.");
             let buffer = "",
                 pending = 0,
@@ -236,11 +258,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 ready = false,
                 lastBeat = now();
             const send = (frame: unknown) => child.stdin.write(`${bounded(frame)}\n`);
-            const tracked = <T>(p: Promise<T>) => {
-                active.tasks.add(p);
-                p.finally(() => active.tasks.delete(p)).catch(() => {});
-                return p;
-            };
+            const tracked = <T>(p: Promise<T>) => p;
             const handle = async (frame: any) => {
                 if (!frame || frame.v !== 1 || typeof frame.t !== "string")
                     throw new Error("Malformed workflow worker frame.");
@@ -334,7 +352,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         active.summary.agents.push(agent);
                         if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
                         publish(active);
-                        const release = await acquire(active.controller.signal);
+                        const release = await semaphore.acquire(active.controller.signal);
                         try {
                             const timeoutMs = Math.min(
                                     DEFAULT_WORKFLOW_LIMITS.timeoutMs,
@@ -354,22 +372,24 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 const retries = Math.min(3, Math.max(0, Number(opts.retries) || 0));
                                 for (let attempt = 0; attempt <= retries; attempt++)
                                     try {
-                                        result = await Promise.race([
-                                            tracked(
-                                                Promise.resolve(
-                                                    options.agentExecutor({
-                                                        prompt,
-                                                        role,
-                                                        model,
-                                                        schema: opts.schema,
-                                                        signal,
-                                                        timeoutMs,
-                                                        cwd: input.cwd,
-                                                    }),
-                                                ),
-                                            ),
-                                            timeout,
-                                        ]);
+                                        const operation = Promise.resolve(
+                                            options.agentExecutor({
+                                                prompt,
+                                                role,
+                                                model,
+                                                schema: opts.schema,
+                                                signal,
+                                                timeoutMs,
+                                                cwd: input.cwd,
+                                            }),
+                                        );
+                                        if (options.cooperativeExecutor) {
+                                            active.cooperativeTasks.add(operation);
+                                            operation
+                                                .finally(() => active.cooperativeTasks.delete(operation))
+                                                .catch(() => {});
+                                        }
+                                        result = await Promise.race([operation, timeout]);
                                         if (!schemaValid(result.value, opts.schema))
                                             throw new Error("Agent result does not match schema.");
                                         break;
@@ -461,24 +481,6 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         );
                     resolve();
                 });
-                active.controller.signal.addEventListener(
-                    "abort",
-                    () => {
-                        try {
-                            process.platform !== "win32" && child.pid
-                                ? process.kill(-child.pid, "SIGTERM")
-                                : child.kill("SIGTERM");
-                        } catch {}
-                        setTimeout(() => {
-                            try {
-                                process.platform !== "win32" && child.pid
-                                    ? process.kill(-child.pid, "SIGKILL")
-                                    : child.kill("SIGKILL");
-                            } catch {}
-                        }, 500).unref();
-                    },
-                    { once: true },
-                );
             });
             clearInterval(watchdog);
             clearTimeout(total);
@@ -520,7 +522,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 script: input.script,
                 controller,
                 settlement: Promise.resolve(),
-                tasks: new Set(),
+                cooperativeTasks: new Set(),
             };
             runs.set(id, active);
             publish(active);
@@ -560,6 +562,19 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             shuttingDown = true;
             for (const run of runs.values()) if (!TERMINAL.has(run.summary.status)) run.controller.abort();
             await Promise.allSettled([...runs.values()].map((r) => r.settlement));
+            const cooperative = [...runs.values()].flatMap((r) => [...r.cooperativeTasks]);
+            if (cooperative.length) {
+                let timer: NodeJS.Timeout | undefined;
+                await Promise.race([
+                    Promise.allSettled(cooperative),
+                    new Promise<void>((resolve) => {
+                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                    }),
+                ]);
+                if (timer) clearTimeout(timer);
+                if ([...runs.values()].some((r) => r.cooperativeTasks.size))
+                    console.error("Workflow executor shutdown grace expired; child cleanup may be incomplete.");
+            }
             listeners.clear();
         },
     };

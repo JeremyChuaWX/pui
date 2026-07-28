@@ -91,6 +91,61 @@ describe("workflow backend", () => {
         });
         await backend.shutdown();
     });
+    test("keeps agent rejection reasons primitive and unable to escape their realm", async () => {
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => {
+                throw new Error("deliberate");
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "rejection",
+            script: `let reason; try{await agent("fail")}catch(e){reason={type:typeof e,escaped:false};try{e.constructor.constructor("return pro"+"cess")();reason.escaped=true}catch{}} return reason`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ type: "string", escaped: false });
+        await backend.shutdown();
+    });
+    test("aborting more than four queued agents removes the queue without starting executors", async () => {
+        let started = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: (request) => {
+                started++;
+                return new Promise((_resolve, reject) =>
+                    request.signal.addEventListener("abort", () => reject("abort"), { once: true }),
+                );
+            },
+        });
+        const run = await backend.launch({
+            name: "queue",
+            script: `await parallel(Array.from({length:12},(_,i)=>agent(String(i))))`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => started === 4);
+        await backend.control(run.runId, "stop");
+        await backend.shutdown();
+        expect(started).toBe(4);
+        expect(backend.inspect(run.runId).run.status).toBe("cancelled");
+    });
+    test("immediate stop after launch cancels promptly", async () => {
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: "unexpected" }) });
+        const run = await backend.launch({
+            name: "stop",
+            script: `await agent("x")`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await backend.control(run.runId, "stop");
+        await Promise.race([
+            backend.shutdown(),
+            Bun.sleep(2_000).then(() => {
+                throw new Error("shutdown hung");
+            }),
+        ]);
+        expect(backend.inspect(run.runId).run.status).toBe("cancelled");
+    });
     test("globally caps parallel agents, enforces ignored-signal timeout, policy, and terminal state", async () => {
         let active = 0,
             peak = 0;
@@ -132,9 +187,32 @@ describe("workflow backend", () => {
         });
         await waitFor(() => backend.inspect(timed.runId).run.status === "failed");
         expect(backend.inspect(timed.runId).run.agents[0]?.status).toBe("timed_out");
-        // The deliberately non-settling injected promise is tracked, but cannot block host-side timeout.
+        // An injected executor that ignores abort is intentionally not awaited; host timeout must stay bounded.
         await backend.control(timed.runId, "stop");
         await backend.shutdown();
+    });
+    test("shutdown waits for cooperative executor cleanup", async () => {
+        let cleaned = false;
+        const backend = createWorkflowBackend({
+            cooperativeExecutor: true,
+            agentExecutor: (request) =>
+                new Promise((_resolve, reject) =>
+                    request.signal.addEventListener(
+                        "abort",
+                        () => {
+                            setTimeout(() => {
+                                cleaned = true;
+                                reject(new Error("cleaned"));
+                            }, 30);
+                        },
+                        { once: true },
+                    ),
+                ),
+        });
+        await backend.launch({ name: "cleanup", script: `await agent("wait")`, sessionId: "s", cwd: process.cwd() });
+        await waitFor(() => backend.list()[0]?.agents.length === 1);
+        await backend.shutdown();
+        expect(cleaned).toBe(true);
     });
     test("cancellation aborts active executors and shutdown tracks every run", async () => {
         let aborted = 0;
