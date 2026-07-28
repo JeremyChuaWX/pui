@@ -288,6 +288,18 @@ export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
 const BACKGROUND_SCHEMA = "pi.workflow.background";
+export type WorkflowControlAction = "pause" | "resume" | "stop" | "restart-agent" | "retry";
+
+export interface WorkflowControlV1 {
+    schema: typeof BACKGROUND_WORKFLOW_CONTROL_SCHEMA;
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    type: WorkflowControlAction;
+    runId: string;
+    agentId?: string;
+}
 const MAX_WORKFLOW_RUNS = 100;
 
 export type WorkflowBackgroundEvent =
@@ -344,8 +356,35 @@ export function parseWorkflowBackgroundEvent(
     return undefined;
 }
 
+/** Independently validate controller controls before placing them on the event bus. */
+export function parseWorkflowControl(value: unknown, route?: WorkflowRouting): WorkflowControlV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== BACKGROUND_WORKFLOW_CONTROL_SCHEMA ||
+        value.version !== 1 ||
+        !routeIdentity(value.sessionId) ||
+        !routeIdentity(value.instanceId) ||
+        !routeIdentity(value.cwd, 4_000) ||
+        !routeIdentity(value.runId) ||
+        !new Set<WorkflowControlAction>(["pause", "resume", "stop", "restart-agent", "retry"]).has(
+            value.type as WorkflowControlAction,
+        ) ||
+        (route !== undefined &&
+            (value.sessionId !== route.sessionId ||
+                value.cwd !== route.cwd ||
+                (route.instanceId !== undefined && value.instanceId !== route.instanceId)))
+    )
+        return undefined;
+    if (value.type === "restart-agent") {
+        if (!routeIdentity(value.agentId)) return undefined;
+    } else if (value.agentId !== undefined) return undefined;
+    return value as unknown as WorkflowControlV1;
+}
+
 export interface WorkflowState {
     instanceId?: string;
+    /** A validated reset permits the producer's replacement instance to establish authority. */
+    acceptingInstance?: true;
     runs: ReadonlyMap<string, WorkflowRunSummaryV1>;
 }
 
@@ -357,15 +396,21 @@ export function reduceWorkflowEvent(
 ): WorkflowState {
     if (event.sessionId !== route.sessionId || event.cwd !== route.cwd) return state;
     if (event.type === "ready") {
-        if (state.instanceId !== undefined && state.instanceId !== event.instanceId) return state;
-        return state.instanceId === event.instanceId ? state : { instanceId: event.instanceId, runs: new Map() };
+        if (state.instanceId !== undefined && state.instanceId !== event.instanceId && !state.acceptingInstance)
+            return state;
+        return state.instanceId === event.instanceId && !state.acceptingInstance
+            ? state
+            : { instanceId: event.instanceId, runs: new Map() };
+    }
+    if (event.type === "reset") {
+        if (event.instanceId !== state.instanceId) return state;
+        return { instanceId: state.instanceId, acceptingInstance: true, runs: new Map() };
     }
     if (event.instanceId !== state.instanceId) return state;
-    if (event.type === "reset") return { instanceId: state.instanceId, runs: new Map() };
     const runs = new Map(state.runs);
     if (event.type === "upsert") {
         if (!runs.has(event.run.id) && runs.size >= MAX_WORKFLOW_RUNS) return state;
         runs.set(event.run.id, event.run);
     } else if (event.type === "remove") runs.delete(event.runId);
-    return { instanceId: state.instanceId, runs };
+    return { instanceId: event.instanceId, runs };
 }

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -47,6 +48,17 @@ import type {
     SessionChoice,
     ToastMessage,
 } from "./types.js";
+import {
+    BACKGROUND_WORKFLOW_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+    parseWorkflowBackgroundEvent,
+    parseWorkflowControl,
+    reduceWorkflowEvent,
+    type WorkflowControlAction,
+    type WorkflowRunSummaryV1,
+    type WorkflowState,
+} from "./workflow.js";
 
 export interface ControllerOptions {
     cwd: string;
@@ -119,6 +131,14 @@ function compactPath(cwd: string): string {
     return cwd;
 }
 
+function canonicalPath(cwd: string): string {
+    try {
+        return fs.realpathSync.native(cwd);
+    } catch {
+        return path.resolve(cwd);
+    }
+}
+
 function readGitBranch(cwd: string): string | undefined {
     try {
         const branch = execFileSync("git", ["branch", "--show-current"], {
@@ -149,6 +169,10 @@ export class PuiController {
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
     private backgroundState: BackgroundSubagentState = { jobs: new Map() };
+    private workflowState: WorkflowState = { runs: new Map() };
+    private workflowSessionId = "";
+    private workflowCwd = "";
+    private unsubscribeWorkflow?: () => void;
     private readonly eventBus: EventBusController;
     private readonly unsubscribeBackground: () => void;
 
@@ -232,7 +256,21 @@ export class PuiController {
 
     private async bindSession(session: AgentSession): Promise<void> {
         this.unsubscribeSession?.();
+        this.unsubscribeWorkflow?.();
         this.backgroundState = { jobs: new Map() };
+        this.workflowState = { runs: new Map() };
+        this.workflowSessionId = session.sessionId;
+        this.workflowCwd = canonicalPath(this.runtime.cwd);
+        this.unsubscribeWorkflow = this.eventBus.on(BACKGROUND_WORKFLOW_CHANNEL, (payload) => {
+            if (this.disposed) return;
+            const route = { sessionId: this.workflowSessionId, cwd: this.workflowCwd };
+            const event = parseWorkflowBackgroundEvent(payload, route);
+            if (!event) return;
+            const next = reduceWorkflowEvent(this.workflowState, event, route);
+            if (next === this.workflowState) return;
+            this.workflowState = next;
+            this.scheduleRefresh();
+        });
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
@@ -361,6 +399,7 @@ export class PuiController {
             display: stableDisplay,
             activeTools,
             backgroundSubagents: [...this.backgroundState.jobs.values()],
+            workflows: [...this.workflowState.runs.values()],
             toasts: [...this.toasts],
             exitRequested: this.exitRequested,
         };
@@ -727,6 +766,56 @@ export class PuiController {
         return true;
     }
 
+    listWorkflows(): readonly WorkflowRunSummaryV1[] {
+        return this.currentSnapshot.workflows;
+    }
+
+    inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
+        return this.currentSnapshot.workflows.find((run) => run.id === runId);
+    }
+
+    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
+        const run = this.workflowState.runs.get(runId);
+        const instanceId = this.workflowState.instanceId;
+        if (!run || !instanceId) return false;
+        if (action === "restart-agent" && !run.agents.some((agent) => agent.id === agentId)) return false;
+        const control = parseWorkflowControl(
+            {
+                schema: BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+                version: 1,
+                sessionId: this.workflowSessionId,
+                instanceId,
+                cwd: this.workflowCwd,
+                type: action,
+                runId,
+                ...(agentId === undefined ? {} : { agentId }),
+            },
+            { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
+        );
+        if (!control) return false;
+        this.eventBus.emit(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, control);
+        return true;
+    }
+
+    pauseWorkflow(runId: string): boolean {
+        return this.controlWorkflow(runId, "pause");
+    }
+    resumeWorkflow(runId: string): boolean {
+        return this.controlWorkflow(runId, "resume");
+    }
+    stopWorkflow(runId: string): boolean {
+        return this.controlWorkflow(runId, "stop");
+    }
+    restartWorkflowAgent(runId: string, agentId: string): boolean {
+        return this.controlWorkflow(runId, "restart-agent", agentId);
+    }
+    retryWorkflow(runId: string): boolean {
+        return this.controlWorkflow(runId, "retry");
+    }
+    saveWorkflow(_runId: string): boolean {
+        return false;
+    }
+
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -749,9 +838,11 @@ export class PuiController {
         this.disposed = true;
         this.unsubscribeSession?.();
         this.unsubscribeBackground();
+        this.unsubscribeWorkflow?.();
         this.eventBus.clear();
         this.backgroundState = { jobs: new Map() };
-        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [] };
+        this.workflowState = { runs: new Map() };
+        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);

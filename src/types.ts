@@ -1,6 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import type { BackgroundSubagentViewModel } from "./background-subagent.js";
 import type { SubagentViewModel } from "./subagent.js";
+import type { WorkflowRunSummaryV1 } from "./workflow.js";
 
 interface DisplayItemBase {
     id: string;
@@ -97,6 +98,7 @@ export interface PuiSnapshot {
     display: DisplayItem[];
     activeTools: ActiveTool[];
     backgroundSubagents: BackgroundSubagentViewModel[];
+    workflows: readonly WorkflowRunSummaryV1[];
     toasts: ToastMessage[];
     exitRequested: boolean;
 }
