@@ -359,7 +359,11 @@ export class PuiController {
         const context = session.getContextUsage();
         const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
         this.toolExecutions = this.reconcileToolExecutionState();
-        const display = buildDisplayItems(session.messages, streamingMessage, { toolExecutions: this.toolExecutions });
+        const workflows = [...this.workflowState.runs.values()];
+        const display = buildDisplayItems(session.messages, streamingMessage, {
+            toolExecutions: this.toolExecutions,
+            workflows,
+        });
 
         if (this.runningBash) {
             display.push({
@@ -399,7 +403,7 @@ export class PuiController {
             display: stableDisplay,
             activeTools,
             backgroundSubagents: [...this.backgroundState.jobs.values()],
-            workflows: [...this.workflowState.runs.values()],
+            workflows,
             toasts: [...this.toasts],
             exitRequested: this.exitRequested,
         };

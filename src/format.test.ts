@@ -6,6 +6,8 @@ import {
     formatCount,
     formatToolTitle,
     formatWorkflowSummary,
+    reconcileDisplayItems,
+    resolveWorkflowRun,
     workflowStatusPresentation,
     workflowStatusTone,
 } from "./format.js";
@@ -104,14 +106,49 @@ describe("pui formatting", () => {
         expect(formatWorkflowSummary(workflowRun())).toBe("◌ Review · Running · 0/1 agents · review");
     });
 
-    test("uses workflow cards only for valid v1 details and preserves unknown generic fallback", () => {
-        const valid = buildDisplayItems(workflowMessages(workflowRun()))[0];
-        expect(valid).toEqual(
-            expect.objectContaining({ kind: "tool", workflow: expect.objectContaining({ id: "run-1" }) }),
+    test("resolves embedded summaries and actual v1 launch details against authoritative runs", () => {
+        const run = workflowRun();
+        expect(resolveWorkflowRun({ schema: "pi.workflow", version: 1, run })).toEqual({ run, runId: "run-1" });
+
+        const launch = { schema: "pi.workflow.launch", version: 1, runId: "run-1", preflight: { agents: 1 } };
+        expect(resolveWorkflowRun(launch, [run])).toEqual({ run, runId: "run-1" });
+        expect(buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [run] })[0]).toEqual(
+            expect.objectContaining({
+                kind: "tool",
+                workflowRunId: "run-1",
+                workflow: expect.objectContaining({ id: "run-1" }),
+            }),
         );
-        const unknown = buildDisplayItems(workflowMessages({ ...workflowRun(), version: 2 }))[0];
-        expect(unknown).toEqual(expect.objectContaining({ kind: "tool", result: "started" }));
-        expect(unknown && "workflow" in unknown ? unknown.workflow : undefined).toBeUndefined();
+    });
+
+    test("keeps malformed, unknown, and unavailable launches generic", () => {
+        for (const details of [
+            { schema: "pi.workflow.launch", version: 2, runId: "run-1" },
+            { schema: "pi.workflow", version: 2, run: workflowRun() },
+            { schema: "pi.workflow.launch", version: 1, runId: "" },
+            { schema: "pi.workflow.launch", version: 1, runId: "x".repeat(257) },
+            { schema: "pi.workflow.launch", version: 1, runId: 42 },
+        ]) {
+            const item = buildDisplayItems(workflowMessages(details, true), undefined, {
+                workflows: [workflowRun()],
+            })[0];
+            expect(item).toEqual(expect.objectContaining({ kind: "tool", result: "started" }));
+            expect(item && "workflow" in item ? item.workflow : undefined).toBeUndefined();
+            expect(item && "workflowRunId" in item ? item.workflowRunId : undefined).toBeUndefined();
+        }
+        const unavailable = buildDisplayItems(
+            workflowMessages({ schema: "pi.workflow.launch", version: 1, runId: "missing" }, true),
+        )[0];
+        expect(unavailable && "workflow" in unavailable ? unavailable.workflow : undefined).toBeUndefined();
+        expect(unavailable && "workflowRunId" in unavailable ? unavailable.workflowRunId : undefined).toBe("missing");
+    });
+
+    test("presentation reconciliation notices launch run ID changes", () => {
+        const launch = (runId: string) =>
+            buildDisplayItems(workflowMessages({ schema: "pi.workflow.launch", version: 1, runId }, true))[0];
+        const previous = launch("run-1");
+        const next = launch("run-2");
+        expect(reconcileDisplayItems([previous], [next])[0]).toBe(next);
     });
 
     test("prefers live partial subagent details and reducer-derived running state", () => {
@@ -300,14 +337,14 @@ function workflowRun() {
     };
 }
 
-function workflowMessages(run: unknown): AgentMessage[] {
+function workflowMessages(details: unknown, raw = false): AgentMessage[] {
     return [
         {
             role: "toolResult",
             toolCallId: "workflow-1",
             toolName: "workflow",
             content: [{ type: "text", text: "started" }],
-            details: { schema: "pi.workflow", version: 1, run },
+            details: raw ? details : { schema: "pi.workflow", version: 1, run: details },
             isError: false,
             timestamp: 1,
         },

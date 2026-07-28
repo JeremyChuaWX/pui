@@ -48,6 +48,7 @@ export interface ToolDisplayItem extends DisplayItemBase {
     subagent?: SubagentViewModel;
     subagentKey?: string;
     workflow?: WorkflowRunSummaryV1;
+    workflowRunId?: string;
     workflowKey?: string;
 }
 
