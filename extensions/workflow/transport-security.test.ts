@@ -71,7 +71,7 @@ describe("workflow hostile transport and watchdog", () => {
     });
 
     test("heartbeat kills a ready worker whose event loop hangs", async () => {
-        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`);
+        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`, { runTimeoutMs: 1_500 });
         expect(result.error).toContain("heartbeat timed out");
     });
 
