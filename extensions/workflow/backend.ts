@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
 import type { WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
+import { executableWorkflowScript } from "./storage.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
     maxConcurrency: 4,
@@ -98,12 +99,6 @@ const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {})
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
-export function executableWorkflowScript(script: string): string {
-    return script.replace(
-        /\bexport\s+const\s+meta\s*=\s*\{\s*name\s*:\s*(["'])[^"'\r\n]*\1\s*,\s*description\s*:\s*(["'])[^"'\r\n]*\2\s*,?\s*\}\s*;?/,
-        "",
-    );
-}
 export function preflightWorkflow(script: string): { phases: string[]; agents: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");

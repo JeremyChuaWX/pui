@@ -142,7 +142,11 @@ describe("workflow extension", () => {
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
             );
-            const context = { cwd: root, isProjectTrusted: () => false, ui: { confirm: () => true, notify: () => {} } };
+            const context = {
+                cwd: root,
+                isProjectTrusted: () => false,
+                ui: { confirm: () => true, select: () => "Trust unchanged script in this project", notify: () => {} },
+            };
             await expect(
                 f.tool.execute("id", { name: "demo", args: { x: 1 } }, undefined, undefined, context),
             ).rejects.toThrow("not trusted");

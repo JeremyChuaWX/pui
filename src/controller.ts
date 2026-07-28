@@ -56,6 +56,8 @@ import {
     BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     parseWorkflowBackgroundEvent,
     parseWorkflowControl,
+    parseWorkflowSave,
+    parseWorkflowSaveResult,
     reduceWorkflowEvent,
     type WorkflowControlAction,
     type WorkflowRunSummaryV1,
@@ -175,6 +177,7 @@ export class PuiController {
     private workflowSessionId = "";
     private workflowCwd = "";
     private unsubscribeWorkflow?: () => void;
+    private pendingWorkflowSaves = new Set<(error: Error) => void>();
     private readonly eventBus: EventBusController;
     private readonly unsubscribeBackground: () => void;
 
@@ -257,6 +260,8 @@ export class PuiController {
     }
 
     private async bindSession(session: AgentSession): Promise<void> {
+        for (const reject of this.pendingWorkflowSaves) reject(new Error("Workflow session changed."));
+        this.pendingWorkflowSaves.clear();
         this.unsubscribeSession?.();
         this.unsubscribeWorkflow?.();
         this.backgroundState = { jobs: new Map() };
@@ -820,45 +825,55 @@ export class PuiController {
     retryWorkflow(runId: string): boolean {
         return this.controlWorkflow(runId, "retry");
     }
-    async saveWorkflow(runId: string, name: string, scope: "project" | "personal", overwrite = false): Promise<string> {
+    async saveWorkflow(
+        runId: string,
+        _name: string,
+        scope: "project" | "personal",
+        overwrite = false,
+    ): Promise<string> {
         const run = this.workflowState.runs.get(runId),
             instanceId = this.workflowState.instanceId;
         if (!run || !instanceId) throw new Error("Workflow save is unavailable.");
         const requestId = crypto.randomUUID();
         return new Promise<string>((resolve, reject) => {
-            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, (value: any) => {
-                if (
-                    !value ||
-                    value.schema !== "pi.workflow.background.save.result" ||
-                    value.version !== 1 ||
-                    value.sessionId !== this.workflowSessionId ||
-                    value.instanceId !== instanceId ||
-                    value.cwd !== this.workflowCwd ||
-                    value.requestId !== requestId
-                )
-                    return;
+            let timer: ReturnType<typeof setTimeout>;
+            const cleanup = () => {
                 clearTimeout(timer);
                 unsubscribe();
-                value.ok && typeof value.path === "string"
-                    ? resolve(value.path)
-                    : reject(new Error(typeof value.error === "string" ? value.error : "Workflow save failed."));
+                this.pendingWorkflowSaves.delete(cancel);
+            };
+            const cancel = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+            this.pendingWorkflowSaves.add(cancel);
+            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, (payload) => {
+                const value = parseWorkflowSaveResult(payload, {
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                });
+                if (!value || value.requestId !== requestId) return;
+                cleanup();
+                value.ok ? resolve(value.path!) : reject(new Error(value.error!));
             });
-            const timer = setTimeout(() => {
-                unsubscribe();
-                reject(new Error("Workflow save request timed out."));
-            }, 5_000);
-            this.eventBus.emit(BACKGROUND_WORKFLOW_SAVE_CHANNEL, {
-                schema: "pi.workflow.background.save",
-                version: 1,
-                sessionId: this.workflowSessionId,
-                instanceId,
-                cwd: this.workflowCwd,
-                requestId,
-                runId,
-                name,
-                scope,
-                overwrite,
-            });
+            timer = setTimeout(() => cancel(new Error("Workflow save request timed out.")), 5_000);
+            const request = parseWorkflowSave(
+                {
+                    schema: "pi.workflow.background.save",
+                    version: 1,
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                    requestId,
+                    runId,
+                    scope,
+                    overwrite,
+                },
+                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
+            );
+            if (!request) return cancel(new Error("Invalid workflow save request."));
+            this.eventBus.emit(BACKGROUND_WORKFLOW_SAVE_CHANNEL, request);
         });
     }
 
@@ -882,6 +897,8 @@ export class PuiController {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
+        for (const reject of this.pendingWorkflowSaves) reject(new Error("Controller disposed."));
+        this.pendingWorkflowSaves.clear();
         this.unsubscribeSession?.();
         this.unsubscribeBackground();
         this.unsubscribeWorkflow?.();

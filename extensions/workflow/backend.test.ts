@@ -72,6 +72,26 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
+    test("executes the documented multiline saved definition and retains exact source bytes", async () => {
+        const source = `export const meta = {
+    name: "review",
+    description: "Review changed files",
+};
+phase("Review");
+return { ok: true, args };\n`;
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "review",
+            script: source,
+            args: { exact: true },
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ ok: true, args: { exact: true } });
+        expect(backend.inspect(runId).script).toBe(source);
+        await backend.shutdown();
+    });
     test("keeps VM constructors and RPC results in-realm without ambient authority", async () => {
         const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: { safe: true } }) });
         const { runId } = await backend.launch({

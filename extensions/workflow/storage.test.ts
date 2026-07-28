@@ -38,17 +38,17 @@ describe("saved workflow storage", () => {
         }
     });
     test("stops at repository boundary", async () => {
-        const root = await fixture(),
-            parent = path.dirname(root),
+        const parent = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-boundary-")),
+            root = path.join(parent, "repository"),
             home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-home-"));
         const outside = path.join(parent, ".pi/workflows");
         try {
+            await fs.promises.mkdir(path.join(root, ".git"), { recursive: true });
             await put(outside, "outside.js", source("outside"));
             expect((await discoverWorkflows(root, { home })).some((x) => x.name === "outside")).toBe(false);
         } finally {
-            await fs.promises.rm(root, { recursive: true, force: true });
+            await fs.promises.rm(parent, { recursive: true, force: true });
             await fs.promises.rm(home, { recursive: true, force: true });
-            await fs.promises.rm(path.join(parent, ".pi"), { recursive: true, force: true });
         }
     });
     test("rejects invalid and duplicate metadata/collisions", async () => {

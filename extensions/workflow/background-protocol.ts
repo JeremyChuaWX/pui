@@ -42,9 +42,19 @@ export interface BackgroundWorkflowSaveV1 {
     cwd: string;
     requestId: string;
     runId: string;
-    name: string;
     scope: "project" | "personal";
     overwrite: boolean;
+}
+export interface BackgroundWorkflowSaveResultV1 {
+    schema: "pi.workflow.background.save.result";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    ok: boolean;
+    path?: string;
+    error?: string;
 }
 
 export interface WorkflowRoute {
@@ -94,6 +104,43 @@ export function parseBackgroundWorkflowEvent(
     if (value.type === "remove" && identity(value.runId) && value.run === undefined)
         return value as unknown as BackgroundWorkflowEventV1;
     return undefined;
+}
+
+export function parseBackgroundWorkflowSave(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowSaveV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.save" ||
+        value.version !== 1 ||
+        !routed(value, route) ||
+        !identity(value.requestId) ||
+        !identity(value.runId) ||
+        (value.scope !== "project" && value.scope !== "personal") ||
+        typeof value.overwrite !== "boolean"
+    )
+        return undefined;
+    return value as unknown as BackgroundWorkflowSaveV1;
+}
+
+export function parseBackgroundWorkflowSaveResult(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowSaveResultV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.save.result" ||
+        value.version !== 1 ||
+        !routed(value, route) ||
+        !identity(value.requestId) ||
+        typeof value.ok !== "boolean"
+    )
+        return undefined;
+    if (value.ok) {
+        if (!identity(value.path, MAX_CWD) || value.error !== undefined) return undefined;
+    } else if (!identity(value.error, 2_000) || value.path !== undefined) return undefined;
+    return value as unknown as BackgroundWorkflowSaveResultV1;
 }
 
 export function parseBackgroundWorkflowControl(

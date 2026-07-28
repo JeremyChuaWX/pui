@@ -383,6 +383,73 @@ export function parseWorkflowControl(value: unknown, route?: WorkflowRouting): W
     return value as unknown as WorkflowControlV1;
 }
 
+export interface WorkflowSaveV1 {
+    schema: "pi.workflow.background.save";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    runId: string;
+    scope: "project" | "personal";
+    overwrite: boolean;
+}
+export interface WorkflowSaveResultV1 {
+    schema: "pi.workflow.background.save.result";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    ok: boolean;
+    path?: string;
+    error?: string;
+}
+export function parseWorkflowSave(value: unknown, route?: WorkflowRouting): WorkflowSaveV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.save" ||
+        value.version !== 1 ||
+        !routeIdentity(value.sessionId) ||
+        !routeIdentity(value.instanceId) ||
+        !routeIdentity(value.cwd, 4_000) ||
+        !routeIdentity(value.requestId) ||
+        !routeIdentity(value.runId) ||
+        (value.scope !== "project" && value.scope !== "personal") ||
+        typeof value.overwrite !== "boolean" ||
+        (route &&
+            (value.sessionId !== route.sessionId ||
+                value.cwd !== route.cwd ||
+                (route.instanceId !== undefined && value.instanceId !== route.instanceId)))
+    )
+        return undefined;
+    return value as unknown as WorkflowSaveV1;
+}
+export function parseWorkflowSaveResult(value: unknown, route?: WorkflowRouting): WorkflowSaveResultV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.save.result" ||
+        value.version !== 1 ||
+        !routeIdentity(value.sessionId) ||
+        !routeIdentity(value.instanceId) ||
+        !routeIdentity(value.cwd, 4_000) ||
+        !routeIdentity(value.requestId) ||
+        typeof value.ok !== "boolean" ||
+        (route &&
+            (value.sessionId !== route.sessionId ||
+                value.cwd !== route.cwd ||
+                (route.instanceId !== undefined && value.instanceId !== route.instanceId)))
+    )
+        return undefined;
+    if (
+        value.ok
+            ? !routeIdentity(value.path, 4_000) || value.error !== undefined
+            : !routeIdentity(value.error, MAX_WORKFLOW_DIAGNOSTIC) || value.path !== undefined
+    )
+        return undefined;
+    return value as unknown as WorkflowSaveResultV1;
+}
+
 export interface WorkflowState {
     instanceId?: string;
     /** A validated reset permits the producer's replacement instance to establish authority. */

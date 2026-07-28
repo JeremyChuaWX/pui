@@ -24,21 +24,74 @@ export function validateWorkflowName(name: string): void {
         throw new Error(`Invalid workflow name "${name}". Use 1-64 lowercase letters, digits, and single hyphens.`);
 }
 
-/** Parse the deliberately tiny metadata grammar; workflow code is never imported or evaluated. */
-export function parseWorkflowMetadata(script: string, source = "workflow"): { name: string; description: string } {
+export interface WorkflowMetadata {
+    name: string;
+    description: string;
+    declarationStart: number;
+    declarationEnd: number;
+}
+const JS_STRING = String.raw`("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`;
+function parseStaticString(literal: string, source: string): string {
+    if (literal.startsWith('"')) return JSON.parse(literal);
+    let result = "";
+    for (let index = 1; index < literal.length - 1; index++) {
+        const character = literal[index]!;
+        if (character !== "\\") {
+            result += character;
+            continue;
+        }
+        const escaped = literal[++index];
+        if (escaped === undefined) throw new Error(`${source}: meta contains an invalid escaped string literal.`);
+        const simple: Record<string, string> = {
+            "'": "'",
+            '"': '"',
+            "\\": "\\",
+            n: "\n",
+            r: "\r",
+            t: "\t",
+            b: "\b",
+            f: "\f",
+            v: "\v",
+            "0": "\0",
+        };
+        if (!(escaped in simple))
+            throw new Error(`${source}: meta contains an unsupported string escape \\${escaped}.`);
+        result += simple[escaped];
+    }
+    return result;
+}
+/** Parse static metadata without importing or evaluating workflow code. */
+export function parseWorkflowMetadata(script: string, source = "workflow"): WorkflowMetadata {
     const declarations = [...script.matchAll(/\bexport\s+const\s+meta\s*=/g)];
     if (declarations.length !== 1)
         throw new Error(`${source}: expected exactly one static export const meta declaration.`);
-    const tail = script.slice(declarations[0]!.index! + declarations[0]![0].length);
-    const match =
-        /^\s*\{\s*name\s*:\s*(["'])([^"'\r\n]*)\1\s*,\s*description\s*:\s*(["'])([^"'\r\n]*)\3\s*,?\s*\}/.exec(tail);
-    if (!match) throw new Error(`${source}: meta must be a static { name: "...", description: "..." } object.`);
-    const name = match[2]!,
-        description = match[4]!;
+    const declaration = declarations[0]!,
+        start = declaration.index!,
+        tail = script.slice(start);
+    const expression = new RegExp(
+        String.raw`^export\s+const\s+meta\s*=\s*\{\s*name\s*:\s*${JS_STRING}\s*,\s*description\s*:\s*${JS_STRING}\s*,?\s*\}\s*;?`,
+    ).exec(tail);
+    if (!expression)
+        throw new Error(
+            `${source}: meta must be a static { name: "...", description: "..." } object using JSON string literals.`,
+        );
+    let name: string, description: string;
+    try {
+        name = parseStaticString(expression[1]!, source);
+        description = parseStaticString(expression[2]!, source);
+    } catch {
+        throw new Error(`${source}: meta contains an invalid escaped string literal.`);
+    }
     validateWorkflowName(name);
     if (!description.trim() || description.length > 512)
         throw new Error(`${source}: meta.description must contain 1-512 characters.`);
-    return { name, description };
+    return { name, description, declarationStart: start, declarationEnd: start + expression[0].length };
+}
+
+export function executableWorkflowScript(script: string): string {
+    if (!/\bexport\s+const\s+meta\s*=/.test(script)) return script;
+    const meta = parseWorkflowMetadata(script);
+    return script.slice(0, meta.declarationStart) + script.slice(meta.declarationEnd);
 }
 
 export async function findRepositoryRoot(cwd: string): Promise<string | undefined> {

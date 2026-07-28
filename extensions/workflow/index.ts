@@ -19,9 +19,16 @@ import {
     BACKGROUND_WORKFLOW_SCHEMA,
     BACKGROUND_WORKFLOW_VERSION,
     parseBackgroundWorkflowControl,
+    parseBackgroundWorkflowSave,
 } from "./background-protocol.js";
 import { WorkflowRunManager } from "./manager.js";
-import { discoverWorkflows, parseWorkflowMetadata, saveWorkflow, type WorkflowStorageOptions } from "./storage.js";
+import {
+    discoverWorkflows,
+    findRepositoryRoot,
+    parseWorkflowMetadata,
+    saveWorkflow,
+    type WorkflowStorageOptions,
+} from "./storage.js";
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
@@ -132,21 +139,9 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             if (control) void manager.control(control.runId, control.type).catch(() => {});
         });
         unsubscribeSave?.();
-        unsubscribeSave = pi.events?.on(BACKGROUND_WORKFLOW_SAVE_CHANNEL, (value: any) => {
-            if (
-                !value ||
-                value.schema !== "pi.workflow.background.save" ||
-                value.version !== 1 ||
-                value.sessionId !== sessionId ||
-                value.instanceId !== instanceId ||
-                value.cwd !== cwd ||
-                typeof value.requestId !== "string" ||
-                typeof value.runId !== "string" ||
-                typeof value.name !== "string" ||
-                !["project", "personal"].includes(value.scope) ||
-                typeof value.overwrite !== "boolean"
-            )
-                return;
+        unsubscribeSave = pi.events?.on(BACKGROUND_WORKFLOW_SAVE_CHANNEL, (payload) => {
+            const value = parseBackgroundWorkflowSave(payload, { sessionId, instanceId, cwd });
+            if (!value) return;
             void (async () => {
                 try {
                     const inspected = manager.inspect(value.runId);
@@ -195,6 +190,17 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         await manager.shutdown();
         emitEnvelope("reset");
     });
+    const authorize = async (key: string, title: string, body: string, ui: any) => {
+        if (await approvalStore.has(key)) return;
+        if (ui?.select) {
+            const choice = await ui.select(title, ["Run once", "Trust unchanged script in this project", "Deny"]);
+            if (choice === "Deny" || choice === undefined) throw new Error("Workflow launch was denied.");
+            if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
+            return;
+        }
+        if (!ui?.confirm || !(await ui.confirm(title, body))) throw new Error("Workflow launch was denied.");
+        // A boolean prompt cannot express durable trust.
+    };
     const launchSaved = async (name: string, args: unknown, ctx: any) => {
         const canonical = await fs.promises.realpath(ctx.cwd);
         const saved = (await discoverWorkflows(canonical, dependencies.storageOptions)).find(
@@ -203,18 +209,15 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         if (!saved) throw new Error(`Unknown saved workflow "${name}". Use /workflow completion to list definitions.`);
         if (saved.scope === "project" && !ctx.isProjectTrusted?.())
             throw new Error(`Project workflow "${name}" is not trusted. Trust the project before running it.`);
-        const key = workflowApprovalKey(canonical, saved.name, saved.script);
-        if (!(await approvalStore.has(key))) {
-            if (!ctx.ui?.confirm)
-                throw new Error("This host has no approval surface; refusing to run an unapproved saved workflow.");
-            const preview = preflightWorkflow(saved.script);
-            const approved = await ctx.ui.confirm(
-                `Approve saved workflow: ${saved.name}`,
-                `Source: ${saved.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${saved.script}`,
-            );
-            if (!approved) throw new Error("Workflow launch was denied.");
-            await approvalStore.add(key);
-        }
+        const project = saved.projectRoot ?? (await findRepositoryRoot(canonical)) ?? canonical;
+        const key = workflowApprovalKey(project, saved.name, saved.script);
+        const preview = preflightWorkflow(saved.script);
+        await authorize(
+            key,
+            `Approve saved workflow: ${saved.name}`,
+            `Source: ${saved.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${saved.script}`,
+            ctx.ui,
+        );
         return manager.launch({ name: saved.name, script: saved.script, args, sessionId, cwd: canonical });
     };
     pi.registerCommand("workflow", {
@@ -261,18 +264,19 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             const script = params.script!;
             const preview = preflightWorkflow(script);
             const ui = (ctx as any).ui;
-            if (!ui?.confirm)
-                throw new Error(
-                    "This host has no tool confirmation surface; refusing to run an unapproved inline workflow.",
-                );
-            const approved = await ui.confirm(
+            const canonical = await fs.promises.realpath(ctx.cwd);
+            const project = (await findRepositoryRoot(canonical)) ?? canonical;
+            let inlineName = "Inline workflow";
+            if (/\bexport\s+const\s+meta\s*=/.test(script))
+                inlineName = parseWorkflowMetadata(script, "inline workflow").name;
+            await authorize(
+                workflowApprovalKey(project, inlineName, script),
                 "Run inline workflow",
                 `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${script}`,
+                ui,
             );
-            if (!approved) throw new Error("Workflow launch was denied.");
-            const canonical = await fs.promises.realpath(ctx.cwd);
             const launched = await manager.launch({
-                name: "Inline workflow",
+                name: inlineName,
                 script,
                 args: params.args,
                 sessionId,
