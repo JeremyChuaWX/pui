@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { WorkflowBackendOptions } from "./backend.js";
 import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
+import { parseWorkflowRunV1 } from "./protocol.js";
 
 // Legacy backend fixtures intentionally exercise the unsafe shared-checkout mode.
 const createWorkflowBackend = (options: WorkflowBackendOptions) =>
@@ -32,6 +33,13 @@ describe("workflow backend", () => {
             phases: ["one"],
             agents: 1,
         });
+    });
+    test("preflight ignores inert capability words but scans template expressions", () => {
+        const script = `// process require import Function child_process\nlog("process import Function"); log(\`child_process ${"text"}\`)`;
+        expect(preflightWorkflow(script).agents).toBe(0);
+        expect(() => preflightWorkflow("log(`ordinary $" + "{globalThis['pro'+'cess']}`)")).not.toThrow();
+        expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
+        expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
     });
     test("reports missing and old external Node actionably", async () => {
         const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-node-"));
@@ -130,6 +138,37 @@ return { ok: true, args };\n`;
         });
         await waitFor(() => backend.inspect(runId).run.status === "succeeded");
         expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ type: "string", escaped: false });
+        await backend.shutdown();
+    });
+    test("rejects bounded agent options before executor and always publishes valid summaries", async () => {
+        let called = false;
+        const backend = createWorkflowBackend({
+            policy: { roles: ["generic"], models: ["known"] },
+            agentExecutor: async () => {
+                called = true;
+                return { value: null };
+            },
+        });
+        for (const options of [
+            `{label:"x".repeat(513)}`,
+            `{role:"x".repeat(129)}`,
+            `{model:"x".repeat(257)}`,
+            `{retries:1.5}`,
+            `{timeoutMs:Infinity}`,
+            `{isolation:"container"}`,
+            `{unknown:true}`,
+            `{schema:{x:${"{x:".repeat(18)}1${"}".repeat(18)}}}`,
+        ]) {
+            const { runId } = await backend.launch({
+                name: "invalid",
+                script: `await agent("safe",${options})`,
+                sessionId: "s",
+                cwd: process.cwd(),
+            });
+            await waitFor(() => backend.inspect(runId).run.status === "failed");
+            expect(parseWorkflowRunV1(backend.inspect(runId).run)).toBeDefined();
+        }
+        expect(called).toBe(false);
         await backend.shutdown();
     });
     test("aborting more than four queued agents removes the queue without starting executors", async () => {

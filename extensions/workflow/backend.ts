@@ -142,6 +142,54 @@ const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {})
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
+function executableCode(source: string): string {
+    const output = [...source];
+    let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code",
+        escaped = false;
+    const templates: number[] = [];
+    for (let i = 0; i < source.length; i++) {
+        const c = source[i],
+            next = source[i + 1];
+        if (mode === "code") {
+            if (c === "'" || c === '"' || c === "`") {
+                mode = c === "'" ? "single" : c === '"' ? "double" : "template";
+                output[i] = " ";
+                continue;
+            } else if (c === "/" && next === "/") mode = "line";
+            else if (c === "/" && next === "*") mode = "block";
+            else if (templates.length && c === "{") templates[templates.length - 1]++;
+            else if (templates.length && c === "}" && --templates[templates.length - 1] === 0) {
+                templates.pop();
+                mode = "template";
+            } else continue;
+        } else if (mode === "template" && c === "$" && next === "{" && !escaped) {
+            output[i] = output[i + 1] = " ";
+            templates.push(1);
+            i++;
+            mode = "code";
+            continue;
+        } else if (mode === "line" && (c === "\n" || c === "\r")) {
+            mode = "code";
+            continue;
+        } else if (mode === "block" && c === "*" && next === "/") {
+            output[i] = output[i + 1] = " ";
+            i++;
+            mode = "code";
+            continue;
+        } else if (
+            (mode === "single" && c === "'") ||
+            (mode === "double" && c === '"') ||
+            (mode === "template" && c === "`")
+        ) {
+            if (!escaped) mode = "code";
+        }
+        output[i] = c === "\n" || c === "\r" ? c : " ";
+        escaped = c === "\\" && !escaped;
+        if (c !== "\\") escaped = false;
+    }
+    return output.join("");
+}
+
 export function preflightWorkflow(script: string): { phases: string[]; agents: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
@@ -150,7 +198,8 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
     // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
-    if (forbidden.test(executable)) throw new Error("Workflow script uses a forbidden runtime capability.");
+    if (forbidden.test(executableCode(executable)))
+        throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
         phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
             .map((m) => m[2] ?? "")
@@ -215,6 +264,21 @@ export async function resolveWorkflowNode(
         `Workflows require an external Node >=22.19. Set PUI_WORKFLOW_NODE. Attempts: ${failures.join("; ") || "none"}`,
     );
 }
+function validateSchema(schema: unknown, depth = 0, state = { nodes: 0, properties: 0 }): void {
+    if (depth > 16 || ++state.nodes > 1_000) throw new Error("Agent schema exceeds complexity limits.");
+    if (schema === null || typeof schema === "string" || typeof schema === "boolean" || typeof schema === "number")
+        return;
+    if (Array.isArray(schema)) {
+        for (const value of schema) validateSchema(value, depth + 1, state);
+        return;
+    }
+    if (!schema || typeof schema !== "object") throw new Error("Agent schema must be JSON-compatible.");
+    for (const [key, value] of Object.entries(schema)) {
+        if (++state.properties > 2_000 || key.length > 512) throw new Error("Agent schema exceeds property limits.");
+        validateSchema(value, depth + 1, state);
+    }
+}
+
 function schemaValid(value: unknown, schema: unknown): boolean {
     if (!schema || typeof schema !== "object" || Array.isArray(schema)) return true;
     const s = schema as Record<string, unknown>;
@@ -352,22 +416,34 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 lastBeat = now();
             const send = (frame: unknown) => child.stdin.write(`${bounded(frame)}\n`);
             const tracked = <T>(p: Promise<T>) => p;
+            const exact = (frame: Record<string, unknown>, keys: readonly string[]) =>
+                Object.keys(frame).length === keys.length && keys.every((key) => key in frame);
             const handle = async (inputFrame: unknown) => {
                 if (!inputFrame || typeof inputFrame !== "object" || Array.isArray(inputFrame))
                     throw new Error("Malformed workflow worker frame.");
                 const frame = inputFrame as Record<string, unknown>;
                 if (frame.v !== 1 || typeof frame.t !== "string") throw new Error("Malformed workflow worker frame.");
                 if (frame.t === "ready") {
+                    if (ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow ready frame.");
                     ready = true;
                     lastBeat = now();
                     send({ v: 1, t: "start", script: executableWorkflowScript(input.script), args: input.args });
                     return;
                 }
                 if (frame.t === "heartbeat") {
+                    if (!ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow heartbeat frame.");
                     lastBeat = now();
                     return;
                 }
                 if (frame.t === "terminal") {
+                    if (
+                        !ready ||
+                        (frame.ok === true
+                            ? !(exact(frame, ["v", "t", "ok"]) || exact(frame, ["v", "t", "ok", "json"]))
+                            : frame.ok !== false || !exact(frame, ["v", "t", "ok", "error"])) ||
+                        (frame.ok === false && typeof frame.error !== "string")
+                    )
+                        throw new Error("Malformed workflow terminal frame.");
                     if (frame.json !== undefined && typeof frame.json !== "string")
                         throw new Error("Malformed workflow result.");
                     if (typeof frame.json === "string" && Buffer.byteLength(frame.json) > MAX_FRAME_BYTES)
@@ -381,8 +457,12 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 }
                 if (
                     frame.t !== "rpc" ||
+                    !ready ||
                     typeof frame.id !== "string" ||
                     typeof frame.method !== "string" ||
+                    !(frame.method === "agent"
+                        ? exact(frame, ["v", "t", "id", "method", "value", "identity"])
+                        : exact(frame, ["v", "t", "id", "method", "value"])) ||
                     ++pending > MAX_PENDING
                 )
                     throw new Error("Invalid or excessive workflow RPC request.");
@@ -465,9 +545,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                         key,
                                     ),
                             ) ||
-                            (opts.label !== undefined && typeof opts.label !== "string") ||
-                            (opts.role !== undefined && typeof opts.role !== "string") ||
-                            (opts.model !== undefined && typeof opts.model !== "string") ||
+                            (opts.label !== undefined && (typeof opts.label !== "string" || opts.label.length > 512)) ||
+                            (opts.role !== undefined &&
+                                (typeof opts.role !== "string" || !opts.role || opts.role.length > 128)) ||
+                            (opts.model !== undefined &&
+                                (typeof opts.model !== "string" || !opts.model || opts.model.length > 256)) ||
                             (opts.schema !== undefined &&
                                 (!opts.schema || typeof opts.schema !== "object" || Array.isArray(opts.schema))) ||
                             (opts.retries !== undefined &&
@@ -477,6 +559,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         )
                             throw new Error("Invalid or unknown agent option.");
                         bounded(opts);
+                        if (opts.schema !== undefined) validateSchema(opts.schema);
                         const role = typeof opts.role === "string" ? opts.role : "generic",
                             isolation = opts.isolation,
                             schema = opts.schema as Record<string, unknown> | undefined;
@@ -708,6 +791,18 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     return {
         async launch(input) {
             if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+            if (
+                typeof input.name !== "string" ||
+                !input.name ||
+                input.name.length > 512 ||
+                typeof input.sessionId !== "string" ||
+                !input.sessionId ||
+                input.sessionId.length > 256 ||
+                typeof input.cwd !== "string" ||
+                !input.cwd ||
+                input.cwd.length > 4_000
+            )
+                throw new Error("Invalid workflow launch metadata.");
             preflightWorkflow(input.script);
             input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
             const node = await resolveWorkflowNode({
@@ -717,20 +812,31 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 id = crypto.randomUUID(),
                 timestamp = now(),
                 controller = new AbortController(),
-                requested = input.limits ?? {},
-                limits = {
-                    maxConcurrency: Math.min(
-                        16,
-                        Math.max(1, Number(requested.maxConcurrency) || DEFAULT_WORKFLOW_LIMITS.maxConcurrency),
-                    ),
-                    maxAgents: Math.min(
-                        1_000,
-                        Math.max(1, Number(requested.maxAgents) || DEFAULT_WORKFLOW_LIMITS.maxAgents),
-                    ),
-                    timeoutMs: Math.max(1, Number(requested.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                    maxTokens: Math.max(0, Number(requested.maxTokens) || 0),
-                    maxCost: Math.max(0, Number(requested.maxCost) || 0),
-                };
+                requested = input.limits ?? {};
+            for (const [key, value] of Object.entries(requested))
+                if (
+                    !["maxConcurrency", "maxAgents", "timeoutMs", "maxTokens", "maxCost"].includes(key) ||
+                    typeof value !== "number" ||
+                    !Number.isFinite(value) ||
+                    value < 0
+                )
+                    throw new Error("Invalid workflow limits.");
+            const limits = {
+                maxConcurrency: Math.min(
+                    16,
+                    Math.max(1, Math.floor(requested.maxConcurrency ?? DEFAULT_WORKFLOW_LIMITS.maxConcurrency)),
+                ),
+                maxAgents: Math.min(
+                    1_000,
+                    Math.max(1, Math.floor(requested.maxAgents ?? DEFAULT_WORKFLOW_LIMITS.maxAgents)),
+                ),
+                timeoutMs: Math.min(
+                    DEFAULT_WORKFLOW_LIMITS.timeoutMs,
+                    Math.max(1, requested.timeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs),
+                ),
+                maxTokens: requested.maxTokens ?? 0,
+                maxCost: requested.maxCost ?? 0,
+            };
             const summary: WorkflowRunSummaryV1 = {
                 schema: "pi.workflow",
                 version: 1,
