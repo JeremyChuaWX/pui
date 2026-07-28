@@ -72,6 +72,14 @@ export interface WorkflowBackendOptions {
     policy?: WorkflowHostPolicy;
     runTimeoutMs?: number;
     watchdogMs?: number;
+    /** Worker startup deadline. Defaults to 5 seconds in production. */
+    readyTimeoutMs?: number;
+    /**
+     * Trusted-host test hook for injecting worker module source. Never accept untrusted input here.
+     * The injected module receives the same read-only worker-file permission, 128 MiB heap cap,
+     * empty environment, and no filesystem-write, network, or child-process permissions.
+     */
+    testOnlyWorkerSource?: string;
     /** True for executors (such as runSubagent) that honor abort and reap their child process. */
     cooperativeExecutor?: boolean;
     shutdownGraceMs?: number;
@@ -378,7 +386,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
             const worker = path.join(directory, "worker.mjs");
-            await fs.promises.writeFile(worker, WORKER_SOURCE, { mode: 0o600 });
+            await fs.promises.writeFile(worker, options.testOnlyWorkerSource ?? WORKER_SOURCE, { mode: 0o600 });
             const canonical = await realpath(worker);
             const child = spawn(
                 node,
@@ -749,7 +757,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 }
             });
             const watchdog = setInterval(() => {
-                const limit = ready ? (options.watchdogMs ?? HEARTBEAT_TIMEOUT_MS) : READY_TIMEOUT_MS;
+                const limit = ready
+                    ? (options.watchdogMs ?? HEARTBEAT_TIMEOUT_MS)
+                    : (options.readyTimeoutMs ?? READY_TIMEOUT_MS);
                 if (now() - lastBeat > limit) {
                     finish(
                         "failed",
