@@ -286,6 +286,7 @@ export function parseWorkflowDetailsV1(value: unknown): WorkflowRunDetailsV1 | u
 
 export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL = "pui.workflow.background.control.result" as const;
 export const BACKGROUND_WORKFLOW_SAVE_CHANNEL = "pui.workflow.background.save" as const;
 export const BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL = "pui.workflow.background.save.result" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
@@ -298,9 +299,21 @@ export interface WorkflowControlV1 {
     sessionId: string;
     instanceId: string;
     cwd: string;
-    type: WorkflowControlAction;
+    requestId: string;
     runId: string;
+    action: WorkflowControlAction;
     agentId?: string;
+}
+export interface WorkflowControlResultV1 {
+    schema: "pi.workflow.background.control.result";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    ok: boolean;
+    linkedRunId?: string;
+    error?: string;
 }
 const MAX_WORKFLOW_RUNS = 100;
 
@@ -367,9 +380,10 @@ export function parseWorkflowControl(value: unknown, route?: WorkflowRouting): W
         !routeIdentity(value.sessionId) ||
         !routeIdentity(value.instanceId) ||
         !routeIdentity(value.cwd, 4_000) ||
+        !routeIdentity(value.requestId) ||
         !routeIdentity(value.runId) ||
         !new Set<WorkflowControlAction>(["pause", "resume", "stop", "restart-agent", "retry"]).has(
-            value.type as WorkflowControlAction,
+            value.action as WorkflowControlAction,
         ) ||
         (route !== undefined &&
             (value.sessionId !== route.sessionId ||
@@ -377,10 +391,37 @@ export function parseWorkflowControl(value: unknown, route?: WorkflowRouting): W
                 (route.instanceId !== undefined && value.instanceId !== route.instanceId)))
     )
         return undefined;
-    if (value.type === "restart-agent") {
+    if (value.action === "restart-agent") {
         if (!routeIdentity(value.agentId)) return undefined;
     } else if (value.agentId !== undefined) return undefined;
     return value as unknown as WorkflowControlV1;
+}
+export function parseWorkflowControlResult(
+    value: unknown,
+    route?: WorkflowRouting,
+): WorkflowControlResultV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.control.result" ||
+        value.version !== 1 ||
+        !routeIdentity(value.sessionId) ||
+        !routeIdentity(value.instanceId) ||
+        !routeIdentity(value.cwd, 4_000) ||
+        !routeIdentity(value.requestId) ||
+        typeof value.ok !== "boolean" ||
+        (route &&
+            (value.sessionId !== route.sessionId ||
+                value.cwd !== route.cwd ||
+                (route.instanceId !== undefined && value.instanceId !== route.instanceId)))
+    )
+        return undefined;
+    if (
+        value.ok
+            ? value.error !== undefined || (value.linkedRunId !== undefined && !routeIdentity(value.linkedRunId))
+            : !routeIdentity(value.error, MAX_WORKFLOW_DIAGNOSTIC) || value.linkedRunId !== undefined
+    )
+        return undefined;
+    return value as unknown as WorkflowControlResultV1;
 }
 
 export interface WorkflowSaveV1 {

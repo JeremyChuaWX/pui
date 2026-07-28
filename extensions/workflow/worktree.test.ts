@@ -45,9 +45,30 @@ describe("workflow worktree isolation", () => {
             base = `${root}-owned`,
             cwds: string[] = [];
         temporary.push(base);
-        const rejected = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
-        const bad = await rejected.launch({ name: "bad", script: `await agent("x")`, sessionId: "s", cwd: root });
+        let sharedExecutions = 0;
+        const rejected = createWorkflowBackend({
+            agentExecutor: async ({ cwd }) => {
+                sharedExecutions++;
+                expect(cwd).toBe(await fs.promises.realpath(root));
+                await Bun.sleep(50);
+                return { value: null };
+            },
+        });
+        const sequential = await rejected.launch({
+            name: "sequential",
+            script: `await agent("x")`,
+            sessionId: "s",
+            cwd: root,
+        });
+        await waitFor(() => rejected.inspect(sequential.runId).run.status === "succeeded");
+        const bad = await rejected.launch({
+            name: "bad",
+            script: `await parallel([agent("x"),agent("y")])`,
+            sessionId: "s",
+            cwd: root,
+        });
         await waitFor(() => rejected.inspect(bad.runId).run.status === "failed");
+        expect(sharedExecutions).toBe(2);
         await rejected.shutdown();
         const backend = createWorkflowBackend({
             worktreeManager: new WorkflowWorktreeManager(base),

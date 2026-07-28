@@ -2,6 +2,7 @@ import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 
 export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL = "pui.workflow.background.control.result" as const;
 export const BACKGROUND_WORKFLOW_SAVE_CHANNEL = "pui.workflow.background.save" as const;
 export const BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL = "pui.workflow.background.save.result" as const;
 export const BACKGROUND_WORKFLOW_SCHEMA = "pi.workflow.background" as const;
@@ -29,9 +30,21 @@ export interface BackgroundWorkflowControlV1 {
     sessionId: string;
     instanceId: string;
     cwd: string;
-    type: WorkflowControlAction;
+    requestId: string;
     runId: string;
+    action: WorkflowControlAction;
     agentId?: string;
+}
+export interface BackgroundWorkflowControlResultV1 {
+    schema: "pi.workflow.background.control.result";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    ok: boolean;
+    linkedRunId?: string;
+    error?: string;
 }
 
 export interface BackgroundWorkflowSaveV1 {
@@ -152,14 +165,37 @@ export function parseBackgroundWorkflowControl(
         value.schema !== BACKGROUND_WORKFLOW_CONTROL_SCHEMA ||
         value.version !== BACKGROUND_WORKFLOW_VERSION ||
         !routed(value, route) ||
+        !identity(value.requestId) ||
         !identity(value.runId) ||
         !new Set<WorkflowControlAction>(["pause", "resume", "stop", "restart-agent", "retry"]).has(
-            value.type as WorkflowControlAction,
+            value.action as WorkflowControlAction,
         )
     )
         return undefined;
-    if (value.type === "restart-agent") {
+    if (value.action === "restart-agent") {
         if (!identity(value.agentId)) return undefined;
     } else if (value.agentId !== undefined) return undefined;
     return value as unknown as BackgroundWorkflowControlV1;
+}
+
+export function parseBackgroundWorkflowControlResult(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowControlResultV1 | undefined {
+    if (
+        !record(value) ||
+        value.schema !== "pi.workflow.background.control.result" ||
+        value.version !== 1 ||
+        !routed(value, route) ||
+        !identity(value.requestId) ||
+        typeof value.ok !== "boolean"
+    )
+        return undefined;
+    if (
+        value.ok
+            ? value.error !== undefined || (value.linkedRunId !== undefined && !identity(value.linkedRunId))
+            : !identity(value.error, 2_000) || value.linkedRunId !== undefined
+    )
+        return undefined;
+    return value as unknown as BackgroundWorkflowControlResultV1;
 }

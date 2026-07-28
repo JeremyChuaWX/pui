@@ -111,8 +111,8 @@ describe("PuiController workflow bridge", () => {
             expect(h.controller.restartWorkflowAgent("run-1", "missing")).toBe(false);
             expect(h.controller.restartWorkflowAgent("run-1", "agent-1")).toBe(true);
             expect(controls).toEqual([
-                expect.objectContaining({ type: "pause", runId: "run-1", cwd: canonical }),
-                expect.objectContaining({ type: "restart-agent", runId: "run-1", agentId: "agent-1" }),
+                expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
+                expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
             ]);
             let saveRequest: any;
             h.bus.on("pui.workflow.background.save", (value: any) => {

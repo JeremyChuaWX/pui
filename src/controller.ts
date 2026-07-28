@@ -53,11 +53,13 @@ import type {
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
     BACKGROUND_WORKFLOW_SAVE_CHANNEL,
     BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     parseWorkflowBackgroundEvent,
     parseWorkflowControl,
+    parseWorkflowControlResult,
     parseWorkflowSave,
     parseWorkflowSaveResult,
     reduceWorkflowEvent,
@@ -180,6 +182,7 @@ export class PuiController {
     private workflowCwd = "";
     private unsubscribeWorkflow?: () => void;
     private pendingWorkflowSaves = new Set<(error: Error) => void>();
+    private pendingWorkflowControls = new Set<(error: Error) => void>();
     private extensionDialogs: Array<{
         dialog: ExtensionDialog;
         resolve: (value: boolean | string | undefined) => void;
@@ -269,8 +272,10 @@ export class PuiController {
 
     private async bindSession(session: AgentSession): Promise<void> {
         this.dismissExtensionDialogs();
-        for (const reject of this.pendingWorkflowSaves) reject(new Error("Workflow session changed."));
+        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
+            reject(new Error("Workflow session changed."));
         this.pendingWorkflowSaves.clear();
+        this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
         this.unsubscribeWorkflow?.();
         this.backgroundState = { jobs: new Map() };
@@ -877,43 +882,97 @@ export class PuiController {
         return this.currentSnapshot.workflows.find((run) => run.id === runId);
     }
 
-    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
-        const run = this.workflowState.runs.get(runId);
-        const instanceId = this.workflowState.instanceId;
-        if (!run || !instanceId) return false;
-        if (action === "restart-agent" && !run.agents.some((agent) => agent.id === agentId)) return false;
-        const control = parseWorkflowControl(
-            {
-                schema: BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
-                version: 1,
-                sessionId: this.workflowSessionId,
-                instanceId,
-                cwd: this.workflowCwd,
-                type: action,
-                runId,
-                ...(agentId === undefined ? {} : { agentId }),
-            },
-            { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
-        );
-        if (!control) return false;
-        this.eventBus.emit(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, control);
-        return true;
+    async controlWorkflowAsync(
+        runId: string,
+        action: WorkflowControlAction,
+        agentId?: string,
+    ): Promise<string | undefined> {
+        const run = this.workflowState.runs.get(runId),
+            instanceId = this.workflowState.instanceId;
+        if (!run || !instanceId) throw new Error("Workflow control is unavailable.");
+        if (action === "restart-agent" && !run.agents.some((agent) => agent.id === agentId))
+            throw new Error("Workflow agent is unavailable.");
+        const requestId = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const cleanup = () => {
+                clearTimeout(timer);
+                unsubscribe();
+                this.pendingWorkflowControls.delete(cancel);
+            };
+            const cancel = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+            this.pendingWorkflowControls.add(cancel);
+            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, (payload) => {
+                const result = parseWorkflowControlResult(payload, {
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                });
+                if (!result || result.requestId !== requestId) return;
+                cleanup();
+                result.ok ? resolve(result.linkedRunId) : reject(new Error(result.error!));
+            });
+            timer = setTimeout(() => cancel(new Error("Workflow control request timed out.")), 5_000);
+            const control = parseWorkflowControl(
+                {
+                    schema: BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+                    version: 1,
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                    requestId,
+                    runId,
+                    action,
+                    ...(agentId === undefined ? {} : { agentId }),
+                },
+                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
+            );
+            if (!control) return cancel(new Error("Invalid workflow control request."));
+            this.eventBus.emit(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, control);
+        });
     }
 
-    pauseWorkflow(runId: string): boolean {
+    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
+        const available =
+            !!this.workflowState.instanceId &&
+            this.workflowState.runs.has(runId) &&
+            (action !== "restart-agent" ||
+                this.workflowState.runs.get(runId)!.agents.some((agent) => agent.id === agentId));
+        if (available) void this.controlWorkflowAsync(runId, action, agentId).catch(() => {});
+        return available;
+    }
+    pauseWorkflow(runId: string) {
         return this.controlWorkflow(runId, "pause");
     }
-    resumeWorkflow(runId: string): boolean {
+    resumeWorkflow(runId: string) {
         return this.controlWorkflow(runId, "resume");
     }
-    stopWorkflow(runId: string): boolean {
+    stopWorkflow(runId: string) {
         return this.controlWorkflow(runId, "stop");
     }
-    restartWorkflowAgent(runId: string, agentId: string): boolean {
+    restartWorkflowAgent(runId: string, agentId: string) {
         return this.controlWorkflow(runId, "restart-agent", agentId);
     }
-    retryWorkflow(runId: string): boolean {
+    retryWorkflow(runId: string) {
         return this.controlWorkflow(runId, "retry");
+    }
+    pauseWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "pause");
+    }
+    resumeWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "resume");
+    }
+    stopWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "stop");
+    }
+    restartWorkflowAgentAsync(runId: string, agentId: string) {
+        return this.controlWorkflowAsync(runId, "restart-agent", agentId);
+    }
+    retryWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "retry");
     }
     async saveWorkflow(runId: string, scope: "project" | "personal", overwrite = false): Promise<string> {
         const run = this.workflowState.runs.get(runId),
@@ -983,8 +1042,10 @@ export class PuiController {
         if (this.disposed) return;
         this.disposed = true;
         this.dismissExtensionDialogs();
-        for (const reject of this.pendingWorkflowSaves) reject(new Error("Controller disposed."));
+        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
+            reject(new Error("Controller disposed."));
         this.pendingWorkflowSaves.clear();
+        this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
         this.unsubscribeBackground();
         this.unsubscribeWorkflow?.();

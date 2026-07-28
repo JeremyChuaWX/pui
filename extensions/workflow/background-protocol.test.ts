@@ -10,11 +10,12 @@ const envelope = (type: string, extra: Record<string, unknown> = {}) => ({
     type,
     ...extra,
 });
-const control = (type: string, extra: Record<string, unknown> = {}) => ({
+const control = (action: string, extra: Record<string, unknown> = {}) => ({
     schema: "pi.workflow.background.control",
     version: 1,
     ...route,
-    type,
+    requestId: "request-1",
+    action,
     runId: "run-1",
     ...extra,
 });
@@ -34,7 +35,7 @@ describe("background workflow protocol", () => {
     });
 
     test("rejects invalid controls and exact-route mismatches", () => {
-        expect(parseBackgroundWorkflowControl(control("pause"), route)?.type).toBe("pause");
+        expect(parseBackgroundWorkflowControl(control("pause"), route)?.action).toBe("pause");
         expect(parseBackgroundWorkflowControl(control("restart-agent", { agentId: "agent-1" }), route)?.agentId).toBe(
             "agent-1",
         );

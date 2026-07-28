@@ -51,6 +51,8 @@ export interface WorkflowLaunch {
     cwd: string;
     limits?: Partial<typeof DEFAULT_WORKFLOW_LIMITS>;
     parentRunId?: string;
+    /** Internal replay seed, journaled before the new run executes. */
+    seedCompletions?: ReadonlyMap<string, unknown>;
 }
 export interface WorkflowHostPolicy {
     roles?: readonly string[];
@@ -112,6 +114,7 @@ interface ActiveRun {
     persistence: Promise<void>;
     input: WorkflowLaunch;
     semaphore: AbortableSemaphore;
+    activeSharedWriters: number;
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -412,11 +415,11 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         const writeCapable = role !== "explore" && role !== "read-only";
                         if (
                             writeCapable &&
-                            active.summary.limits.maxConcurrency > 1 &&
                             isolation !== "worktree" &&
+                            active.activeSharedWriters > 0 &&
                             !options.policy?.allowUnsafeSharedCheckout
                         )
-                            throw new Error("Parallel write-capable agents require worktree isolation.");
+                            throw new Error("Concurrent write-capable agents require worktree isolation.");
                         if (options.policy?.roles && !options.policy.roles.includes(role))
                             throw new Error(`Agent role is not allowed by host policy: ${role}`);
                         const model =
@@ -443,7 +446,14 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
                         publish(active);
                         const release = await active.semaphore.acquire(active.controller.signal);
+                        let sharedWriter = false;
                         try {
+                            if (writeCapable && isolation !== "worktree") {
+                                if (active.activeSharedWriters > 0 && !options.policy?.allowUnsafeSharedCheckout)
+                                    throw new Error("Concurrent write-capable agents require worktree isolation.");
+                                active.activeSharedWriters++;
+                                sharedWriter = true;
+                            }
                             if (active.paused)
                                 await new Promise<void>((resolve, reject) => {
                                     const abort = () => reject(new Error("Workflow stopped while paused."));
@@ -553,6 +563,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             agent.error = errorMessage(e).slice(0, 2000);
                             throw e;
                         } finally {
+                            if (sharedWriter) active.activeSharedWriters--;
                             agent.endedAt = agent.updatedAt = now();
                             publish(active);
                             release();
@@ -679,12 +690,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 controller,
                 settlement: Promise.resolve(),
                 cooperativeTasks: new Set(),
-                completions: new Map(),
+                completions: new Map(input.seedCompletions ?? []),
                 paused: false,
                 resumeWaiters: [],
                 persistence: Promise.resolve(),
                 input: { ...input, limits: input.limits },
                 semaphore: new AbortableSemaphore(limits.maxConcurrency),
+                activeSharedWriters: 0,
             };
             if (options.storage)
                 active.directory = await options.storage.create(
@@ -704,6 +716,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     },
                     summary,
                 );
+            if (active.directory && options.storage)
+                for (const [operation, value] of active.completions)
+                    await options.storage.complete(active.directory, operation, value, now());
             runs.set(id, active);
             publish(active);
             active.settlement = execute(active, input, node).catch((e) => {
@@ -763,6 +778,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         parentRunId: stored.launch.parentRunId,
                     },
                     semaphore: new AbortableSemaphore(limits.maxConcurrency),
+                    activeSharedWriters: 0,
                 });
             }
             return this.list();
@@ -823,15 +839,22 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 publish(run);
             } else if (action === "retry") {
                 if (!TERMINAL.has(run.summary.status)) throw new Error("Only a terminal workflow can be retried.");
-                const launched = await this.launch({
-                    ...run.input,
-                    parentRunId: run.summary.id,
-                });
-                return launched;
-            } else
-                throw new Error(
-                    "Restart-agent requires an agent identity and is not available through this legacy control signature.",
-                );
+                // Retry is expected replay: reuse every durable completion.
+                return this.launch({ ...run.input, parentRunId: run.summary.id, seedCompletions: run.completions });
+            } else if (action === "restart-agent") {
+                if (!TERMINAL.has(run.summary.status))
+                    throw new Error("Only a terminal workflow can restart an agent.");
+                const agentId = typeof requestedControl === "object" ? requestedControl.agentId : undefined;
+                if (
+                    !agentId ||
+                    !run.summary.agents.some((agent) => agent.id === agentId) ||
+                    !run.completions.has(agentId)
+                )
+                    throw new Error("Invalid completed agent identity.");
+                const seed = new Map(run.completions);
+                seed.delete(agentId);
+                return this.launch({ ...run.input, parentRunId: run.summary.id, seedCompletions: seed });
+            } else throw new Error(`Unknown workflow control: ${action}`);
             return {};
         },
         async claimTerminalDelivery(id) {

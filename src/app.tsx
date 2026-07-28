@@ -439,7 +439,13 @@ export function App(props: { controller: PuiController }) {
         });
     }
 
-    function confirmDestructive(title: string, message: string, confirmLabel: string, action: () => boolean): void {
+    function confirmDestructive(
+        title: string,
+        message: string,
+        confirmLabel: string,
+        action: () => Promise<string | undefined>,
+        success = "Workflow control completed.",
+    ): void {
         setDialog({
             kind: "confirm",
             title,
@@ -447,11 +453,10 @@ export function App(props: { controller: PuiController }) {
             confirmLabel,
             action: () => {
                 setDialog(undefined);
-                if (!action())
-                    props.controller.notify(
-                        "Workflow changed or the action is unavailable. Refresh and try again.",
-                        "error",
-                    );
+                void action().then(
+                    (linked) => props.controller.notify(linked ? `${success} New run: ${linked}.` : success, "success"),
+                    (error) => props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                );
             },
         });
     }
@@ -495,7 +500,7 @@ export function App(props: { controller: PuiController }) {
                             "Restart agent?",
                             `Abort and rerun ${agent.label}? Existing output may be replaced.`,
                             "Restart",
-                            () => props.controller.restartWorkflowAgent(run.id, agent.id),
+                            () => props.controller.restartWorkflowAgentAsync(run.id, agent.id),
                         ),
                 },
             ],
@@ -565,8 +570,11 @@ export function App(props: { controller: PuiController }) {
                 search: "pause",
                 action: () => {
                     setDialog(undefined);
-                    if (!props.controller.pauseWorkflow(run.id))
-                        props.controller.notify("Pause is unavailable.", "error");
+                    void props.controller.pauseWorkflowAsync(run.id).then(
+                        () => props.controller.notify("Workflow paused.", "success"),
+                        (error) =>
+                            props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                    );
                 },
             });
         if (run.status === "paused")
@@ -576,8 +584,11 @@ export function App(props: { controller: PuiController }) {
                 search: "resume",
                 action: () => {
                     setDialog(undefined);
-                    if (!props.controller.resumeWorkflow(run.id))
-                        props.controller.notify("Resume is unavailable.", "error");
+                    void props.controller.resumeWorkflowAsync(run.id).then(
+                        () => props.controller.notify("Workflow resumed.", "success"),
+                        (error) =>
+                            props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                    );
                 },
             });
         if (["running", "queued", "paused"].includes(run.status))
@@ -587,7 +598,7 @@ export function App(props: { controller: PuiController }) {
                 search: "stop",
                 action: () =>
                     confirmDestructive("Stop workflow?", `Stop ${run.name} and all active agents?`, "Stop", () =>
-                        props.controller.stopWorkflow(run.id),
+                        props.controller.stopWorkflowAsync(run.id),
                     ),
             });
         if (["failed", "cancelled", "succeeded"].includes(run.status))
@@ -597,7 +608,7 @@ export function App(props: { controller: PuiController }) {
                 search: "retry",
                 action: () =>
                     confirmDestructive("Retry workflow?", `Create a new replay of ${run.name}?`, "Retry", () =>
-                        props.controller.retryWorkflow(run.id),
+                        props.controller.retryWorkflowAsync(run.id),
                     ),
             });
         items.push(

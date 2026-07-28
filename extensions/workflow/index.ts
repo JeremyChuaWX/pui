@@ -14,6 +14,7 @@ import {
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
     BACKGROUND_WORKFLOW_SAVE_CHANNEL,
     BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     BACKGROUND_WORKFLOW_SCHEMA,
@@ -151,7 +152,33 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         unsubscribeControl?.();
         unsubscribeControl = pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
             const control = parseBackgroundWorkflowControl(payload, { sessionId, instanceId, cwd });
-            if (control) void manager.control(control.runId, control.type).catch(() => {});
+            if (!control) return;
+            void (async () => {
+                try {
+                    const result = await manager.control(control.runId, control.action, control.agentId);
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        sessionId,
+                        instanceId,
+                        cwd,
+                        requestId: control.requestId,
+                        ok: true,
+                        ...(result?.runId ? { linkedRunId: result.runId } : {}),
+                    });
+                } catch (error) {
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        sessionId,
+                        instanceId,
+                        cwd,
+                        requestId: control.requestId,
+                        ok: false,
+                        error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+                    });
+                }
+            })();
         });
         unsubscribeSave?.();
         unsubscribeSave = pi.events?.on(BACKGROUND_WORKFLOW_SAVE_CHANNEL, (payload) => {
