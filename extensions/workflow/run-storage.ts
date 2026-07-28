@@ -381,6 +381,6 @@ export class WorkflowRunStorage {
             canonical = await fs.promises.realpath(resolved);
         if (path.relative(canonicalRoot, canonical).startsWith(".."))
             throw new Error("Workflow artifact escapes canonical storage root.");
-        return canonical;
+        return resolved;
     }
 }
