@@ -2,8 +2,53 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
 import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
+import {
+    parseWorkflowRunV1,
+    type WorkflowAgentStatus,
+    type WorkflowRunStatus,
+    type WorkflowRunSummaryV1,
+} from "./workflow.js";
 
 const MAX_TOOL_TEXT = 8_000;
+export const WORKFLOW_LIST_WINDOW = 50;
+
+const WORKFLOW_STATUS_PRESENTATION: Record<WorkflowRunStatus | WorkflowAgentStatus, { icon: string; label: string }> = {
+    awaiting_approval: { icon: "?", label: "Awaiting approval" },
+    queued: { icon: "·", label: "Queued" },
+    running: { icon: "◌", label: "Running" },
+    paused: { icon: "Ⅱ", label: "Paused" },
+    succeeded: { icon: "✓", label: "Succeeded" },
+    failed: { icon: "×", label: "Failed" },
+    cancelled: { icon: "■", label: "Stopped" },
+    timed_out: { icon: "×", label: "Timed out" },
+};
+
+export function workflowStatusPresentation(status: WorkflowRunStatus | WorkflowAgentStatus) {
+    return WORKFLOW_STATUS_PRESENTATION[status];
+}
+
+export function workflowStatusTone(
+    status: WorkflowRunStatus | WorkflowAgentStatus,
+): "success" | "error" | "warning" | "muted" | "info" {
+    if (status === "succeeded") return "success";
+    if (status === "failed" || status === "timed_out") return "error";
+    if (status === "running" || status === "paused" || status === "awaiting_approval") return "warning";
+    return status === "queued" || status === "cancelled" ? "muted" : "info";
+}
+
+export function boundedWorkflowItems<T>(items: readonly T[], selected = 0, count = WORKFLOW_LIST_WINDOW): T[] {
+    const size = Math.max(1, count);
+    const start = Math.max(0, Math.min(selected - Math.floor(size / 2), Math.max(0, items.length - size)));
+    return items.slice(start, start + size);
+}
+
+export function formatWorkflowSummary(run: WorkflowRunSummaryV1): string {
+    const state = workflowStatusPresentation(run.status);
+    const done = run.agents.filter((agent) =>
+        ["succeeded", "failed", "cancelled", "timed_out"].includes(agent.status),
+    ).length;
+    return `${state.icon} ${run.name} · ${state.label} · ${done}/${run.agents.length} agents${run.currentPhase ? ` · ${run.currentPhase}` : ""}`;
+}
 
 type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
 
@@ -58,6 +103,19 @@ function resultContent(value: unknown): string {
     return typeof value === "object" && value !== null && "content" in value
         ? truncate(contentText((value as { content?: unknown }).content))
         : "";
+}
+
+function applyWorkflowPresentation(item: ToolDisplayItem, details: unknown): void {
+    const candidate =
+        details && typeof details === "object" && "run" in details ? (details as { run?: unknown }).run : details;
+    const workflow = parseWorkflowRunV1(candidate);
+    if (!workflow) {
+        delete item.workflow;
+        delete item.workflowKey;
+        return;
+    }
+    item.workflow = workflow;
+    item.workflowKey = `${workflow.id}:${workflow.updatedAt}:${workflow.status}`;
 }
 
 function applySubagentPresentation(
@@ -149,6 +207,7 @@ function buildToolDisplayItem(
         ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
     };
     applySubagentPresentation(item, details, args, execution?.updatedAt ?? timestamp);
+    applyWorkflowPresentation(item, details);
     return item;
 }
 
@@ -232,12 +291,14 @@ export function buildDisplayItems(
                         argsById.get(message.toolCallId) ?? {},
                         message.timestamp,
                     );
+                    applyWorkflowPresentation(existing, details);
                 } else {
                     const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
                     item.result = output;
                     item.isError = message.isError;
                     item.running = false;
                     applySubagentPresentation(item, message.details, {}, message.timestamp);
+                    applyWorkflowPresentation(item, message.details);
                     result.push(item);
                     toolById.set(message.toolCallId, item);
                 }
@@ -305,7 +366,8 @@ function sameDisplayPresentation(left: DisplayItem, right: DisplayItem): boolean
                 left.result === right.result &&
                 left.isError === right.isError &&
                 left.running === right.running &&
-                left.subagentKey === right.subagentKey
+                left.subagentKey === right.subagentKey &&
+                left.workflowKey === right.workflowKey
             );
         case "bash":
             return (

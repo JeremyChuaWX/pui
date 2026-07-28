@@ -553,6 +553,8 @@ export class PuiController {
                 return "commands";
             case "/subagents":
                 return "subagents";
+            case "/workflows":
+                return "workflows";
             case "/help":
             case "/hotkeys":
                 return "help";

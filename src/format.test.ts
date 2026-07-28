@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
+import {
+    boundedWorkflowItems,
+    buildDisplayItems,
+    formatCount,
+    formatToolTitle,
+    formatWorkflowSummary,
+    workflowStatusPresentation,
+    workflowStatusTone,
+} from "./format.js";
 
 describe("pui formatting", () => {
     test("combines a tool call with its result", () => {
@@ -86,6 +94,24 @@ describe("pui formatting", () => {
     test("formats compact token counts and tool labels", () => {
         expect(formatCount(1_250)).toBe("1.3k");
         expect(formatToolTitle("bash", { command: "git status" })).toBe("bash  git status");
+    });
+
+    test("formats workflow status and bounds thousand-agent list work", () => {
+        const agents = Array.from({ length: 1_000 }, (_, index) => index);
+        expect(boundedWorkflowItems(agents, 500)).toEqual(Array.from({ length: 50 }, (_, index) => index + 475));
+        expect(workflowStatusPresentation("timed_out")).toEqual({ icon: "×", label: "Timed out" });
+        expect(workflowStatusTone("failed")).toBe("error");
+        expect(formatWorkflowSummary(workflowRun())).toBe("◌ Review · Running · 0/1 agents · review");
+    });
+
+    test("uses workflow cards only for valid v1 details and preserves unknown generic fallback", () => {
+        const valid = buildDisplayItems(workflowMessages(workflowRun()))[0];
+        expect(valid).toEqual(
+            expect.objectContaining({ kind: "tool", workflow: expect.objectContaining({ id: "run-1" }) }),
+        );
+        const unknown = buildDisplayItems(workflowMessages({ ...workflowRun(), version: 2 }))[0];
+        expect(unknown).toEqual(expect.objectContaining({ kind: "tool", result: "started" }));
+        expect(unknown && "workflow" in unknown ? unknown.workflow : undefined).toBeUndefined();
     });
 
     test("prefers live partial subagent details and reducer-derived running state", () => {
@@ -243,6 +269,50 @@ describe("pui formatting", () => {
         expect(unknownItem && "subagent" in unknownItem ? unknownItem.subagent : undefined).toBeUndefined();
     });
 });
+
+function workflowRun() {
+    const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 };
+    return {
+        schema: "pi.workflow" as const,
+        version: 1 as const,
+        id: "run-1",
+        name: "Review",
+        sessionId: "session-1",
+        cwd: "/repo",
+        status: "running" as const,
+        currentPhase: "review",
+        phases: [],
+        agents: [
+            {
+                id: "agent-1",
+                label: "Reviewer",
+                role: "explore",
+                status: "running" as const,
+                updatedAt: 1,
+                usage,
+                recentActivity: [],
+            },
+        ],
+        usage,
+        limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1000, maxTokens: 0, maxCost: 0 },
+        recentActivity: [],
+        updatedAt: 1,
+    };
+}
+
+function workflowMessages(run: unknown): AgentMessage[] {
+    return [
+        {
+            role: "toolResult",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            content: [{ type: "text", text: "started" }],
+            details: { schema: "pi.workflow", version: 1, run },
+            isError: false,
+            timestamp: 1,
+        },
+    ] as AgentMessage[];
+}
 
 function subagentDetails(id: string, status: "running" | "succeeded" | "timed_out"): Record<string, unknown> {
     const terminal = status !== "running";

@@ -47,6 +47,8 @@ export interface ToolDisplayItem extends DisplayItemBase {
     running?: boolean;
     subagent?: SubagentViewModel;
     subagentKey?: string;
+    workflow?: WorkflowRunSummaryV1;
+    workflowKey?: string;
 }
 
 interface BashDisplayItem extends DisplayItemBase {
@@ -134,4 +136,4 @@ export interface AppliedPromptCompletion {
     cursorOffset: number;
 }
 
-export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "commands" | "help" | "ignored";
+export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "workflows" | "commands" | "help" | "ignored";

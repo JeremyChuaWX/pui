@@ -100,6 +100,7 @@ describe("PuiController workflow bridge", () => {
             await Bun.sleep(25);
             expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["run-1"]);
             expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
+            expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
 
             const controls: unknown[] = [];
             h.bus.on("pui.workflow.background.control", (value) => controls.push(value));
