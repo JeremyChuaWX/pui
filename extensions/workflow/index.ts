@@ -135,7 +135,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     pi.on("session_start", async (_event, ctx) => {
         sessionId = ctx.sessionManager.getSessionId();
         cwd = await fs.promises.realpath(ctx.cwd);
-        const recovered = (await backend.initialize?.(cwd)) ?? [];
+        const recovered = await manager.initialize(cwd);
         for (const run of recovered.filter((item) => !["succeeded", "failed", "cancelled"].includes(item.status))) {
             const choice = await (ctx.ui as any)?.select?.(`Interrupted workflow: ${run.name}`, [
                 "Resume",

@@ -4,7 +4,12 @@ import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
-import type { WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
+import {
+    MAX_WORKFLOW_ID,
+    type WorkflowAgentSummaryV1,
+    type WorkflowRunSummaryV1,
+    type WorkflowUsageV1,
+} from "./protocol.js";
 import type { WorkflowRunStorage } from "./run-storage.js";
 import { executableWorkflowScript } from "./storage.js";
 
@@ -64,6 +69,8 @@ export interface WorkflowBackendOptions {
     cooperativeExecutor?: boolean;
     shutdownGraceMs?: number;
     storage?: WorkflowRunStorage;
+    /** Test-only fault injection, called after an operation is durable but before replying. */
+    afterDurableCompletion?: (operationId: string) => Promise<void> | void;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch): Promise<{ runId: string }>;
@@ -72,7 +79,19 @@ export interface WorkflowBackend {
     list(): WorkflowRunSummaryV1[];
     inspect(id: string): { run: WorkflowRunSummaryV1; script: string; result?: string };
     subscribe(listener: (run: WorkflowRunSummaryV1) => void): () => void;
-    control(id: string, action: "pause" | "resume" | "stop" | "restart-agent" | "retry"): Promise<void>;
+    control(
+        id: string,
+        control:
+            | "pause"
+            | "resume"
+            | "stop"
+            | "restart-agent"
+            | "retry"
+            | { action: "pause" | "resume" | "stop" | "restart-agent" | "retry"; agentId?: string },
+    ): Promise<{ runId?: string } | void>;
+    claimTerminalDelivery?(id: string): Promise<boolean>;
+    markTerminalDelivered?(id: string): Promise<void>;
+    releaseTerminalDelivery?(id: string): Promise<void>;
     shutdown(): Promise<void>;
 }
 interface ActiveRun {
@@ -350,7 +369,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             !frame.identity.includes("#")
                         )
                             throw new Error("Invalid workflow operation identity.");
-                        const operationId = `agent:${frame.identity}`;
+                        // Identities come from bounded source locations, but hash them so protocol IDs remain bounded.
+                        const operationId = `agent-${Bun.hash(frame.identity).toString(36)}`.slice(0, MAX_WORKFLOW_ID);
                         if (active.completions.has(operationId)) {
                             value = structuredClone(active.completions.get(operationId));
                             send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
@@ -473,6 +493,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 if (active.directory)
                                     await options.storage?.complete(active.directory, operationId, value, now());
                                 active.completions.set(operationId, structuredClone(value));
+                                await options.afterDurableCompletion?.(operationId);
                                 agent.status = "succeeded";
                             } finally {
                                 if (timer) clearTimeout(timer);
@@ -653,8 +674,25 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (runs.has(stored.id)) continue;
                 const controller = new AbortController(),
                     limits = stored.launch.limits as typeof DEFAULT_WORKFLOW_LIMITS;
+                const summary = structuredClone(stored.snapshot);
+                if (!TERMINAL.has(summary.status)) {
+                    // A snapshot can lag the journal. Keep only durable agents and rebuild references;
+                    // replay will recreate every interrupted operation with the same stable identity.
+                    summary.agents = summary.agents
+                        .filter((agent) => stored.completions.has(agent.id))
+                        .map((agent) => ({ ...agent, status: "succeeded" as const, error: undefined }));
+                    const durable = new Set(summary.agents.map((agent) => agent.id));
+                    summary.phases = summary.phases.map((phase) => ({
+                        ...phase,
+                        status: phase.status === "running" ? "queued" : phase.status,
+                        agentIds: phase.agentIds.filter((agentId) => durable.has(agentId)),
+                    }));
+                    summary.currentPhase = undefined;
+                    summary.endedAt = undefined;
+                    summary.error = undefined;
+                }
                 runs.set(stored.id, {
-                    summary: structuredClone(stored.snapshot),
+                    summary,
                     script: stored.launch.script,
                     controller,
                     settlement: Promise.resolve(),
@@ -682,6 +720,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             const active = runs.get(id);
             if (!active) throw new Error(`Unknown workflow run: ${id}`);
             if (TERMINAL.has(active.summary.status)) return;
+            if (!active.paused) throw new Error("Workflow recovery is already running.");
             active.paused = false;
             active.summary.status = "queued";
             const node = await resolveWorkflowNode({
@@ -704,12 +743,22 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             listeners.add(listener);
             return () => listeners.delete(listener);
         },
-        async control(id, action) {
+        async control(id, requestedControl) {
+            const action = typeof requestedControl === "string" ? requestedControl : requestedControl.action;
             const run = runs.get(id);
             if (!run) throw new Error(`Unknown workflow run: ${id}`);
             if (action === "stop") {
                 if (TERMINAL.has(run.summary.status)) return;
                 run.controller.abort();
+                if (!run.child) {
+                    run.summary.status = "cancelled";
+                    run.summary.endedAt = now();
+                    publish(run);
+                    if (run.directory && options.storage)
+                        await persist(run, () =>
+                            options.storage!.terminal(run.directory!, null, structuredClone(run.summary)),
+                        );
+                }
             } else if (action === "pause") {
                 if (run.summary.status !== "running") throw new Error("Only a running workflow can be paused.");
                 run.paused = true;
@@ -723,17 +772,30 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 publish(run);
             } else if (action === "retry") {
                 if (!TERMINAL.has(run.summary.status)) throw new Error("Only a terminal workflow can be retried.");
-                await this.launch({
-                    name: run.summary.name,
-                    script: run.script,
-                    sessionId: run.summary.sessionId,
-                    cwd: run.summary.cwd,
+                const launched = await this.launch({
+                    ...run.input,
                     parentRunId: run.summary.id,
                 });
+                return launched;
             } else
                 throw new Error(
                     "Restart-agent requires an agent identity and is not available through this legacy control signature.",
                 );
+            return {};
+        },
+        async claimTerminalDelivery(id) {
+            const run = runs.get(id);
+            if (!run?.directory || !options.storage || !TERMINAL.has(run.summary.status)) return false;
+            return options.storage.claimDelivery(run.directory);
+        },
+        async markTerminalDelivered(id) {
+            const run = runs.get(id);
+            if (!run?.directory || !options.storage) throw new Error(`Unknown durable workflow run: ${id}`);
+            await options.storage.markDelivered(run.directory);
+        },
+        async releaseTerminalDelivery(id) {
+            const run = runs.get(id);
+            if (run?.directory && options.storage) await options.storage.releaseClaim(run.directory);
         },
         async shutdown() {
             if (shuttingDown) return;

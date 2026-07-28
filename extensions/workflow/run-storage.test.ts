@@ -45,7 +45,7 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
-test("fails closed on truncated journals and symlink artifacts", async () => {
+test("isolates a corrupt journal as a bounded failed diagnostic", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-corrupt-")),
         project = path.join(temp, "project");
     await fs.promises.mkdir(project);
@@ -59,7 +59,10 @@ test("fails closed on truncated journals and symlink artifacts", async () => {
             summary,
         );
         await fs.promises.appendFile(path.join(d, "journal.jsonl"), "{");
-        await expect(storage.discover(project)).rejects.toThrow("Truncated");
+        const [corrupt] = await storage.discover(project);
+        expect(corrupt?.snapshot.status).toBe("failed");
+        expect(corrupt?.snapshot.error).toContain("Truncated");
+        expect(corrupt?.snapshot.error?.length).toBeLessThanOrEqual(2_000);
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }

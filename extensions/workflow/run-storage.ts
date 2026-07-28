@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { WorkflowRunSummaryV1 } from "./protocol.js";
+import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
+import { findRepositoryRoot } from "./storage.js";
 
 const MAX_ARTIFACT = 16 * 1024 * 1024;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
@@ -26,7 +27,7 @@ export interface JournalCompletion {
     at: number;
 }
 export interface DeliveryState {
-    delivered: boolean;
+    delivered?: boolean;
     claimed?: boolean;
 }
 export interface StoredRun {
@@ -90,9 +91,15 @@ export class WorkflowRunStorage {
     }
     private async project(cwd: string, create = false) {
         const canonical = await fs.promises.realpath(cwd),
-            directory = path.join(this.root, projectHash(canonical));
+            repository = (await findRepositoryRoot(canonical)) ?? canonical,
+            directory = path.join(this.root, projectHash(await fs.promises.realpath(repository)));
         if (create) {
+            const parent = path.dirname(this.root);
+            const parentStat = await fs.promises.lstat(parent).catch(() => undefined);
+            if (parentStat?.isSymbolicLink()) throw new Error("Unsafe workflow storage parent.");
             await fs.promises.mkdir(this.root, { recursive: true, mode: 0o700 });
+            const rootStat = await fs.promises.lstat(this.root);
+            if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Unsafe workflow storage root.");
             await fs.promises.mkdir(directory, { mode: 0o700 });
             await fs.promises.chmod(this.root, 0o700);
             await fs.promises.chmod(directory, 0o700);
@@ -165,13 +172,26 @@ export class WorkflowRunStorage {
         const marker = path.join(directory, "delivery.json");
         try {
             const h = await fs.promises.open(marker, "wx", 0o600);
-            await h.writeFile(json({ version: 1, claimed: true }));
+            await h.writeFile(json({ version: 1, claimed: true, claimedAt: Date.now() }));
             await h.sync();
             await h.close();
             await syncDirectory(directory);
             return true;
         } catch (e: any) {
-            if (e?.code === "EEXIST") return false;
+            if (e?.code === "EEXIST") {
+                const state = await boundedJson(marker);
+                // Delivery cannot be transactional with the external message API. Expiring an
+                // abandoned claim prefers eventual delivery and admits a small duplicate window.
+                if (
+                    state?.claimed &&
+                    !state.delivered &&
+                    (!Number.isFinite(state.claimedAt) || Date.now() - state.claimedAt > 30_000)
+                ) {
+                    await fs.promises.rm(marker, { force: true });
+                    return this.claimDelivery(directory);
+                }
+                return false;
+            }
             throw e;
         }
     }
@@ -198,59 +218,112 @@ export class WorkflowRunStorage {
         const runs: StoredRun[] = [];
         for (const entry of entries) {
             if (!entry.isDirectory() || !RUN_ID.test(entry.name)) continue;
-            const directory = await this.assertDirectory(path.join(project, entry.name));
-            const scriptStat = await fs.promises.lstat(path.join(directory, "workflow.js"));
-            if (scriptStat.isSymbolicLink() || scriptStat.size > MAX_ARTIFACT)
-                throw new Error(`Unsafe workflow source in ${entry.name}.`);
-            const script = await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8"),
-                args = await boundedJson(path.join(directory, "args.json")),
-                meta = await boundedJson(path.join(directory, "launch.json")),
-                snapshot = await boundedJson(path.join(directory, "snapshot.json"));
-            const journalStat = await fs.promises.lstat(path.join(directory, "journal.jsonl"));
-            if (journalStat.isSymbolicLink() || journalStat.size > MAX_ARTIFACT)
-                throw new Error(`Unsafe workflow journal in ${entry.name}.`);
-            const raw = await fs.promises.readFile(path.join(directory, "journal.jsonl"), "utf8");
-            if (raw && !raw.endsWith("\n")) throw new Error(`Truncated workflow journal in ${entry.name}.`);
-            const completions = new Map<string, unknown>();
-            for (const line of raw.split("\n").filter(Boolean)) {
-                let item: any;
-                try {
-                    item = JSON.parse(line);
-                } catch {
-                    throw new Error(`Corrupt workflow journal in ${entry.name}.`);
+            try {
+                const directory = await this.assertDirectory(path.join(project, entry.name));
+                const scriptStat = await fs.promises.lstat(path.join(directory, "workflow.js"));
+                if (scriptStat.isSymbolicLink() || scriptStat.size > MAX_ARTIFACT)
+                    throw new Error(`Unsafe workflow source in ${entry.name}.`);
+                const script = await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8"),
+                    args = await boundedJson(path.join(directory, "args.json")),
+                    meta = await boundedJson(path.join(directory, "launch.json")),
+                    rawSnapshot = await boundedJson(path.join(directory, "snapshot.json")),
+                    snapshot = parseWorkflowRunV1(rawSnapshot);
+                if (!snapshot || snapshot.id !== entry.name)
+                    throw new Error(`Invalid workflow snapshot in ${entry.name}.`);
+                const journalStat = await fs.promises.lstat(path.join(directory, "journal.jsonl"));
+                if (journalStat.isSymbolicLink() || journalStat.size > MAX_ARTIFACT)
+                    throw new Error(`Unsafe workflow journal in ${entry.name}.`);
+                const raw = await fs.promises.readFile(path.join(directory, "journal.jsonl"), "utf8");
+                if (raw && !raw.endsWith("\n")) throw new Error(`Truncated workflow journal in ${entry.name}.`);
+                const completions = new Map<string, unknown>();
+                for (const line of raw.split("\n").filter(Boolean)) {
+                    let item: any;
+                    try {
+                        item = JSON.parse(line);
+                    } catch {
+                        throw new Error(`Corrupt workflow journal in ${entry.name}.`);
+                    }
+                    if (
+                        item?.version !== 1 ||
+                        item.type !== "completed" ||
+                        typeof item.operation !== "string" ||
+                        !item.operation ||
+                        item.operation.length > 256 ||
+                        !Number.isFinite(item.at) ||
+                        completions.has(item.operation)
+                    )
+                        throw new Error(`Invalid workflow journal in ${entry.name}.`);
+                    json(item.value);
+                    completions.set(item.operation, item.value);
                 }
+                const delivery = await boundedJson(path.join(directory, "delivery.json")).catch((e: any) =>
+                    e?.code === "ENOENT" ? {} : Promise.reject(e),
+                );
                 if (
-                    item?.version !== 1 ||
-                    item.type !== "completed" ||
-                    typeof item.operation !== "string" ||
-                    completions.has(item.operation)
+                    delivery.version !== undefined &&
+                    (delivery.version !== 1 ||
+                        (delivery.claimed !== undefined && typeof delivery.claimed !== "boolean") ||
+                        (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean"))
                 )
-                    throw new Error(`Invalid workflow journal in ${entry.name}.`);
-                json(item.value);
-                completions.set(item.operation, item.value);
+                    throw new Error(`Invalid workflow delivery state in ${entry.name}.`);
+                runs.push({
+                    id: entry.name,
+                    directory,
+                    launch: {
+                        name: meta.name ?? snapshot.name,
+                        sessionId: meta.sessionId ?? snapshot.sessionId,
+                        cwd: meta.cwd ?? snapshot.cwd,
+                        script,
+                        args,
+                        policy: meta.policy,
+                        roles: meta.roles ?? [],
+                        models: meta.models ?? [],
+                        limits: meta.limits,
+                        parentRunId: meta.parentRunId,
+                    },
+                    snapshot,
+                    completions,
+                    delivery,
+                });
+            } catch (error) {
+                const timestamp = Date.now();
+                runs.push({
+                    id: entry.name,
+                    directory: path.join(project, entry.name),
+                    launch: {
+                        name: "Corrupt workflow",
+                        sessionId: "unknown",
+                        cwd: await fs.promises.realpath(cwd),
+                        script: "",
+                        policy: {},
+                        roles: [],
+                        models: [],
+                        limits: {},
+                    },
+                    snapshot: {
+                        schema: "pi.workflow",
+                        version: 1,
+                        id: entry.name,
+                        name: "Corrupt workflow",
+                        sessionId: "unknown",
+                        cwd: await fs.promises.realpath(cwd),
+                        status: "failed",
+                        phases: [],
+                        agents: [],
+                        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
+                        limits: { maxConcurrency: 1, maxAgents: 1, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
+                        recentActivity: [],
+                        updatedAt: timestamp,
+                        endedAt: timestamp,
+                        error: `Stored workflow is corrupt and was not executed: ${error instanceof Error ? error.message : String(error)}`.slice(
+                            0,
+                            2000,
+                        ),
+                    },
+                    completions: new Map(),
+                    delivery: {},
+                });
             }
-            const delivery = await boundedJson(path.join(directory, "delivery.json")).catch((e: any) =>
-                e?.code === "ENOENT" ? {} : Promise.reject(e),
-            );
-            runs.push({
-                id: entry.name,
-                directory,
-                launch: {
-                    name: meta.name ?? snapshot.name,
-                    sessionId: meta.sessionId ?? snapshot.sessionId,
-                    cwd: meta.cwd ?? snapshot.cwd,
-                    script,
-                    args,
-                    policy: meta.policy,
-                    roles: meta.roles ?? [],
-                    models: meta.models ?? [],
-                    limits: meta.limits,
-                    parentRunId: meta.parentRunId,
-                },
-                snapshot,
-                completions,
-                delivery,
-            });
         }
         return runs;
     }

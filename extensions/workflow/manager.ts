@@ -4,7 +4,7 @@ import type { WorkflowRunSummaryV1 } from "./protocol.js";
 export interface WorkflowManagerOptions {
     backend: WorkflowBackend;
     emit: (run: WorkflowRunSummaryV1) => void;
-    deliver: (run: WorkflowRunSummaryV1, result?: string) => void;
+    deliver: (run: WorkflowRunSummaryV1, result?: string) => unknown;
 }
 const terminal = (status: string) => status === "succeeded" || status === "failed" || status === "cancelled";
 
@@ -17,15 +17,31 @@ export class WorkflowRunManager {
         this.unsubscribe = options.backend.subscribe((run) => {
             if (this.shuttingDown) return;
             options.emit(run);
-            if (terminal(run.status) && !this.delivered.has(run.id)) {
-                this.delivered.add(run.id);
-                let result: string | undefined;
-                try {
-                    result = options.backend.inspect(run.id).result;
-                } catch {}
-                options.deliver(run, result);
-            }
+            if (terminal(run.status)) void this.deliver(run);
         });
+    }
+    private async deliver(run: WorkflowRunSummaryV1): Promise<void> {
+        if (this.delivered.has(run.id)) return;
+        if (this.options.backend.claimTerminalDelivery && !(await this.options.backend.claimTerminalDelivery(run.id)))
+            return;
+        this.delivered.add(run.id);
+        try {
+            let result: string | undefined;
+            try {
+                result = this.options.backend.inspect(run.id).result;
+            } catch {}
+            await this.options.deliver(run, result);
+            await this.options.backend.markTerminalDelivered?.(run.id);
+        } catch (error) {
+            this.delivered.delete(run.id);
+            await this.options.backend.releaseTerminalDelivery?.(run.id);
+            throw error;
+        }
+    }
+    async initialize(cwd: string): Promise<WorkflowRunSummaryV1[]> {
+        const runs = (await this.options.backend.initialize?.(cwd)) ?? [];
+        await Promise.all(runs.filter((run) => terminal(run.status)).map((run) => this.deliver(run)));
+        return runs;
     }
     launch(input: WorkflowLaunch): Promise<{ runId: string }> {
         return this.options.backend.launch(input);
@@ -36,8 +52,8 @@ export class WorkflowRunManager {
     inspect(id: string) {
         return this.options.backend.inspect(id);
     }
-    control(id: string, action: "pause" | "resume" | "stop" | "restart-agent" | "retry") {
-        return this.options.backend.control(id, action);
+    control(id: string, action: "pause" | "resume" | "stop" | "restart-agent" | "retry", agentId?: string) {
+        return this.options.backend.control(id, { action, agentId });
     }
     async shutdown(): Promise<void> {
         if (this.shuttingDown) return;
