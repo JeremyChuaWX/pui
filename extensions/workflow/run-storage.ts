@@ -8,6 +8,7 @@ import { findRepositoryRoot } from "./storage.js";
 import type { OwnedWorktree } from "./worktree.js";
 
 const MAX_ARTIFACT = 16 * 1024 * 1024;
+const MAX_TERMINAL_ARTIFACT = MAX_ARTIFACT * 2 + 1_024;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
 export interface ImmutableRunLaunch {
     name?: string;
@@ -33,6 +34,12 @@ export interface DeliveryState {
     claimed?: boolean;
     claimedAt?: number;
     owner?: string;
+    pid?: number;
+}
+interface TerminalState {
+    version: 1;
+    result: unknown;
+    summary: WorkflowRunSummaryV1;
 }
 export interface StoredRun {
     id: string;
@@ -46,18 +53,23 @@ export interface StoredRun {
     corrupt?: boolean;
 }
 
-function json(value: unknown): string {
+function json(value: unknown, maximum = MAX_ARTIFACT): string {
     const text = JSON.stringify(value);
     if (text === undefined) throw new Error("Workflow artifact must be JSON-compatible.");
-    if (Buffer.byteLength(text) > MAX_ARTIFACT) throw new Error("Workflow artifact exceeds 16 MiB.");
+    if (Buffer.byteLength(text) > maximum) throw new Error("Workflow artifact exceeds its size limit.");
     return text;
 }
 async function syncDirectory(directory: string) {
-    const handle = await fs.promises.open(directory, "r");
+    let handle: fs.promises.FileHandle | undefined;
     try {
+        handle = await fs.promises.open(directory, "r");
         await handle.sync();
+    } catch (error) {
+        // Windows does not consistently permit opening or syncing directory handles.
+        if (process.platform !== "win32" || !["EISDIR", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""))
+            throw error;
     } finally {
-        await handle.close();
+        await handle?.close();
     }
 }
 async function atomic(file: string, value: unknown) {
@@ -76,9 +88,31 @@ async function atomic(file: string, value: unknown) {
         await fs.promises.rm(temp, { force: true });
     }
 }
-async function boundedJson<T = unknown>(file: string): Promise<T> {
+async function exclusive(file: string, value: unknown, maximum = MAX_ARTIFACT): Promise<boolean> {
+    const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
+    try {
+        const handle = await fs.promises.open(temp, "wx", 0o600);
+        try {
+            await handle.writeFile(json(value, maximum));
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+        try {
+            await fs.promises.link(temp, file);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+            throw error;
+        }
+        await syncDirectory(path.dirname(file));
+        return true;
+    } finally {
+        await fs.promises.rm(temp, { force: true });
+    }
+}
+async function boundedJson<T = unknown>(file: string, maximum = MAX_ARTIFACT): Promise<T> {
     const stat = await fs.promises.lstat(file);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > maximum)
         throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
     try {
         return JSON.parse(await fs.promises.readFile(file, "utf8"));
@@ -86,8 +120,37 @@ async function boundedJson<T = unknown>(file: string): Promise<T> {
         throw new Error(`Corrupt workflow artifact: ${file}`);
     }
 }
+async function readDelivery(
+    file: string,
+): Promise<{ value: DeliveryState & { version?: number }; malformed: boolean }> {
+    let stat: fs.Stats;
+    try {
+        stat = await fs.promises.lstat(file);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return { value: {}, malformed: false };
+        throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
+        throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
+    const text = await fs.promises.readFile(file, "utf8");
+    try {
+        return { value: JSON.parse(text), malformed: false };
+    } catch {
+        // An older claimant could crash between exclusive creation and its write. Keep the run
+        // discoverable so the explicit startup recovery path can quarantine this marker safely.
+        return { value: { claimed: true }, malformed: true };
+    }
+}
 function projectHash(cwd: string) {
     return createHash("sha256").update(cwd).digest("hex");
+}
+function isProcessAlive(pid: number) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
 }
 
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
@@ -172,7 +235,7 @@ export class WorkflowRunStorage {
         await atomic(path.join(directory, "snapshot.json"), snapshot);
     }
     async complete(directory: string, operation: string, value: unknown, at = Date.now()) {
-        if (!operation || operation.length > 1024) throw new Error("Invalid workflow operation identity.");
+        if (!RUN_ID.test(operation)) throw new Error("Invalid workflow operation identity.");
         const line = `${json({ version: 1, type: "completed", operation, value, at } satisfies JournalCompletion)}\n`;
         const file = path.join(await this.assertDirectory(directory), "journal.jsonl"),
             handle = await fs.promises.open(file, "a", 0o600);
@@ -199,47 +262,130 @@ export class WorkflowRunStorage {
         }
     }
     async terminal(directory: string, result: unknown, summary: WorkflowRunSummaryV1) {
-        await this.assertDirectory(directory);
-        // Recovery and the dying host can settle concurrently; the first durable terminal wins.
+        directory = await this.assertDirectory(directory);
+        const expectedId = path.basename(directory),
+            proposedSummary = parseWorkflowRunV1(summary);
+        if (
+            !proposedSummary ||
+            proposedSummary.id !== expectedId ||
+            !["succeeded", "failed", "cancelled"].includes(proposedSummary.status)
+        )
+            throw new Error("Invalid terminal workflow state.");
         const summaryFile = path.join(directory, "summary.json");
+        // Compatibility with runs settled before terminal.json was introduced.
         if (await fs.promises.stat(summaryFile).catch(() => undefined)) return;
-        await atomic(path.join(directory, "result.json"), result);
-        await atomic(summaryFile, summary);
+        json(result);
+        json(summary);
+        const stateFile = path.join(directory, "terminal.json"),
+            proposed = { version: 1, result, summary } satisfies TerminalState,
+            won = await exclusive(stateFile, proposed, MAX_TERMINAL_ARTIFACT),
+            state = won ? proposed : await boundedJson<TerminalState>(stateFile, MAX_TERMINAL_ARTIFACT),
+            parsed = state?.version === 1 ? parseWorkflowRunV1(state.summary) : undefined;
+        if (!parsed || parsed.id !== expectedId || !["succeeded", "failed", "cancelled"].includes(parsed.status))
+            throw new Error("Invalid terminal workflow state.");
+        // The exclusive bundle is the durable winner. Publishing result first ensures readers can
+        // never observe the winning summary without its matching result, and retries repair crashes.
+        await atomic(path.join(directory, "result.json"), state.result);
+        await atomic(summaryFile, state.summary);
     }
     async claimDelivery(directory: string): Promise<boolean> {
         await this.assertDirectory(directory);
-        const marker = path.join(directory, "delivery.json");
+        const marker = path.join(directory, "delivery.json"),
+            temp = path.join(directory, `.delivery.${this.instanceToken}.tmp`);
         try {
-            const h = await fs.promises.open(marker, "wx", 0o600);
-            await h.writeFile(json({ version: 1, claimed: true, claimedAt: Date.now(), owner: this.instanceToken }));
-            await h.sync();
-            await h.close();
+            const handle = await fs.promises.open(temp, "wx", 0o600);
+            try {
+                await handle.writeFile(
+                    json({
+                        version: 1,
+                        claimed: true,
+                        claimedAt: Date.now(),
+                        owner: this.instanceToken,
+                        pid: process.pid,
+                    }),
+                );
+                await handle.sync();
+            } finally {
+                await handle.close();
+            }
+            await fs.promises.link(temp, marker);
             await syncDirectory(directory);
             return true;
-        } catch (e: unknown) {
-            if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-                const state = await boundedJson<DeliveryState>(marker);
-                // A claim owned by another backend process is abandoned on startup/recovery.
-                // The same instance still suppresses duplicate concurrent delivery attempts.
-                if (state?.claimed && !state.delivered && state.owner !== this.instanceToken) {
-                    await fs.promises.rm(marker, { force: true });
-                    return this.claimDelivery(directory);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+            throw error;
+        } finally {
+            await fs.promises.rm(temp, { force: true });
+        }
+    }
+    /** Explicitly recover a stale or interrupted claim; normal claims never steal ownership. */
+    async recoverDeliveryClaim(directory: string, staleAfterMs = 30_000): Promise<boolean> {
+        await this.assertDirectory(directory);
+        const marker = path.join(directory, "delivery.json");
+        let initial: fs.Stats;
+        try {
+            initial = await fs.promises.lstat(marker);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.claimDelivery(directory);
+            throw error;
+        }
+        if (initial.isSymbolicLink() || !initial.isFile() || initial.size > MAX_ARTIFACT)
+            throw new Error(`Unsafe or oversized workflow artifact: ${marker}`);
+        const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined);
+        if (
+            initialState?.delivered ||
+            initialState?.owner === this.instanceToken ||
+            (initialState?.pid !== undefined && isProcessAlive(initialState.pid))
+        )
+            return false;
+        if (initialState?.pid === undefined && Date.now() - initial.mtimeMs < staleAfterMs) return false;
+
+        const quarantine = path.join(directory, `.delivery.recovery.${crypto.randomUUID()}.tmp`);
+        try {
+            try {
+                await fs.promises.rename(marker, quarantine);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.claimDelivery(directory);
+                throw error;
+            }
+            const stat = await fs.promises.lstat(quarantine);
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
+                throw new Error(`Unsafe or oversized workflow artifact: ${quarantine}`);
+            const state = await boundedJson<DeliveryState>(quarantine).catch(() => undefined);
+            const restore = async () => {
+                try {
+                    await fs.promises.link(quarantine, marker);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
                 }
+            };
+            if (
+                state?.delivered ||
+                state?.owner === this.instanceToken ||
+                (state?.pid !== undefined && isProcessAlive(state.pid)) ||
+                (state?.pid === undefined && Date.now() - stat.mtimeMs < staleAfterMs)
+            ) {
+                await restore();
                 return false;
             }
-            throw e;
+            return this.claimDelivery(directory);
+        } finally {
+            await fs.promises.rm(quarantine, { force: true });
         }
     }
     async markDelivered(directory: string) {
-        await atomic(path.join(await this.assertDirectory(directory), "delivery.json"), {
-            version: 1,
-            delivered: true,
-        });
+        const marker = path.join(await this.assertDirectory(directory), "delivery.json"),
+            state = await boundedJson<DeliveryState>(marker);
+        if (state.delivered) return;
+        if (!state.claimed || state.owner !== this.instanceToken)
+            throw new Error("Workflow delivery claim is not owned by this backend.");
+        await atomic(marker, { version: 1, delivered: true });
     }
     async releaseClaim(directory: string) {
         const file = path.join(await this.assertDirectory(directory), "delivery.json");
         const state = await boundedJson<DeliveryState>(file).catch(() => undefined);
-        if (state?.claimed && !state.delivered) await fs.promises.rm(file, { force: true });
+        if (state?.claimed && !state.delivered && state.owner === this.instanceToken)
+            await fs.promises.rm(file, { force: true });
     }
     async discover(cwd: string): Promise<StoredRun[]> {
         const project = await this.project(cwd);
@@ -267,11 +413,33 @@ export class WorkflowRunStorage {
                             cwd?: string;
                         }
                     >(path.join(directory, "launch.json")),
-                    rawSnapshot = await boundedJson(path.join(directory, "summary.json")).catch((e: unknown) =>
-                        (e as NodeJS.ErrnoException).code === "ENOENT"
-                            ? boundedJson(path.join(directory, "snapshot.json"))
-                            : Promise.reject(e),
-                    ),
+                    terminal = await boundedJson<TerminalState>(
+                        path.join(directory, "terminal.json"),
+                        MAX_TERMINAL_ARTIFACT,
+                    ).catch((error: unknown) => {
+                        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+                        throw error;
+                    });
+                if (terminal) {
+                    const terminalSummary = terminal.version === 1 ? parseWorkflowRunV1(terminal.summary) : undefined;
+                    if (
+                        !terminalSummary ||
+                        terminalSummary.id !== entry.name ||
+                        !["succeeded", "failed", "cancelled"].includes(terminalSummary.status)
+                    )
+                        throw new Error(`Invalid terminal workflow state in ${entry.name}.`);
+                    if (!(await fs.promises.stat(path.join(directory, "summary.json")).catch(() => undefined))) {
+                        await atomic(path.join(directory, "result.json"), terminal.result);
+                        await atomic(path.join(directory, "summary.json"), terminal.summary);
+                    }
+                }
+                const rawSnapshot = terminal
+                        ? terminal.summary
+                        : await boundedJson(path.join(directory, "summary.json")).catch((e: unknown) =>
+                              (e as NodeJS.ErrnoException).code === "ENOENT"
+                                  ? boundedJson(path.join(directory, "snapshot.json"))
+                                  : Promise.reject(e),
+                          ),
                     snapshot = parseWorkflowRunV1(rawSnapshot);
                 if (!snapshot || snapshot.id !== entry.name)
                     throw new Error(`Invalid workflow snapshot in ${entry.name}.`);
@@ -321,17 +489,18 @@ export class WorkflowRunStorage {
                     } else if (item.type === "worktree-released") worktrees.delete(item.operation);
                     else throw new Error(`Invalid workflow journal in ${entry.name}.`);
                 }
-                const delivery = await boundedJson<DeliveryState & { version?: number }>(
+                const { value: delivery, malformed: malformedDelivery } = await readDelivery(
                     path.join(directory, "delivery.json"),
-                ).catch((e: unknown): DeliveryState & { version?: number } => {
-                    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
-                    throw e;
-                });
+                );
                 if (
+                    !malformedDelivery &&
                     delivery.version !== undefined &&
                     (delivery.version !== 1 ||
                         (delivery.claimed !== undefined && typeof delivery.claimed !== "boolean") ||
-                        (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean"))
+                        (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean") ||
+                        (delivery.claimedAt !== undefined && !Number.isFinite(delivery.claimedAt)) ||
+                        (delivery.owner !== undefined && typeof delivery.owner !== "string") ||
+                        (delivery.pid !== undefined && (!Number.isInteger(delivery.pid) || delivery.pid <= 0)))
                 )
                     throw new Error(`Invalid workflow delivery state in ${entry.name}.`);
                 runs.push({

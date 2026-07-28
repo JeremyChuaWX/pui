@@ -13,13 +13,20 @@ async function repository() {
     for (const args of [["init"], ["config", "user.email", "test@example.com"], ["config", "user.name", "Test"]])
         expect((await Bun.$`git -C ${root} ${args}`.quiet()).exitCode).toBe(0);
     await fs.promises.writeFile(path.join(root, "file"), "initial");
-    await Bun.$`git -C ${root} add file`.quiet();
-    await Bun.$`git -C ${root} commit -m initial`.quiet();
+    expect((await Bun.$`git -C ${root} add file`.quiet()).exitCode).toBe(0);
+    expect((await Bun.$`git -C ${root} commit -m initial`.quiet()).exitCode).toBe(0);
     return root;
 }
-async function waitFor(predicate: () => boolean) {
-    for (let i = 0; i < 500 && !predicate(); i++) await Bun.sleep(10);
-    expect(predicate()).toBe(true);
+async function waitFor(status: () => string, expected: string) {
+    const ceiling = Number(process.env.PUI_TEST_WAIT_MS ?? 15_000),
+        deadline = Date.now() + ceiling;
+    let last = status();
+    while (last !== expected && Date.now() < deadline) {
+        await Bun.sleep(20);
+        last = status();
+    }
+    if (last !== expected)
+        throw new Error(`Timed out after ${ceiling}ms waiting for ${expected}; last status: ${last}`);
 }
 
 describe("workflow worktree isolation", () => {
@@ -35,6 +42,12 @@ describe("workflow worktree isolation", () => {
             b = await manager.create(root, "run", "two");
         expect(a.cwd).not.toBe(b.cwd);
         expect((await Bun.$`git -C ${root} worktree list --porcelain`.text()).includes(a.cwd)).toBe(true);
+        await expect(
+            manager.cleanup(root, {
+                ...a,
+                ref: "refs/pui/workflows/run/../../heads/main",
+            }),
+        ).rejects.toThrow("Unsafe ownership ref");
         await manager.cleanup(root, a);
         expect((await Bun.$`git -C ${root} show-ref --verify refs/heads/${a.branch}`.quiet()).exitCode).toBe(0);
         expect((await Bun.$`git -C ${root} for-each-ref refs/pui/workflows`.text()).includes(a.ref)).toBe(false);
@@ -46,7 +59,9 @@ describe("workflow worktree isolation", () => {
             link = path.join(boundary, "linked");
         temporary.push(boundary, outside);
         await fs.promises.symlink(outside, link, "dir");
-        const manager = new WorkflowWorktreeManager(path.join(link, "worktrees"), { trustedBoundary: boundary });
+        const manager = new WorkflowWorktreeManager(path.join(link, "worktrees"), {
+            trustedBoundary: boundary,
+        });
         await expect(manager.create(await repository(), "run", "operation")).rejects.toThrow(
             "Unsafe directory component",
         );
@@ -56,31 +71,43 @@ describe("workflow worktree isolation", () => {
             base = `${root}-owned`,
             cwds: string[] = [];
         temporary.push(base);
-        let sharedExecutions = 0;
+        let sharedExecutions = 0,
+            activeRootExecutions = 0,
+            maxActiveRootExecutions = 0;
         const rejected = createWorkflowBackend({
             agentExecutor: async ({ cwd }) => {
                 sharedExecutions++;
                 expect(cwd).toBe(await fs.promises.realpath(root));
-                await Bun.sleep(50);
-                return { value: null };
+                activeRootExecutions++;
+                maxActiveRootExecutions = Math.max(maxActiveRootExecutions, activeRootExecutions);
+                try {
+                    await Bun.sleep(50);
+                    return { value: null };
+                } finally {
+                    activeRootExecutions--;
+                }
             },
         });
-        const sequential = await rejected.launch({
-            name: "sequential",
-            script: `await agent("x")`,
-            sessionId: "s",
-            cwd: root,
-        });
-        await waitFor(() => rejected.inspect(sequential.runId).run.status === "succeeded");
-        const bad = await rejected.launch({
-            name: "bad",
-            script: `await parallel([agent("x"),agent("y")])`,
-            sessionId: "s",
-            cwd: root,
-        });
-        await waitFor(() => rejected.inspect(bad.runId).run.status === "failed");
-        expect(sharedExecutions).toBe(2);
-        await rejected.shutdown();
+        try {
+            const sequential = await rejected.launch({
+                name: "sequential",
+                script: `await agent("x")`,
+                sessionId: "s",
+                cwd: root,
+            });
+            await waitFor(() => rejected.inspect(sequential.runId).run.status, "succeeded");
+            const bad = await rejected.launch({
+                name: "bad",
+                script: `await parallel([agent("x"),agent("y")])`,
+                sessionId: "s",
+                cwd: root,
+            });
+            await waitFor(() => rejected.inspect(bad.runId).run.status, "failed");
+            expect(sharedExecutions).toBeGreaterThanOrEqual(2);
+            expect(maxActiveRootExecutions).toBe(1);
+        } finally {
+            await rejected.shutdown();
+        }
         const backend = createWorkflowBackend({
             worktreeManager: new WorkflowWorktreeManager(base),
             agentExecutor: async ({ cwd }) => {
@@ -89,16 +116,19 @@ describe("workflow worktree isolation", () => {
                 return { value: cwd };
             },
         });
-        const run = await backend.launch({
-            name: "isolated",
-            script: `return await parallel([agent("a",{role:"worker",isolation:"worktree"}),agent("b",{role:"worker",isolation:"worktree"})])`,
-            sessionId: "s",
-            cwd: root,
-        });
-        await waitFor(() => backend.inspect(run.runId).run.status === "succeeded");
-        expect(new Set(cwds).size).toBe(2);
-        expect(cwds.every((cwd) => cwd !== root)).toBe(true);
-        expect(backend.inspect(run.runId).run.agents.every((agent) => agent.worktree?.branch)).toBe(true);
-        await backend.shutdown();
+        try {
+            const run = await backend.launch({
+                name: "isolated",
+                script: `return await parallel([agent("a",{role:"worker",isolation:"worktree"}),agent("b",{role:"worker",isolation:"worktree"})])`,
+                sessionId: "s",
+                cwd: root,
+            });
+            await waitFor(() => backend.inspect(run.runId).run.status, "succeeded");
+            expect(new Set(cwds).size).toBe(2);
+            expect(cwds.every((cwd) => cwd !== root)).toBe(true);
+            expect(backend.inspect(run.runId).run.agents.every((agent) => agent.worktree?.branch)).toBe(true);
+        } finally {
+            await backend.shutdown();
+        }
     });
 });

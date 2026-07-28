@@ -33,6 +33,14 @@ function run(sessionId: string, cwd: string, id = "run-1") {
         updatedAt: 1,
     };
 }
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+        if (Date.now() >= deadline) throw new Error("Timed out waiting for condition");
+        await Bun.sleep(5);
+    }
+}
+
 const envelope = (sessionId: string, cwd: string, type: string, extra: object = {}) => ({
     schema: "pi.workflow.background",
     version: 1,
@@ -100,7 +108,7 @@ describe("PuiController workflow bridge", () => {
                 );
             };
             await h.bind();
-            await Bun.sleep(25);
+            await waitFor(() => h.controller.listWorkflows().some((item) => item.id === "run-1"));
             expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["run-1"]);
             expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
             expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
@@ -114,7 +122,8 @@ describe("PuiController workflow bridge", () => {
                 expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
                 expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
             ]);
-            let saveRequest: any;
+            let saveRequest: any,
+                saveFailure = false;
             h.bus.on("pui.workflow.background.save", (value: any) => {
                 saveRequest = value;
                 h.bus.emit("pui.workflow.background.save.result", {
@@ -124,12 +133,18 @@ describe("PuiController workflow bridge", () => {
                     instanceId: "instance-1",
                     cwd: canonical,
                     requestId: value.requestId,
-                    ok: true,
-                    path: "/saved/review.js",
+                    ...(saveFailure
+                        ? { ok: false, error: "already exists", code: "overwrite_required" }
+                        : { ok: true, path: "/saved/review.js" }),
                 });
             });
             expect(await h.controller.saveWorkflow("run-1", "project")).toBe("/saved/review.js");
             expect(saveRequest).toMatchObject({ runId: "run-1", scope: "project", overwrite: false });
+            saveFailure = true;
+            await expect(h.controller.saveWorkflow("run-1", "project")).rejects.toMatchObject({
+                message: "already exists",
+                code: "overwrite_required",
+            });
 
             const prior = h.controller.snapshot();
             h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
@@ -182,7 +197,6 @@ describe("PuiController workflow bridge", () => {
 
             const raced = ui.confirm("Race", "body", { timeout: 1 });
             const racedDialog = h.controller.snapshot().extensionDialog!;
-            await Bun.sleep(5);
             expect(await raced).toBe(false);
             expect(h.controller.resolveExtensionDialog(racedDialog.id, true)).toBe(false);
 
@@ -245,7 +259,7 @@ describe("PuiController workflow bridge", () => {
             "pui.workflow.background",
             envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "stale") }),
         );
-        await Bun.sleep(25);
+        await waitFor(() => h.controller.listWorkflows().some((item) => item.id === "new"));
         expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["new"]);
 
         const replacement = { ...h.session, sessionId: "session-2" };

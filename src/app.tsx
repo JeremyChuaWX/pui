@@ -2,7 +2,7 @@ import type { BoxRenderable, KeyBinding, KeyEvent, ScrollBoxRenderable, Textarea
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { PuiController } from "./controller.js";
+import { type PuiController, WorkflowSaveError } from "./controller.js";
 import { extensionDialogOwner } from "./dialog-owner.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
@@ -624,7 +624,11 @@ export function App(props: { controller: PuiController }) {
                             props.controller.notify(`Saved workflow to ${saved}.`, "success");
                         } catch (error) {
                             const text = error instanceof Error ? error.message : String(error);
-                            if (!overwrite && text.includes("confirm overwrite")) {
+                            if (
+                                !overwrite &&
+                                error instanceof WorkflowSaveError &&
+                                error.code === "overwrite_required"
+                            ) {
                                 setDialog({
                                     kind: "confirm",
                                     title: "Overwrite workflow?",
@@ -1499,6 +1503,11 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
     const backgroundSubagents = () =>
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
     const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
+    const activeWorkflows = createMemo(() =>
+        props.snapshot.workflows.filter((run) =>
+            ["awaiting_approval", "queued", "running", "paused"].includes(run.status),
+        ),
+    );
 
     return (
         <box
@@ -1589,20 +1598,12 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 </box>
             </Show>
 
-            <Show
-                when={props.snapshot.workflows.some((run) =>
-                    ["awaiting_approval", "queued", "running", "paused"].includes(run.status),
-                )}
-            >
+            <Show when={activeWorkflows().length > 0}>
                 <box marginTop={1}>
                     <text fg={theme.text}>
                         <strong>Workflows</strong>
                     </text>
-                    <For
-                        each={props.snapshot.workflows
-                            .filter((run) => ["awaiting_approval", "queued", "running", "paused"].includes(run.status))
-                            .slice(0, 6)}
-                    >
+                    <For each={activeWorkflows().slice(0, 6)}>
                         {(run) => (
                             <text
                                 fg={workflowStatusTone(run.status) === "warning" ? theme.warning : theme.muted}
@@ -1612,13 +1613,7 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                             </text>
                         )}
                     </For>
-                    <Show
-                        when={
-                            props.snapshot.workflows.filter((run) =>
-                                ["awaiting_approval", "queued", "running", "paused"].includes(run.status),
-                            ).length > 6
-                        }
-                    >
+                    <Show when={activeWorkflows().length > 6}>
                         <text fg={theme.muted}>… more · /workflows</text>
                     </Show>
                 </box>
@@ -1874,7 +1869,11 @@ function Confirmation(props: { state: Extract<DialogState, { kind: "confirm" }>;
 function DialogInput(props: { state: Extract<DialogState, { kind: "input" }>; width: number; onClose: () => void }) {
     const [value, setValue] = createSignal("");
     useKeyboard((key) => {
-        if (key.name === "escape" || (key.ctrl && key.name === "c")) props.onClose();
+        if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+            key.preventDefault();
+            key.stopPropagation();
+            props.onClose();
+        }
     });
     return (
         <box width={props.width} backgroundColor={theme.panel} border borderColor={theme.border} padding={2} gap={1}>

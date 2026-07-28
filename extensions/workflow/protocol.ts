@@ -105,10 +105,17 @@ export interface WorkflowRunDetailsV1 {
     result?: string;
 }
 
-/** Bound producer text at a Unicode code-point boundary; wire parsers reject unbounded input. */
+/** Bound producer text by UTF-16 length without splitting a Unicode code point. */
 export function truncateWorkflowText(value: string, maximum: number): string {
-    const characters = Array.from(value);
-    return characters.length <= maximum ? value : `${characters.slice(0, Math.max(0, maximum - 1)).join("")}…`;
+    const limit = Number.isFinite(maximum) ? Math.floor(maximum) : maximum;
+    if (!limit || limit < 0) return "";
+    if (value.length <= limit) return value;
+    let result = "";
+    for (const character of value) {
+        if (result.length + character.length > limit - 1) break;
+        result += character;
+    }
+    return `${result}…`;
 }
 
 const RUN_STATUSES = new Set<WorkflowRunStatus>([

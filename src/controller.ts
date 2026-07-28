@@ -68,6 +68,16 @@ import {
     type WorkflowState,
 } from "./workflow.js";
 
+export class WorkflowSaveError extends Error {
+    constructor(
+        message: string,
+        readonly code?: "overwrite_required",
+    ) {
+        super(message);
+        this.name = "WorkflowSaveError";
+    }
+}
+
 export interface ControllerOptions {
     cwd: string;
     continueRecent?: boolean;
@@ -876,11 +886,11 @@ export class PuiController {
     }
 
     listWorkflows(): readonly WorkflowRunSummaryV1[] {
-        return this.currentSnapshot.workflows;
+        return [...this.workflowState.runs.values()];
     }
 
     inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
-        return this.currentSnapshot.workflows.find((run) => run.id === runId);
+        return this.workflowState.runs.get(runId);
     }
 
     async controlWorkflowAsync(
@@ -942,7 +952,10 @@ export class PuiController {
             !!this.workflowState.instanceId &&
             !!run &&
             (action !== "restart-agent" || run.agents.some((agent) => agent.id === agentId));
-        if (available) void this.controlWorkflowAsync(runId, action, agentId).catch(() => {});
+        if (available)
+            void this.controlWorkflowAsync(runId, action, agentId).catch((error: unknown) =>
+                this.notify(error instanceof Error ? error.message : String(error), "error"),
+            );
         return available;
     }
     pauseWorkflow(runId: string) {
@@ -1001,7 +1014,7 @@ export class PuiController {
                 if (!value || value.requestId !== requestId) return;
                 cleanup();
                 if (value.ok && value.path) resolve(value.path);
-                else reject(new Error(value.error ?? "Workflow save failed."));
+                else reject(new WorkflowSaveError(value.error ?? "Workflow save failed.", value.code));
             });
             timer = setTimeout(() => cancel(new Error("Workflow save request timed out.")), 5_000);
             const request = parseWorkflowSave(

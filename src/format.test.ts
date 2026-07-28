@@ -151,6 +151,19 @@ describe("pui formatting", () => {
         expect(reconcileDisplayItems([previous], [next])[0]).toBe(next);
     });
 
+    test("reconciles live workflow changes for the same run ID", () => {
+        const run = workflowRun();
+        const launch = { schema: "pi.workflow.launch", version: 1, runId: run.id };
+        const previous = buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [run] })[0];
+        const changed = { ...run, status: "succeeded" as const, updatedAt: run.updatedAt + 1 };
+        const next = buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [changed] })[0];
+
+        expect(previous && "workflowKey" in previous ? previous.workflowKey : undefined).not.toBe(
+            next && "workflowKey" in next ? next.workflowKey : undefined,
+        );
+        expect(reconcileDisplayItems([previous], [next])[0]).toBe(next);
+    });
+
     test("prefers live partial subagent details and reducer-derived running state", () => {
         const call = {
             role: "assistant",

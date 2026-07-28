@@ -141,18 +141,6 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     pi.on("session_start", async (_event, ctx) => {
         sessionId = ctx.sessionManager.getSessionId();
         cwd = await fs.promises.realpath(ctx.cwd);
-        const recovered = await manager.initialize(cwd);
-        for (const run of recovered.filter((item) => !["succeeded", "failed", "cancelled"].includes(item.status))) {
-            const choice = await ctx.ui.select(`Interrupted workflow: ${run.name}`, [
-                "Resume",
-                "Inspect",
-                "Stop",
-                "Later",
-            ]);
-            if (choice === "Resume") await backend.recover?.(run.id);
-            else if (choice === "Inspect") ctx.ui.notify(JSON.stringify(backend.inspect(run.id).run), "info");
-            else if (choice === "Stop") await backend.control(run.id, "stop");
-        }
         unsubscribeControl?.();
         unsubscribeControl = pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
             const control = parseBackgroundWorkflowControl(payload, { sessionId, instanceId, cwd });
@@ -221,12 +209,36 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                         cwd,
                         requestId: value.requestId,
                         ok: false,
+                        ...((error as { code?: unknown })?.code === "overwrite_required"
+                            ? { code: "overwrite_required" as const }
+                            : {}),
                         error: error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000),
                     });
                 }
             })();
         });
+        const recovered = await manager.initialize(cwd);
         emitEnvelope("ready");
+        for (const run of recovered.filter(
+            (item) => !["succeeded", "failed", "cancelled", "timed_out"].includes(item.status),
+        )) {
+            try {
+                const choice = await ctx.ui.select(`Interrupted workflow: ${run.name}`, [
+                    "Resume",
+                    "Inspect",
+                    "Stop",
+                    "Later",
+                ]);
+                if (choice === "Resume") await backend.recover?.(run.id);
+                else if (choice === "Inspect") ctx.ui.notify(JSON.stringify(backend.inspect(run.id).run), "info");
+                else if (choice === "Stop") await backend.control(run.id, "stop");
+            } catch (error) {
+                ctx.ui.notify(
+                    `Could not recover workflow ${run.name}: ${error instanceof Error ? error.message : String(error)}`,
+                    "warning",
+                );
+            }
+        }
         for (const run of manager.list())
             if (run.sessionId === sessionId && run.cwd === cwd) emitEnvelope("upsert", { run });
     });

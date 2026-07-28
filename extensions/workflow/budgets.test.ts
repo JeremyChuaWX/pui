@@ -45,7 +45,7 @@ describe("workflow budgets and pause", () => {
         await waitFor(() => calls === 2);
         await backend.control(runId, "pause");
         for (const release of releases) release();
-        await Bun.sleep(40);
+        await waitFor(() => active === 0 && backend.inspect(runId).run.status === "paused");
         expect(calls).toBe(2);
         expect(valid(backend, runId).status).toBe("paused");
         await backend.control(runId, "resume");

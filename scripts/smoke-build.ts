@@ -43,7 +43,7 @@ try {
     const oldNode = path.join(temp, process.platform === "win32" ? "old-node.cmd" : "old-node");
     await fs.promises.writeFile(
         oldNode,
-        process.platform === "win32" ? "@echo v20.0.0\r\n" : "#!/bin/sh\necho v20.0.0\n",
+        process.platform === "win32" ? "@echo off\r\necho v20.0.0\r\n" : "#!/bin/sh\necho v20.0.0\n",
         { mode: 0o755 },
     );
     const old = run(["--workflow-smoke"], {
@@ -54,7 +54,7 @@ try {
         PATH: "",
     });
     const diagnostic = old.stderr.toString();
-    if (old.exitCode === 0 || !/external Node >=22\.19.*found v20\.0\.0/s.test(diagnostic))
+    if (old.exitCode === 0 || !diagnostic.includes("external Node >=22.19") || !diagnostic.includes("found v20.0.0"))
         throw new Error(`Old Node did not produce an actionable error: ${diagnostic}`);
 } finally {
     await fs.promises.rm(temp, { recursive: true, force: true });

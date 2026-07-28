@@ -17,6 +17,19 @@ export interface WorkflowStorageOptions {
     home?: string;
     repositoryRoot?: (cwd: string) => Promise<string | undefined>;
 }
+export interface SkippedWorkflow {
+    path: string;
+    error: string;
+}
+export type WorkflowDiscoveryResult = SavedWorkflow[] & { skipped: SkippedWorkflow[] };
+export class WorkflowStorageError extends Error {
+    constructor(
+        message: string,
+        readonly code: "overwrite_required",
+    ) {
+        super(message);
+    }
+}
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 export function validateWorkflowName(name: string): void {
@@ -125,7 +138,13 @@ async function assertPlainDirectory(directory: string, boundary: string): Promis
     }
 }
 
-async function readLevel(directory: string, boundary: string, scope: SavedWorkflow["scope"], projectRoot?: string) {
+async function readLevel(
+    directory: string,
+    boundary: string,
+    scope: SavedWorkflow["scope"],
+    skipped: SkippedWorkflow[],
+    projectRoot?: string,
+) {
     try {
         await assertPlainDirectory(directory, boundary);
     } catch (error: unknown) {
@@ -146,7 +165,13 @@ async function readLevel(directory: string, boundary: string, scope: SavedWorkfl
         const script = await fs.promises.readFile(file, "utf8");
         if (Buffer.byteLength(script) > MAX_SAVED_WORKFLOW_BYTES)
             throw new Error(`${file}: workflow exceeds the 64 KiB limit.`);
-        const meta = parseWorkflowMetadata(script, file);
+        let meta: WorkflowMetadata;
+        try {
+            meta = parseWorkflowMetadata(script, file);
+        } catch (error) {
+            skipped.push({ path: file, error: message(error) });
+            continue;
+        }
         const prior = names.get(meta.name);
         if (prior)
             throw new Error(
@@ -158,29 +183,40 @@ async function readLevel(directory: string, boundary: string, scope: SavedWorkfl
     return definitions;
 }
 
-export async function discoverWorkflows(cwd: string, options: WorkflowStorageOptions = {}): Promise<SavedWorkflow[]> {
+export async function discoverWorkflows(
+    cwd: string,
+    options: WorkflowStorageOptions = {},
+): Promise<WorkflowDiscoveryResult> {
     const canonicalCwd = await fs.promises.realpath(cwd);
     const root = await (options.repositoryRoot ?? findRepositoryRoot)(canonicalCwd);
     const found = new Map<string, SavedWorkflow>();
+    const skipped: SkippedWorkflow[] = [];
     if (root) {
         const canonicalRoot = await fs.promises.realpath(root);
         if (path.relative(canonicalRoot, canonicalCwd).startsWith(".."))
             throw new Error("Canonical cwd is outside repository root.");
-        for (let current = canonicalCwd; ; current = path.dirname(current)) {
+        for (let current = canonicalCwd; ; ) {
             for (const workflow of await readLevel(
                 path.join(current, ".pi", "workflows"),
                 canonicalRoot,
                 "project",
+                skipped,
                 canonicalRoot,
             ))
                 if (!found.has(workflow.name)) found.set(workflow.name, workflow);
             if (current === canonicalRoot) break;
+            const parent = path.dirname(current);
+            if (parent === current) throw new Error("Repository root was not reached during workflow discovery.");
+            current = parent;
         }
     }
     const home = await fs.promises.realpath(options.home ?? os.homedir());
-    for (const workflow of await readLevel(path.join(home, ".pi", "agent", "workflows"), home, "personal"))
+    for (const workflow of await readLevel(path.join(home, ".pi", "agent", "workflows"), home, "personal", skipped))
         if (!found.has(workflow.name)) found.set(workflow.name, workflow);
-    return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return Object.assign(
+        [...found.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        { skipped },
+    );
 }
 
 async function ensureSafeDirectory(directory: string, boundary: string, mode: number): Promise<void> {
@@ -229,7 +265,10 @@ export async function saveWorkflow(
         if (existing.isSymbolicLink() || !existing.isFile())
             throw new Error(`Unsafe workflow destination: ${destination}`);
         if (!input.overwrite)
-            throw new Error(`Workflow "${input.name}" already exists; confirm overwrite to replace it.`);
+            throw new WorkflowStorageError(
+                `Workflow "${input.name}" already exists; confirm overwrite to replace it.`,
+                "overwrite_required",
+            );
     } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -244,7 +283,10 @@ export async function saveWorkflow(
                 await fs.promises.link(temp, destination);
             } catch (error: unknown) {
                 if ((error as NodeJS.ErrnoException).code === "EEXIST")
-                    throw new Error(`Workflow "${input.name}" already exists; confirm overwrite to replace it.`);
+                    throw new WorkflowStorageError(
+                        `Workflow "${input.name}" already exists; confirm overwrite to replace it.`,
+                        "overwrite_required",
+                    );
                 throw error;
             }
             await fs.promises.unlink(temp);
@@ -252,6 +294,7 @@ export async function saveWorkflow(
         return destination;
     } catch (error) {
         await fs.promises.rm(temp, { force: true });
+        if (error instanceof WorkflowStorageError) throw error;
         throw new Error(`Could not save workflow "${input.name}": ${message(error)}`);
     }
 }

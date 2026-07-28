@@ -6,33 +6,7 @@ import {
     parseWorkflowRunV1,
     truncateWorkflowText,
 } from "./protocol.js";
-
-export function workflowRun(agentCount = 1): Record<string, any> {
-    const agents = Array.from({ length: agentCount }, (_, index) => ({
-        id: `agent-${index}`,
-        label: `Agent ${index}`,
-        role: "worker",
-        status: "running",
-        updatedAt: 2,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
-        recentActivity: [],
-    }));
-    return {
-        schema: "pi.workflow",
-        version: 1,
-        id: "run-1",
-        name: "Review",
-        sessionId: "session-1",
-        cwd: "/canonical/repo",
-        status: "running",
-        phases: [{ id: "phase-1", name: "Review", status: "running", updatedAt: 2, agentIds: agents.map((a) => a.id) }],
-        agents,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
-        limits: { maxConcurrency: 4, maxAgents: 1_000, timeoutMs: 60_000, maxTokens: 0, maxCost: 0 },
-        recentActivity: [],
-        updatedAt: 2,
-    };
-}
+import { workflowRun } from "./workflow-fixture.js";
 
 describe("workflow v1 protocol", () => {
     test("accepts a bounded synthetic 1,000-agent authoritative snapshot", () => {
@@ -50,10 +24,29 @@ describe("workflow v1 protocol", () => {
         expect(parseWorkflowRunV1({ ...run, agents: [run.agents[0], run.agents[0]] })).toBeUndefined();
         run.agents[0].output = "x".repeat(MAX_WORKFLOW_DETAIL + 1);
         expect(parseWorkflowRunV1(run)).toBeUndefined();
+
+        const worktree = workflowRun();
+        worktree.agents[0].worktree = { cwd: "/tmp/worktree", branch: "workflow/run-1" };
+        expect(parseWorkflowRunV1(worktree)).toBeDefined();
+        for (const malformed of [
+            { cwd: "/tmp/worktree" },
+            { branch: "workflow/run-1" },
+            { cwd: "", branch: "workflow/run-1" },
+            { cwd: "/tmp/worktree", branch: 1 },
+        ]) {
+            worktree.agents[0].worktree = malformed;
+            expect(parseWorkflowRunV1(worktree)).toBeUndefined();
+        }
     });
 
     test("bounds producer text without splitting Unicode code points", () => {
-        expect(truncateWorkflowText("A😀界B", 3)).toBe("A😀…");
+        expect(truncateWorkflowText("A😀界B", 3)).toBe("A…");
+        expect(truncateWorkflowText("😀x", 2)).toBe("…");
+        expect(truncateWorkflowText("😀x", 0)).toBe("");
+        expect(truncateWorkflowText("😀x", -1)).toBe("");
+        expect(truncateWorkflowText("😀x", 0.5)).toBe("");
+        expect(truncateWorkflowText("😀x", Number.NaN)).toBe("");
+        expect(truncateWorkflowText("😀", 2)).toBe("😀");
         const run = workflowRun();
         expect(
             parseWorkflowDetailsV1({

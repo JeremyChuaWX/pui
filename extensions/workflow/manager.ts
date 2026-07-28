@@ -25,12 +25,18 @@ export class WorkflowRunManager {
                 );
         });
     }
-    private async deliver(run: WorkflowRunSummaryV1): Promise<void> {
+    private async deliver(run: WorkflowRunSummaryV1, recovery = false): Promise<void> {
         if (this.delivered.has(run.id)) return;
-        if (this.options.backend.claimTerminalDelivery && !(await this.options.backend.claimTerminalDelivery(run.id)))
-            return;
         this.delivered.add(run.id);
+        let claimed = !this.options.backend.claimTerminalDelivery;
         try {
+            if (this.options.backend.claimTerminalDelivery) {
+                claimed = await this.options.backend.claimTerminalDelivery(run.id, { recovery });
+                if (!claimed) {
+                    this.delivered.delete(run.id);
+                    return;
+                }
+            }
             let result: string | undefined;
             try {
                 result = this.options.backend.inspect(run.id).result;
@@ -39,13 +45,13 @@ export class WorkflowRunManager {
             await this.options.backend.markTerminalDelivered?.(run.id);
         } catch (error) {
             this.delivered.delete(run.id);
-            await this.options.backend.releaseTerminalDelivery?.(run.id);
+            if (claimed) await this.options.backend.releaseTerminalDelivery?.(run.id);
             throw error;
         }
     }
     async initialize(cwd: string): Promise<WorkflowRunSummaryV1[]> {
         const runs = (await this.options.backend.initialize?.(cwd)) ?? [];
-        await Promise.all(runs.filter((run) => terminal(run.status)).map((run) => this.deliver(run)));
+        await Promise.all(runs.filter((run) => terminal(run.status)).map((run) => this.deliver(run, true)));
         return runs;
     }
     launch(input: WorkflowLaunch): Promise<{ runId: string }> {

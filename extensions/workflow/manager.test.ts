@@ -50,6 +50,52 @@ test("manager delivers a repeated terminal snapshot exactly once and shuts backe
     expect(unsubscribed).toBe(1);
 });
 
+test("reserves a run while a terminal delivery claim is pending", async () => {
+    let listener: (run: WorkflowRunSummaryV1) => void = () => {};
+    let resolveClaim: (claimed: boolean) => void = () => {};
+    const claim = new Promise<boolean>((resolve) => {
+        resolveClaim = resolve;
+    });
+    let claims = 0;
+    let deliveries = 0;
+    let resolveDelivery: () => void = () => {};
+    const delivered = new Promise<void>((resolve) => {
+        resolveDelivery = resolve;
+    });
+    const backend: WorkflowBackend = {
+        initialize: async () => [run("succeeded")],
+        launch: async () => ({ runId: "r" }),
+        list: () => [],
+        inspect: () => ({ run: run("succeeded"), script: "", result: "ok" }),
+        subscribe: (fn) => {
+            listener = fn;
+            return () => {};
+        },
+        control: async () => undefined,
+        claimTerminalDelivery: async () => {
+            claims++;
+            return claim;
+        },
+        shutdown: async () => {},
+    };
+    const manager = new WorkflowRunManager({
+        backend,
+        emit: () => {},
+        deliver: () => {
+            deliveries++;
+            resolveDelivery();
+        },
+    });
+
+    listener(run("succeeded"));
+    await manager.initialize("/x");
+    expect(claims).toBe(1);
+    resolveClaim(true);
+    await delivered;
+    expect(deliveries).toBe(1);
+    await manager.shutdown();
+});
+
 test("durably delivers recovered terminal runs across storage instances", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-delivery-"));
     const project = path.join(temp, "project");
@@ -101,7 +147,18 @@ test("durably delivers recovered terminal runs across storage instances", async 
         expect(deliveries).toEqual([JSON.stringify(result)]);
 
         const claimedDirectory = await persist("abandoned-claim", "ready");
-        expect(await storageA.claimDelivery(claimedDirectory)).toBe(true);
+        await fs.promises.writeFile(
+            path.join(claimedDirectory, "delivery.json"),
+            JSON.stringify({
+                version: 1,
+                claimed: true,
+                claimedAt: Date.now() - 60_000,
+                owner: "stopped-host",
+                pid: 2_147_483_647,
+            }),
+        );
+        const stale = new Date(Date.now() - 60_000);
+        await fs.promises.utimes(path.join(claimedDirectory, "delivery.json"), stale, stale);
         const claimedDeliveries: unknown[] = [];
         await manager(new WorkflowRunStorage(root), (_run, value) => claimedDeliveries.push(value)).initialize(project);
         expect(claimedDeliveries).toEqual([JSON.stringify("ready")]);

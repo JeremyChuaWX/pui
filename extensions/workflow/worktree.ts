@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+const OWNED_REF = /^refs\/pui\/workflows\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const OUTPUT_LIMIT = 16 * 1024;
 export interface WorktreeManagerOptions {
     git?: string;
@@ -31,10 +32,16 @@ export class WorkflowWorktreeManager {
     }
     private command(cwd: string, args: string[]): Promise<string> {
         return new Promise((resolve, reject) => {
+            const env = { ...process.env };
+            delete env.GIT_DIR;
+            delete env.GIT_WORK_TREE;
+            delete env.GIT_INDEX_FILE;
             const child = spawn(this.gitExecutable, args, {
                 cwd,
+                env,
                 stdio: ["ignore", "pipe", "pipe"],
                 detached: process.platform !== "win32",
+                windowsHide: true,
             });
             let out = "",
                 err = "",
@@ -52,10 +59,13 @@ export class WorkflowWorktreeManager {
                         : child.kill("SIGKILL");
                 } catch {}
             };
-            const timer = setTimeout(() => {
-                kill();
-                finish(new Error(`git ${args[0]} timed out`));
-            }, this.timeoutMs);
+            const timer = setTimeout(
+                () => {
+                    kill();
+                    finish(new Error(`git ${args[0]} timed out`));
+                },
+                args[0] === "worktree" && args[1] === "add" ? this.timeoutMs * 6 : this.timeoutMs,
+            );
             child.stdout.on("data", (c) => (out = `${out}${c}`.slice(-OUTPUT_LIMIT)));
             child.stderr.on("data", (c) => (err = `${err}${c}`.slice(-OUTPUT_LIMIT)));
             child.once("error", (e) => finish(e));
@@ -117,8 +127,7 @@ export class WorkflowWorktreeManager {
         }
     }
     async cleanup(repository: string, owned: OwnedWorktree): Promise<void> {
-        if (!SAFE.test(owned.ref.split("/").at(-1) ?? "") || !owned.ref.startsWith("refs/pui/workflows/"))
-            throw new Error("Unsafe ownership ref.");
+        if (!OWNED_REF.test(owned.ref)) throw new Error("Unsafe ownership ref.");
         const root = await this.repository(repository),
             base = await this.canonicalBase(),
             resolved = path.resolve(owned.cwd),

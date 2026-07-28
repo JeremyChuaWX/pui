@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { WorkflowRunStorage } from "./run-storage.js";
 
-const summary: any = {
+const makeSummary = (cwd: string, overrides: Record<string, unknown> = {}): any => ({
     schema: "pi.workflow",
     version: 1,
     id: "run-1",
     name: "x",
     sessionId: "s",
-    cwd: "",
+    cwd,
     status: "running",
     phases: [],
     agents: [],
@@ -18,13 +18,14 @@ const summary: any = {
     limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
     recentActivity: [],
     updatedAt: 1,
-};
+    ...overrides,
+});
 test("durably stores immutable launch, fsynced completions, snapshots and delivery claims", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-storage-")),
         project = path.join(temp, "project");
     await fs.promises.mkdir(project);
-    const storage = new WorkflowRunStorage(path.join(temp, "runs"));
-    summary.cwd = project;
+    const storage = new WorkflowRunStorage(path.join(temp, "runs")),
+        summary = makeSummary(project);
     try {
         const directory = await storage.create(
             project,
@@ -33,6 +34,10 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
             summary,
         );
         await storage.complete(directory, "agent-1", { ok: true });
+        await expect(storage.complete(directory, "agent/2", null)).rejects.toThrow("Invalid workflow operation");
+        await expect(storage.complete(directory, `a${"x".repeat(256)}`, null)).rejects.toThrow(
+            "Invalid workflow operation",
+        );
         const [run] = await storage.discover(project);
         expect(run?.launch.script).toBe("return 1");
         expect(run?.completions.get("agent-1")).toEqual({ ok: true });
@@ -45,6 +50,86 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
+test("does not steal a competing live claim and explicitly recovers an interrupted claim", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-claims-")),
+        project = path.join(temp, "project"),
+        root = path.join(temp, "runs");
+    await fs.promises.mkdir(project);
+    const first = new WorkflowRunStorage(root),
+        second = new WorkflowRunStorage(root);
+    try {
+        const directory = await first.create(
+            project,
+            "run-1",
+            { script: "", policy: {}, roles: [], models: [], limits: {} },
+            makeSummary(project),
+        );
+        expect(await first.claimDelivery(directory)).toBe(true);
+        expect(await second.claimDelivery(directory)).toBe(false);
+        expect(await second.recoverDeliveryClaim(directory, 0)).toBe(false);
+        await first.releaseClaim(directory);
+        await fs.promises.writeFile(
+            path.join(directory, "delivery.json"),
+            JSON.stringify({
+                version: 1,
+                claimed: true,
+                claimedAt: Date.now(),
+                owner: "stopped-host",
+                pid: 2_147_483_647,
+            }),
+        );
+        expect(await second.recoverDeliveryClaim(directory, 60_000)).toBe(true);
+        await second.releaseClaim(directory);
+        await first.terminal(directory, "done", makeSummary(project, { status: "succeeded", endedAt: Date.now() }));
+
+        const marker = path.join(directory, "delivery.json");
+        await fs.promises.writeFile(marker, "{");
+        const old = new Date(Date.now() - 60_000);
+        await fs.promises.utimes(marker, old, old);
+        const [stored] = await second.discover(project);
+        expect(stored?.corrupt).toBeUndefined();
+        expect(stored?.snapshot.status).toBe("succeeded");
+        expect(await second.claimDelivery(directory)).toBe(false);
+        expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
+test("publishes exactly one matching terminal result and summary under concurrency", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-terminal-")),
+        project = path.join(temp, "project"),
+        root = path.join(temp, "runs");
+    await fs.promises.mkdir(project);
+    const first = new WorkflowRunStorage(root),
+        second = new WorkflowRunStorage(root);
+    try {
+        const directory = await first.create(
+            project,
+            "run-1",
+            { script: "", policy: {}, roles: [], models: [], limits: {} },
+            makeSummary(project),
+        );
+        await Promise.all([
+            first.terminal(directory, { winner: "a" }, makeSummary(project, { status: "succeeded", winner: "a" })),
+            second.terminal(directory, { winner: "b" }, makeSummary(project, { status: "succeeded", winner: "b" })),
+        ]);
+        let publishedSummary = JSON.parse(await fs.promises.readFile(path.join(directory, "summary.json"), "utf8"));
+        let publishedResult = JSON.parse(await fs.promises.readFile(path.join(directory, "result.json"), "utf8"));
+        expect(publishedResult.winner).toBe(publishedSummary.winner);
+
+        await fs.promises.rm(path.join(directory, "summary.json"));
+        await fs.promises.rm(path.join(directory, "result.json"));
+        const recovered = (await second.discover(project))[0];
+        publishedSummary = JSON.parse(await fs.promises.readFile(path.join(directory, "summary.json"), "utf8"));
+        publishedResult = JSON.parse(await fs.promises.readFile(path.join(directory, "result.json"), "utf8"));
+        expect(recovered?.snapshot).toEqual(publishedSummary);
+        expect(publishedResult.winner).toBe(publishedSummary.winner);
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("rejects symlinked storage ancestors and project directories", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-boundary-")),
         project = path.join(temp, "project"),
@@ -59,7 +144,7 @@ test("rejects symlinked storage ancestors and project directories", async () => 
                 project,
                 "run-1",
                 { script: "", policy: {}, roles: [], models: [], limits: {} },
-                { ...summary, cwd: project },
+                makeSummary(project),
             ),
         ).rejects.toThrow("Unsafe directory component");
         await fs.promises.rm(path.join(temp, ".pi"));
@@ -69,7 +154,7 @@ test("rejects symlinked storage ancestors and project directories", async () => 
             project,
             "run-1",
             { script: "", policy: {}, roles: [], models: [], limits: {} },
-            { ...summary, cwd: project },
+            makeSummary(project),
         );
         const hashedProject = path.dirname(directory);
         await fs.promises.rm(hashedProject, { recursive: true });
@@ -79,7 +164,7 @@ test("rejects symlinked storage ancestors and project directories", async () => 
                 project,
                 "run-2",
                 { script: "", policy: {}, roles: [], models: [], limits: {} },
-                { ...summary, id: "run-2", cwd: project },
+                makeSummary(project, { id: "run-2" }),
             ),
         ).rejects.toThrow("Unsafe directory component");
     } finally {
@@ -92,13 +177,12 @@ test("isolates a corrupt journal as a bounded failed diagnostic", async () => {
         project = path.join(temp, "project");
     await fs.promises.mkdir(project);
     const storage = new WorkflowRunStorage(path.join(temp, "runs"));
-    summary.cwd = project;
     try {
         const d = await storage.create(
             project,
             "run-1",
             { script: "return 1", policy: {}, roles: [], models: [], limits: {} },
-            summary,
+            makeSummary(project),
         );
         await fs.promises.appendFile(path.join(d, "journal.jsonl"), "{");
         const [corrupt] = await storage.discover(project);

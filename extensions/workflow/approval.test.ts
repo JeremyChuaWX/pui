@@ -26,6 +26,36 @@ describe("FileWorkflowApprovalStore", () => {
         }
     });
 
+    test("serializes concurrent additions without losing keys", async () => {
+        const root = await temporary();
+        const file = path.join(root, "store.json");
+        const stores = [new FileWorkflowApprovalStore(file, root), new FileWorkflowApprovalStore(file, root)];
+        try {
+            const keys = Array.from({ length: 100 }, (_, index) => `key-${index}`);
+            await Promise.all(keys.map((key, index) => stores[index % stores.length]!.add(key)));
+            expect(new Set(JSON.parse(await fs.promises.readFile(file, "utf8")).keys)).toEqual(new Set(keys));
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("rejects writes beyond the key cap without corrupting the store", async () => {
+        const root = await temporary();
+        const file = path.join(root, "store.json");
+        const keys = Array.from({ length: 10_000 }, (_, index) => `key-${index}`);
+        try {
+            await fs.promises.writeFile(file, JSON.stringify({ version: 1, keys }));
+            const store = new FileWorkflowApprovalStore(file, root);
+            await expect(store.add("overflow")).rejects.toThrow("limited to 10,000 keys");
+            expect(await store.has(keys[0])).toBe(true);
+            await store.add(keys[0]);
+            await fs.promises.writeFile(file, JSON.stringify({ version: 1, keys: [...keys, "overflow"] }));
+            await expect(store.has(keys[0])).rejects.toThrow("Corrupt workflow approval store");
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("fails closed on corruption and bounds, and writes privately and atomically", async () => {
         const root = await temporary();
         const file = path.join(root, "private", "store.json");

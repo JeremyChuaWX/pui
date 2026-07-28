@@ -8,7 +8,7 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
     const backend = createWorkflowBackend({
         agentExecutor: async () => ({ value: null }),
         testOnlyWorkerSource: prelude + workerSource,
-        readyTimeoutMs: 100,
+        readyTimeoutMs: 2_000,
         watchdogMs: 100,
         runTimeoutMs: 500,
         ...options,

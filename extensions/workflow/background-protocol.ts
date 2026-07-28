@@ -12,6 +12,13 @@ const MAX_ID = 256;
 const MAX_CWD = 4_000;
 
 export type WorkflowControlAction = "pause" | "resume" | "stop" | "restart-agent" | "retry";
+const WORKFLOW_CONTROL_ACTIONS: ReadonlySet<WorkflowControlAction> = new Set([
+    "pause",
+    "resume",
+    "stop",
+    "restart-agent",
+    "retry",
+]);
 
 export interface BackgroundWorkflowEventV1 {
     schema: typeof BACKGROUND_WORKFLOW_SCHEMA;
@@ -68,6 +75,7 @@ export interface BackgroundWorkflowSaveResultV1 {
     ok: boolean;
     path?: string;
     error?: string;
+    code?: "overwrite_required";
 }
 
 export interface WorkflowRoute {
@@ -151,8 +159,13 @@ export function parseBackgroundWorkflowSaveResult(
     )
         return undefined;
     if (value.ok) {
-        if (!identity(value.path, MAX_CWD) || value.error !== undefined) return undefined;
-    } else if (!identity(value.error, 2_000) || value.path !== undefined) return undefined;
+        if (!identity(value.path, MAX_CWD) || value.error !== undefined || value.code !== undefined) return undefined;
+    } else if (
+        !identity(value.error, 2_000) ||
+        value.path !== undefined ||
+        (value.code !== undefined && value.code !== "overwrite_required")
+    )
+        return undefined;
     return value as unknown as BackgroundWorkflowSaveResultV1;
 }
 
@@ -167,9 +180,7 @@ export function parseBackgroundWorkflowControl(
         !routed(value, route) ||
         !identity(value.requestId) ||
         !identity(value.runId) ||
-        !new Set<WorkflowControlAction>(["pause", "resume", "stop", "restart-agent", "retry"]).has(
-            value.action as WorkflowControlAction,
-        )
+        !WORKFLOW_CONTROL_ACTIONS.has(value.action as WorkflowControlAction)
     )
         return undefined;
     if (value.action === "restart-agent") {

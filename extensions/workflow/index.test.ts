@@ -23,6 +23,7 @@ const summary = (status: "running" | "succeeded") => ({
 
 function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
     const handlers = new Map<string, (...args: any[]) => any>(),
+        eventHandlers = new Map<string, (payload: any) => void>(),
         emitted: any[] = [],
         messages: any[] = [],
         launches: any[] = [];
@@ -59,7 +60,13 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
             command = value;
         },
         sendMessage: (message: any) => messages.push(message),
-        events: { emit: (channel: string, payload: any) => emitted.push([channel, payload]), on: () => () => {} },
+        events: {
+            emit: (channel: string, payload: any) => emitted.push([channel, payload]),
+            on: (channel: string, fn: (payload: any) => void) => {
+                eventHandlers.set(channel, fn);
+                return () => eventHandlers.delete(channel);
+            },
+        },
     };
     registerWorkflowExtension(pi, {
         backend,
@@ -69,6 +76,7 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
     });
     return {
         handlers,
+        eventHandlers,
         emitted,
         messages,
         launches,
@@ -82,6 +90,14 @@ function fixture(enabled: boolean, dependencies: Record<string, unknown> = {}) {
         emitRun: (run: any) => listener?.(run),
         shutdowns: () => shutdowns,
     };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+        if (Date.now() >= deadline) throw new Error("Timed out waiting for workflow extension event.");
+        await Bun.sleep(5);
+    }
 }
 
 describe("workflow extension", () => {
@@ -122,6 +138,89 @@ describe("workflow extension", () => {
         await f.handlers.get("session_shutdown")!();
         expect(f.shutdowns()).toBe(1);
         expect(f.emitted.at(-1)?.[1].type).toBe("reset");
+    });
+
+    test("control and save channels return routed success and bounded structured failures", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
+        const longError = "x".repeat(3_000);
+        try {
+            const backend = {
+                async control(_id: string, request: { action: string }) {
+                    if (request.action === "pause") return { runId: "linked-run" };
+                    throw new Error(longError);
+                },
+                inspect: () => ({
+                    run: summary("succeeded"),
+                    script: `export const meta={name:"demo",description:"Demo"}; return 1`,
+                }),
+            };
+            const f = fixture(true, { backend: { ...fixture(true).backend, ...backend } });
+            await f.handlers.get("session_start")!(
+                {},
+                {
+                    cwd: root,
+                    sessionManager: { getSessionId: () => "session-1" },
+                    ui: { select: async () => "Later", notify: () => {} },
+                },
+            );
+            const route = {
+                version: 1,
+                sessionId: "session-1",
+                instanceId: "instance-1",
+                cwd: await fs.promises.realpath(root),
+                runId: "run-1",
+            };
+            f.eventHandlers.get("pui.workflow.background.control")!({
+                ...route,
+                schema: "pi.workflow.background.control",
+                requestId: "control-ok",
+                action: "pause",
+            });
+            f.eventHandlers.get("pui.workflow.background.control")!({
+                ...route,
+                schema: "pi.workflow.background.control",
+                requestId: "control-fail",
+                action: "stop",
+            });
+            f.eventHandlers.get("pui.workflow.background.save")!({
+                ...route,
+                schema: "pi.workflow.background.save",
+                requestId: "save-ok",
+                scope: "project",
+                overwrite: false,
+            });
+            await waitFor(() =>
+                ["control-ok", "control-fail", "save-ok"].every((requestId) =>
+                    f.emitted.some(([, value]) => value.requestId === requestId),
+                ),
+            );
+            expect(f.emitted.find(([, value]) => value.requestId === "control-ok")?.[1]).toMatchObject({
+                ok: true,
+                linkedRunId: "linked-run",
+            });
+            expect(f.emitted.find(([, value]) => value.requestId === "control-fail")?.[1]).toMatchObject({
+                ok: false,
+                error: "x".repeat(2_000),
+            });
+            expect(f.emitted.find(([, value]) => value.requestId === "save-ok")?.[1]).toMatchObject({
+                ok: true,
+                path: path.join(route.cwd, ".pi/workflows/demo.js"),
+            });
+            f.eventHandlers.get("pui.workflow.background.save")!({
+                ...route,
+                schema: "pi.workflow.background.save",
+                requestId: "save-fail",
+                scope: "project",
+                overwrite: false,
+            });
+            await waitFor(() => f.emitted.some(([, value]) => value.requestId === "save-fail"));
+            expect(f.emitted.find(([, value]) => value.requestId === "save-fail")?.[1]).toMatchObject({
+                ok: false,
+                code: "overwrite_required",
+            });
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
     });
 
     test("saved invocation passes structured args, requires project trust, completes commands, and reapproves changed bytes", async () => {

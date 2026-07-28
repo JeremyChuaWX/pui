@@ -7,6 +7,7 @@ export interface WorkflowApprovalStore {
     has(key: string): Promise<boolean>;
     add(key: string): Promise<void>;
 }
+const approvalWrites = new Map<string, Promise<void>>();
 export function workflowApprovalKey(project: string, name: string, script: string): string {
     const hash = createHash("sha256").update(Buffer.from(script)).digest("hex");
     return `${project}\0${name}\0${hash}`;
@@ -58,19 +59,33 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
         return (await this.read()).has(key);
     }
     async add(key: string) {
-        const keys = await this.read();
-        keys.add(key);
-        await this.safeParents(true);
-        const temp = `${this.file}.${crypto.randomUUID()}.tmp`;
-        try {
-            await fs.promises.writeFile(temp, JSON.stringify({ version: 1, keys: [...keys].sort() }), {
-                mode: 0o600,
-                flag: "wx",
+        const identity = path.resolve(this.file),
+            previous = approvalWrites.get(identity) ?? Promise.resolve(),
+            write = previous.then(async () => {
+                const keys = await this.read();
+                if (keys.has(key)) return;
+                if (key.length > 8_000) throw new Error("Workflow approval key exceeds 8,000 characters.");
+                if (keys.size >= 10_000) throw new Error("Workflow approval store is limited to 10,000 keys.");
+                keys.add(key);
+                await this.safeParents(true);
+                const temp = `${this.file}.${crypto.randomUUID()}.tmp`;
+                try {
+                    await fs.promises.writeFile(temp, JSON.stringify({ version: 1, keys: [...keys].sort() }), {
+                        mode: 0o600,
+                        flag: "wx",
+                    });
+                    await fs.promises.rename(temp, this.file);
+                    await fs.promises.chmod(this.file, 0o600);
+                } finally {
+                    await fs.promises.rm(temp, { force: true });
+                }
             });
-            await fs.promises.rename(temp, this.file);
-            await fs.promises.chmod(this.file, 0o600);
+        const settled = write.catch(() => {});
+        approvalWrites.set(identity, settled);
+        try {
+            await write;
         } finally {
-            await fs.promises.rm(temp, { force: true });
+            if (approvalWrites.get(identity) === settled) approvalWrites.delete(identity);
         }
     }
 }

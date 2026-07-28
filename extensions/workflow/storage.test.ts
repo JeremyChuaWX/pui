@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverWorkflows, parseWorkflowMetadata, saveWorkflow } from "./storage.js";
+import { discoverWorkflows, MAX_SAVED_WORKFLOW_BYTES, parseWorkflowMetadata, saveWorkflow } from "./storage.js";
 
 const source = (name: string, marker = name) =>
     `export const meta = {name: "${name}", description: "${marker}"};\nglobalThis.__discoveryExecuted=true; return args;`;
@@ -69,6 +69,29 @@ describe("saved workflow storage", () => {
             await fs.promises.rm(home, { recursive: true, force: true });
         }
     });
+    test("skips malformed metadata but reports it, while preserving hard file safety failures", async () => {
+        const root = await fixture(),
+            home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-home-"));
+        try {
+            const directory = path.join(root, ".pi/workflows");
+            await put(directory, "good.js", source("good"));
+            await put(directory, "bad.js", "export const meta = nope");
+            const found = await discoverWorkflows(root, { home });
+            expect(found.map((item) => item.name)).toEqual(["good"]);
+            expect(found.skipped).toEqual([
+                expect.objectContaining({ path: path.join(await fs.promises.realpath(directory), "bad.js") }),
+            ]);
+            await put(directory, "large.js", "x".repeat(MAX_SAVED_WORKFLOW_BYTES + 1));
+            await expect(discoverWorkflows(root, { home })).rejects.toThrow("64 KiB");
+            await fs.promises.rm(path.join(directory, "large.js"));
+            await fs.promises.symlink(path.join(home, "target"), path.join(directory, "link.js"));
+            await expect(discoverWorkflows(root, { home })).rejects.toThrow("symlink");
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+            await fs.promises.rm(home, { recursive: true, force: true });
+        }
+    });
+
     test("atomically saves immutable bytes, requires overwrite, and rejects directory/file symlinks", async () => {
         const root = await fixture(),
             home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-home-"));

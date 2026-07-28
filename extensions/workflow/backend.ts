@@ -105,7 +105,7 @@ export interface WorkflowBackend {
             | "retry"
             | { action: "pause" | "resume" | "stop" | "restart-agent" | "retry"; agentId?: string },
     ): Promise<{ runId?: string } | undefined>;
-    claimTerminalDelivery?(id: string): Promise<boolean>;
+    claimTerminalDelivery?(id: string, options?: { recovery?: boolean }): Promise<boolean>;
     markTerminalDelivered?(id: string): Promise<void>;
     releaseTerminalDelivery?(id: string): Promise<void>;
     shutdown(): Promise<void>;
@@ -217,7 +217,14 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
 }
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, ["--version"], { stdio: ["ignore", "pipe", "pipe"], env: environment });
+        const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
+            executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
+            args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"],
+            child = spawn(executable, args, {
+                stdio: ["ignore", "pipe", "pipe"],
+                env: environment,
+                windowsHide: true,
+            });
         let output = "",
             settled = false;
         const finish = (error?: Error) => {
@@ -428,8 +435,14 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 phaseId: string | undefined,
                 ready = false,
                 lastBeat = now();
-            const send = (frame: unknown) => child.stdin.write(`${bounded(frame)}\n`);
-            const tracked = <T>(p: Promise<T>) => p;
+            child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+                if (error.code !== "EPIPE") finish("failed", errorMessage(error));
+            });
+            const send = (frame: unknown) => {
+                const payload = `${bounded(frame)}\n`;
+                if (!child.stdin.writable || child.stdin.writableEnded || child.stdin.destroyed) return false;
+                return child.stdin.write(payload);
+            };
             const exact = (frame: Record<string, unknown>, keys: readonly string[]) =>
                 Object.keys(frame).length === keys.length && keys.every((key) => key in frame);
             const handle = async (inputFrame: unknown) => {
@@ -752,7 +765,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     buffer = buffer.slice(index + 1);
                     index = buffer.indexOf("\n");
                     try {
-                        void tracked(handle(JSON.parse(line))).catch((e) => {
+                        void handle(JSON.parse(line)).catch((e) => {
                             finish("failed", errorMessage(e));
                             active.controller.abort();
                         });
@@ -1051,11 +1064,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             } else throw new Error(`Unknown workflow control: ${action}`);
             return {};
         },
-        async claimTerminalDelivery(id) {
+        async claimTerminalDelivery(id, claimOptions) {
             const run = runs.get(id);
             if (!run?.directory || !options.storage || !TERMINAL.has(run.summary.status)) return false;
             await run.persistence;
-            return options.storage.claimDelivery(run.directory);
+            return claimOptions?.recovery
+                ? options.storage.recoverDeliveryClaim(run.directory)
+                : options.storage.claimDelivery(run.directory);
         },
         async markTerminalDelivered(id) {
             const run = runs.get(id);
