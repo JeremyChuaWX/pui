@@ -67,6 +67,8 @@ export interface WorkflowBackendOptions {
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch): Promise<{ runId: string }>;
+    initialize?(cwd: string): Promise<WorkflowRunSummaryV1[]>;
+    recover?(id: string): Promise<void>;
     list(): WorkflowRunSummaryV1[];
     inspect(id: string): { run: WorkflowRunSummaryV1; script: string; result?: string };
     subscribe(listener: (run: WorkflowRunSummaryV1) => void): () => void;
@@ -85,6 +87,9 @@ interface ActiveRun {
     completions: Map<string, unknown>;
     paused: boolean;
     resumeWaiters: (() => void)[];
+    persistence: Promise<void>;
+    input: WorkflowLaunch;
+    semaphore: AbortableSemaphore;
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -189,7 +194,7 @@ function schemaValid(value: unknown, schema: unknown): boolean {
 
 // The only cross-realm value retained by VM code is this closure's bridge. Its callable wrappers
 // and every value visible to workflow code are created by the context itself.
-const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,call=(method,value)=>Promise.resolve(bridge(stringify({method,value}))).then(parse);globalThis.phase=n=>call("phase",{name:n});globalThis.log=x=>call("log",{message:String(x)});globalThis.agent=(prompt,options={})=>call("agent",{prompt,options});globalThis.parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);globalThis.pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};globalThis.args=parse(__args);delete globalThis.__bridge;delete globalThis.__args})()`;
+const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,occ=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse);globalThis.phase=n=>call("phase",{name:n});globalThis.log=x=>call("log",{message:String(x)});globalThis.agent=(prompt,options={})=>{const site=String(new Error().stack||"").split("\\n")[2]?.trim().slice(0,512)||"unknown",n=(occ.get(site)||0)+1;occ.set(site,n);return call("agent",{prompt,options},site+"#"+n)};globalThis.parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);globalThis.pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};globalThis.args=parse(__args);delete globalThis.__bridge;delete globalThis.__args})()`;
 const WORKER_SOURCE = String.raw`import vm from "node:vm";
 const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map();
 process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(String(m.error).slice(0,2000))}}}});
@@ -200,17 +205,17 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     const runs = new Map<string, ActiveRun>(),
         listeners = new Set<(run: WorkflowRunSummaryV1) => void>();
     let shuttingDown = false;
-    const semaphore = new AbortableSemaphore(DEFAULT_WORKFLOW_LIMITS.maxConcurrency),
-        now = options.now ?? Date.now;
+    const now = options.now ?? Date.now;
+    const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
     const publish = (a: ActiveRun) => {
         a.summary.updatedAt = now();
         const copy = structuredClone(a.summary);
         options.eventSink?.(copy);
         for (const listener of listeners) listener(copy);
-        if (a.directory)
-            void options.storage
-                ?.snapshot(a.directory, copy)
-                .catch((error) => console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`));
+        if (a.directory && options.storage)
+            void persist(a, () => options.storage!.snapshot(a.directory!, copy)).catch((error) =>
+                console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
+            );
     };
     const finishPhase = (a: ActiveRun, status: "succeeded" | "failed" | "cancelled", error?: string) => {
         const phase = a.summary.phases.find((p) => p.id === a.summary.currentPhase);
@@ -233,14 +238,14 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (json !== undefined) active.result = json;
             finishPhase(active, status, error);
             publish(active);
-            if (active.directory)
-                void options.storage
-                    ?.terminal(
-                        active.directory,
+            if (active.directory && options.storage)
+                void persist(active, () =>
+                    options.storage!.terminal(
+                        active.directory!,
                         json === undefined ? null : JSON.parse(json),
                         structuredClone(active.summary),
-                    )
-                    .catch((e) => console.error(`Workflow terminal persistence failed: ${errorMessage(e)}`));
+                    ),
+                ).catch((e) => console.error(`Workflow terminal persistence failed: ${errorMessage(e)}`));
         };
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
@@ -339,7 +344,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         publish(active);
                     } else if (frame.method === "agent") {
                         if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
-                        const operationId = `agent-${agents}`;
+                        if (
+                            typeof frame.identity !== "string" ||
+                            frame.identity.length > 1024 ||
+                            !frame.identity.includes("#")
+                        )
+                            throw new Error("Invalid workflow operation identity.");
+                        const operationId = `agent:${frame.identity}`;
                         if (active.completions.has(operationId)) {
                             value = structuredClone(active.completions.get(operationId));
                             send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
@@ -390,8 +401,17 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         active.summary.agents.push(agent);
                         if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
                         publish(active);
-                        const release = await semaphore.acquire(active.controller.signal);
+                        const release = await active.semaphore.acquire(active.controller.signal);
                         try {
+                            if (active.paused)
+                                await new Promise<void>((resolve, reject) => {
+                                    const abort = () => reject(new Error("Workflow stopped while paused."));
+                                    active.controller.signal.addEventListener("abort", abort, { once: true });
+                                    active.resumeWaiters.push(() => {
+                                        active.controller.signal.removeEventListener("abort", abort);
+                                        resolve();
+                                    });
+                                });
                             const timeoutMs = Math.min(
                                     DEFAULT_WORKFLOW_LIMITS.timeoutMs,
                                     Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
@@ -440,6 +460,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 const nextTokens =
                                         active.summary.usage.totalTokens + (Number(result.usage?.totalTokens) || 0),
                                     nextCost = active.summary.usage.cost + (Number(result.usage?.cost) || 0);
+                                addUsage(agent.usage, result.usage);
+                                addUsage(active.summary.usage, result.usage);
                                 if (active.summary.limits.maxTokens && nextTokens > active.summary.limits.maxTokens)
                                     throw new Error(
                                         `Workflow token budget exceeded (${nextTokens}/${active.summary.limits.maxTokens}).`,
@@ -451,8 +473,6 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 if (active.directory)
                                     await options.storage?.complete(active.directory, operationId, value, now());
                                 active.completions.set(operationId, structuredClone(value));
-                                addUsage(agent.usage, result.usage);
-                                addUsage(active.summary.usage, result.usage);
                                 agent.status = "succeeded";
                             } finally {
                                 if (timer) clearTimeout(timer);
@@ -541,6 +561,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             finish(active.controller.signal.aborted ? "cancelled" : "failed", errorMessage(e));
         } finally {
             active.child = undefined;
+            await active.persistence;
             if (directory) await fs.promises.rm(directory, { recursive: true, force: true });
         }
     };
@@ -593,12 +614,18 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 completions: new Map(),
                 paused: false,
                 resumeWaiters: [],
+                persistence: Promise.resolve(),
+                input: { ...input, limits: input.limits },
+                semaphore: new AbortableSemaphore(limits.maxConcurrency),
             };
             if (options.storage)
                 active.directory = await options.storage.create(
                     input.cwd,
                     id,
                     {
+                        name: input.name,
+                        sessionId: input.sessionId,
+                        cwd: await realpath(input.cwd),
                         script: input.script,
                         args: input.args,
                         policy: options.policy ?? {},
@@ -619,6 +646,49 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 }
             });
             return { runId: id };
+        },
+        async initialize(cwd) {
+            if (!options.storage) return [];
+            for (const stored of await options.storage.discover(cwd)) {
+                if (runs.has(stored.id)) continue;
+                const controller = new AbortController(),
+                    limits = stored.launch.limits as typeof DEFAULT_WORKFLOW_LIMITS;
+                runs.set(stored.id, {
+                    summary: structuredClone(stored.snapshot),
+                    script: stored.launch.script,
+                    controller,
+                    settlement: Promise.resolve(),
+                    cooperativeTasks: new Set(),
+                    directory: stored.directory,
+                    completions: new Map(stored.completions),
+                    paused: true,
+                    resumeWaiters: [],
+                    persistence: Promise.resolve(),
+                    input: {
+                        name: stored.launch.name,
+                        script: stored.launch.script,
+                        args: stored.launch.args,
+                        sessionId: stored.launch.sessionId,
+                        cwd: stored.launch.cwd,
+                        limits,
+                        parentRunId: stored.launch.parentRunId,
+                    },
+                    semaphore: new AbortableSemaphore(limits.maxConcurrency),
+                });
+            }
+            return this.list();
+        },
+        async recover(id) {
+            const active = runs.get(id);
+            if (!active) throw new Error(`Unknown workflow run: ${id}`);
+            if (TERMINAL.has(active.summary.status)) return;
+            active.paused = false;
+            active.summary.status = "queued";
+            const node = await resolveWorkflowNode({
+                environment: options.environment,
+                configuredPath: options.nodePath,
+            });
+            active.settlement = execute(active, active.input, node);
         },
         list: () => [...runs.values()].map((r) => structuredClone(r.summary)),
         inspect(id) {

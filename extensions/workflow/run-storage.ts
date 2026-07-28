@@ -7,6 +7,9 @@ import type { WorkflowRunSummaryV1 } from "./protocol.js";
 const MAX_ARTIFACT = 16 * 1024 * 1024;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
 export interface ImmutableRunLaunch {
+    name?: string;
+    sessionId?: string;
+    cwd?: string;
     script: string;
     args?: unknown;
     policy: unknown;
@@ -29,7 +32,7 @@ export interface DeliveryState {
 export interface StoredRun {
     id: string;
     directory: string;
-    launch: ImmutableRunLaunch;
+    launch: ImmutableRunLaunch & { name: string; sessionId: string; cwd: string };
     snapshot: WorkflowRunSummaryV1;
     completions: Map<string, unknown>;
     delivery: DeliveryState;
@@ -109,6 +112,9 @@ export class WorkflowRunStorage {
                 "launch.json",
                 {
                     version: 1,
+                    name: launch.name,
+                    sessionId: launch.sessionId,
+                    cwd: launch.cwd,
                     policy: launch.policy,
                     roles: launch.roles,
                     models: launch.models,
@@ -230,6 +236,9 @@ export class WorkflowRunStorage {
                 id: entry.name,
                 directory,
                 launch: {
+                    name: meta.name ?? snapshot.name,
+                    sessionId: meta.sessionId ?? snapshot.sessionId,
+                    cwd: meta.cwd ?? snapshot.cwd,
                     script,
                     args,
                     policy: meta.policy,

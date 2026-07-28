@@ -22,6 +22,7 @@ import {
     parseBackgroundWorkflowSave,
 } from "./background-protocol.js";
 import { WorkflowRunManager } from "./manager.js";
+import { WorkflowRunStorage } from "./run-storage.js";
 import {
     discoverWorkflows,
     findRepositoryRoot,
@@ -95,6 +96,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             cooperativeExecutor: dependencies.backendOptions?.agentExecutor
                 ? dependencies.backendOptions.cooperativeExecutor
                 : true,
+            storage: dependencies.backendOptions?.storage ?? new WorkflowRunStorage(),
             policy: dependencies.backendOptions?.policy ?? {
                 roles: ["generic", "worker", "explore"],
                 resolveModel: (role, requested) =>
@@ -133,6 +135,19 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     pi.on("session_start", async (_event, ctx) => {
         sessionId = ctx.sessionManager.getSessionId();
         cwd = await fs.promises.realpath(ctx.cwd);
+        const recovered = (await backend.initialize?.(cwd)) ?? [];
+        for (const run of recovered.filter((item) => !["succeeded", "failed", "cancelled"].includes(item.status))) {
+            const choice = await (ctx.ui as any)?.select?.(`Interrupted workflow: ${run.name}`, [
+                "Resume",
+                "Inspect",
+                "Stop",
+                "Later",
+            ]);
+            if (choice === "Resume") await backend.recover?.(run.id);
+            else if (choice === "Inspect")
+                (ctx.ui as any)?.notify?.(JSON.stringify(backend.inspect(run.id).run), "info");
+            else if (choice === "Stop") await backend.control(run.id, "stop");
+        }
         unsubscribeControl?.();
         unsubscribeControl = pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
             const control = parseBackgroundWorkflowControl(payload, { sessionId, instanceId, cwd });
