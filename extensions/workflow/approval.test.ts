@@ -48,7 +48,10 @@ describe("FileWorkflowApprovalStore", () => {
             const store = new FileWorkflowApprovalStore(file, root);
             await expect(store.add("overflow")).rejects.toThrow("limited to 10,000 keys");
             expect(await store.has(keys[0])).toBe(true);
-            await store.add(keys[0]);
+            await expect(store.add(keys[0])).resolves.toBeUndefined();
+            const unchanged = JSON.parse(await fs.promises.readFile(file, "utf8")).keys;
+            expect(unchanged).toHaveLength(10_000);
+            expect(unchanged).toContain(keys[0]);
             await fs.promises.writeFile(file, JSON.stringify({ version: 1, keys: [...keys, "overflow"] }));
             await expect(store.has(keys[0])).rejects.toThrow("Corrupt workflow approval store");
         } finally {

@@ -68,23 +68,25 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
         expect(await second.claimDelivery(directory)).toBe(false);
         expect(await second.recoverDeliveryClaim(directory, 0)).toBe(false);
         await first.releaseClaim(directory);
+        const marker = path.join(directory, "delivery.json"),
+            old = new Date(Date.now() - 120_000);
         await fs.promises.writeFile(
-            path.join(directory, "delivery.json"),
+            marker,
             JSON.stringify({
                 version: 1,
                 claimed: true,
-                claimedAt: Date.now(),
+                claimedAt: old.getTime(),
                 owner: "stopped-host",
-                pid: 2_147_483_647,
+                pid: process.pid,
+                host: os.hostname(),
             }),
         );
-        expect(await second.recoverDeliveryClaim(directory, 60_000)).toBe(true);
+        await fs.promises.utimes(marker, old, old);
+        expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
         await second.releaseClaim(directory);
         await first.terminal(directory, "done", makeSummary(project, { status: "succeeded", endedAt: Date.now() }));
 
-        const marker = path.join(directory, "delivery.json");
         await fs.promises.writeFile(marker, "{");
-        const old = new Date(Date.now() - 60_000);
         await fs.promises.utimes(marker, old, old);
         const [stored] = await second.discover(project);
         expect(stored?.corrupt).toBeUndefined();

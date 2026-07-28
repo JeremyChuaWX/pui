@@ -90,6 +90,7 @@ test("reserves a run while a terminal delivery claim is pending", async () => {
     listener(run("succeeded"));
     await manager.initialize("/x");
     expect(claims).toBe(1);
+    expect(deliveries).toBe(0);
     resolveClaim(true);
     await delivered;
     expect(deliveries).toBe(1);
@@ -154,7 +155,6 @@ test("durably delivers recovered terminal runs across storage instances", async 
                 claimed: true,
                 claimedAt: Date.now() - 60_000,
                 owner: "stopped-host",
-                pid: 2_147_483_647,
             }),
         );
         const stale = new Date(Date.now() - 60_000);

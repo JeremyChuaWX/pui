@@ -35,6 +35,7 @@ export interface DeliveryState {
     claimedAt?: number;
     owner?: string;
     pid?: number;
+    host?: string;
 }
 interface TerminalState {
     version: 1;
@@ -151,6 +152,24 @@ function isProcessAlive(pid: number) {
     } catch (error) {
         return (error as NodeJS.ErrnoException).code === "EPERM";
     }
+}
+function blocksDeliveryRecovery(
+    state: DeliveryState | undefined,
+    modifiedAt: number,
+    staleAfterMs: number,
+    instanceToken: string,
+) {
+    if (state?.delivered || state?.owner === instanceToken) return true;
+    const staleWindow = Math.max(0, staleAfterMs),
+        recordedClaim = state?.claimedAt,
+        claimedAt =
+            typeof recordedClaim === "number" && Number.isFinite(recordedClaim)
+                ? Math.max(modifiedAt, recordedClaim)
+                : modifiedAt,
+        age = Math.max(0, Date.now() - claimedAt);
+    if (age < staleWindow) return true;
+    const livePidGrace = Math.max(30_000, staleWindow * 2);
+    return age < livePidGrace && state?.host === os.hostname() && state.pid !== undefined && isProcessAlive(state.pid);
 }
 
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
@@ -302,6 +321,7 @@ export class WorkflowRunStorage {
                         claimedAt: Date.now(),
                         owner: this.instanceToken,
                         pid: process.pid,
+                        host: os.hostname(),
                     }),
                 );
                 await handle.sync();
@@ -332,13 +352,7 @@ export class WorkflowRunStorage {
         if (initial.isSymbolicLink() || !initial.isFile() || initial.size > MAX_ARTIFACT)
             throw new Error(`Unsafe or oversized workflow artifact: ${marker}`);
         const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined);
-        if (
-            initialState?.delivered ||
-            initialState?.owner === this.instanceToken ||
-            (initialState?.pid !== undefined && isProcessAlive(initialState.pid))
-        )
-            return false;
-        if (initialState?.pid === undefined && Date.now() - initial.mtimeMs < staleAfterMs) return false;
+        if (blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken)) return false;
 
         const quarantine = path.join(directory, `.delivery.recovery.${crypto.randomUUID()}.tmp`);
         try {
@@ -359,12 +373,7 @@ export class WorkflowRunStorage {
                     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
                 }
             };
-            if (
-                state?.delivered ||
-                state?.owner === this.instanceToken ||
-                (state?.pid !== undefined && isProcessAlive(state.pid)) ||
-                (state?.pid === undefined && Date.now() - stat.mtimeMs < staleAfterMs)
-            ) {
+            if (blocksDeliveryRecovery(state, stat.mtimeMs, staleAfterMs, this.instanceToken)) {
                 await restore();
                 return false;
             }
@@ -500,7 +509,8 @@ export class WorkflowRunStorage {
                         (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean") ||
                         (delivery.claimedAt !== undefined && !Number.isFinite(delivery.claimedAt)) ||
                         (delivery.owner !== undefined && typeof delivery.owner !== "string") ||
-                        (delivery.pid !== undefined && (!Number.isInteger(delivery.pid) || delivery.pid <= 0)))
+                        (delivery.pid !== undefined && (!Number.isInteger(delivery.pid) || delivery.pid <= 0)) ||
+                        (delivery.host !== undefined && typeof delivery.host !== "string"))
                 )
                     throw new Error(`Invalid workflow delivery state in ${entry.name}.`);
                 runs.push({
