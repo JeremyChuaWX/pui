@@ -30,6 +30,7 @@ const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
     LARGE_RUN_WARNING_AGENTS = 25;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const INTERRUPTION_WARNING = "Workflow interrupted by host shutdown; resume after restart.";
 
 export interface AgentRequest {
     prompt: string;
@@ -117,6 +118,8 @@ interface ActiveRun {
     input: WorkflowLaunch;
     semaphore: AbortableSemaphore;
     activeSharedWriters: number;
+    interrupted?: boolean;
+    stopping?: boolean;
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -250,6 +253,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     const now = options.now ?? Date.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
     const publish = (a: ActiveRun) => {
+        // Shutdown owns the final recoverable snapshot; late RPC cleanup must not replace it.
+        if (a.interrupted) return;
         a.summary.updatedAt = now();
         const copy = structuredClone(a.summary);
         options.eventSink?.(copy);
@@ -283,7 +288,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             terminal = false,
             stderr = "";
         const finish = (status: "succeeded" | "failed" | "cancelled", error?: string, json?: string) => {
-            if (terminal) return;
+            if (terminal || active.interrupted) return;
             terminal = true;
             active.summary.status = status;
             active.summary.endedAt = now();
@@ -803,6 +808,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (!active.paused) throw new Error("Workflow recovery is already running.");
             active.paused = false;
             active.summary.status = "queued";
+            if (active.summary.warning === INTERRUPTION_WARNING) active.summary.warning = undefined;
             const node = await resolveWorkflowNode({
                 environment: options.environment,
                 configuredPath: options.nodePath,
@@ -829,6 +835,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (!run) throw new Error(`Unknown workflow run: ${id}`);
             if (action === "stop") {
                 if (TERMINAL.has(run.summary.status)) return;
+                run.stopping = true;
                 run.controller.abort();
                 if (!run.child) {
                     run.summary.status = "cancelled";
@@ -888,7 +895,19 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async shutdown() {
             if (shuttingDown) return;
             shuttingDown = true;
-            for (const run of runs.values()) if (!TERMINAL.has(run.summary.status)) run.controller.abort();
+            const interrupted = [...runs.values()].filter((run) => !TERMINAL.has(run.summary.status) && !run.stopping);
+            for (const run of interrupted) {
+                run.interrupted = true;
+                run.paused = true;
+                run.summary.status = "paused";
+                run.summary.warning = INTERRUPTION_WARNING;
+                run.summary.endedAt = undefined;
+                run.summary.error = undefined;
+                run.summary.updatedAt = now();
+                if (run.directory && options.storage)
+                    await persist(run, () => options.storage!.snapshot(run.directory!, structuredClone(run.summary)));
+            }
+            for (const run of interrupted) run.controller.abort();
             await Promise.allSettled([...runs.values()].map((r) => r.settlement));
             const cooperative = [...runs.values()].flatMap((r) => [...r.cooperativeTasks]);
             if (cooperative.length) {

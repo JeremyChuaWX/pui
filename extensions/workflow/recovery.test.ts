@@ -16,6 +16,50 @@ async function waitFor(predicate: () => boolean, timeout = 5_000) {
 
 const increment = (counts: Map<string, number>, prompt: string) => counts.set(prompt, (counts.get(prompt) ?? 0) + 1);
 
+test("explicit stop is terminal and is not resumable after restart", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-stop-"));
+    const project = path.join(temp, "project");
+    await fs.promises.mkdir(project);
+    await Bun.$`git init -q ${project}`;
+    const storage = new WorkflowRunStorage(path.join(temp, "runs"));
+    let started!: () => void;
+    const agentStarted = new Promise<void>((resolve) => (started = resolve));
+    const backendA = createWorkflowBackend({
+        storage,
+        cooperativeExecutor: true,
+        agentExecutor: ({ signal }) =>
+            new Promise((_resolve, reject) => {
+                started();
+                signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
+            }),
+    });
+    let backendB: ReturnType<typeof createWorkflowBackend> | undefined;
+    try {
+        const { runId } = await backendA.launch({
+            name: "stop",
+            script: `return await agent("blocked")`,
+            sessionId: "stop-test",
+            cwd: project,
+        });
+        await agentStarted;
+        await backendA.control(runId, "stop");
+        await waitFor(() => backendA.inspect(runId).run.status === "cancelled");
+        await backendA.shutdown();
+
+        backendB = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: "unexpected" }) });
+        const initialized = await backendB.initialize!(project);
+        expect(initialized.find((run) => run.id === runId)?.status).toBe("cancelled");
+        await backendB.recover!(runId);
+        expect(backendB.inspect(runId).run.status).toBe("cancelled");
+        const [stored] = await storage.discover(project);
+        expect(await fs.promises.stat(path.join(stored!.directory, "summary.json"))).toBeTruthy();
+        expect(await fs.promises.stat(path.join(stored!.directory, "result.json"))).toBeTruthy();
+    } finally {
+        await Promise.allSettled([backendA.shutdown(), backendB?.shutdown() ?? Promise.resolve()]);
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("recovers from a durable completion without executing it twice", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-recovery-"));
     const project = path.join(temp, "project");
@@ -59,6 +103,24 @@ test("recovers from a durable completion without executing it twice", async () =
             }),
         ]);
 
+        await Promise.race([
+            backendA.shutdown(),
+            Bun.sleep(2_000).then(() => {
+                throw new Error("backend shutdown did not cooperatively stop");
+            }),
+        ]);
+        const [interruptedStored] = await storage.discover(project);
+        expect(interruptedStored?.snapshot.status).toBe("paused");
+        expect(interruptedStored?.snapshot.warning).toContain("resume after restart");
+        expect(interruptedStored?.snapshot.endedAt).toBeUndefined();
+        expect(
+            await fs.promises.stat(path.join(interruptedStored!.directory, "summary.json")).catch(() => undefined),
+        ).toBeUndefined();
+        expect(
+            await fs.promises.stat(path.join(interruptedStored!.directory, "result.json")).catch(() => undefined),
+        ).toBeUndefined();
+        releaseHook();
+
         backendB = createWorkflowBackend({
             storage,
             agentExecutor: async ({ prompt }) => {
@@ -72,6 +134,7 @@ test("recovers from a durable completion without executing it twice", async () =
         expect(interrupted[0]?.status).not.toBe("succeeded");
 
         await backendB.recover!(runId);
+        expect(backendB.inspect(runId).run.warning).toBeUndefined();
         await waitFor(() => backendB!.inspect(runId).run.status === "succeeded");
         await backendB.claimTerminalDelivery!(runId);
         expect(JSON.parse(backendB.inspect(runId).result!)).toEqual({
@@ -90,15 +153,6 @@ test("recovers from a durable completion without executing it twice", async () =
             .filter((entry) => entry.type === "completed");
         expect(journal).toHaveLength(2);
         expect(new Set(journal.map((entry) => entry.operation)).size).toBe(2);
-
-        await backendA.control(runId, "stop");
-        releaseHook();
-        await Promise.race([
-            backendA.shutdown(),
-            Bun.sleep(2_000).then(() => {
-                throw new Error("abandoned backend did not stop");
-            }),
-        ]);
     } finally {
         releaseHook();
         await Promise.allSettled([backendA.shutdown(), backendB?.shutdown() ?? Promise.resolve()]);

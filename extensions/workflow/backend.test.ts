@@ -239,7 +239,7 @@ return { ok: true, args };\n`;
         await backend.shutdown();
         expect(cleaned).toBe(true);
     });
-    test("cancellation aborts active executors and shutdown tracks every run", async () => {
+    test("user cancellation is terminal while shutdown interruption remains recoverable", async () => {
         let aborted = 0;
         const backend = createWorkflowBackend({
             agentExecutor: (request) =>
@@ -270,6 +270,7 @@ return { ok: true, args };\n`;
         await backend.control(one.runId, "stop");
         await backend.shutdown();
         expect(aborted).toBe(2);
-        expect(backend.list().every((r) => ["cancelled", "failed"].includes(r.status))).toBe(true);
+        expect(backend.inspect(one.runId).run.status).toBe("cancelled");
+        expect(backend.inspect(two.runId).run.status).toBe("paused");
     });
 });
