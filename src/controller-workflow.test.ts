@@ -165,14 +165,26 @@ describe("PuiController workflow bridge", () => {
                 options: ["once", "trust"],
             });
             const second = h.controller.snapshot().extensionDialog!;
-            h.controller.resolveExtensionDialog(second.id, undefined);
+            expect(h.controller.resolveExtensionDialog(second.id, "other")).toBe(true);
             expect(await select).toBeUndefined();
+            expect(h.controller.resolveExtensionDialog(second.id, "once")).toBe(false);
+
+            const invalidConfirm = ui.confirm("Confirm", "body");
+            const invalidConfirmDialog = h.controller.snapshot().extensionDialog!;
+            h.controller.resolveExtensionDialog(invalidConfirmDialog.id, "true");
+            expect(await invalidConfirm).toBe(false);
 
             const abort = new AbortController();
             const input = ui.input("Value", "placeholder", { signal: abort.signal });
             abort.abort();
             expect(await input).toBeUndefined();
             expect(await ui.confirm("Timeout", "body", { timeout: 1 })).toBe(false);
+
+            const raced = ui.confirm("Race", "body", { timeout: 1 });
+            const racedDialog = h.controller.snapshot().extensionDialog!;
+            await Bun.sleep(5);
+            expect(await raced).toBe(false);
+            expect(h.controller.resolveExtensionDialog(racedDialog.id, true)).toBe(false);
 
             const rebound = ui.confirm("Old", "body");
             await h.bind();
@@ -183,6 +195,38 @@ describe("PuiController workflow bridge", () => {
         } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });
         }
+    });
+
+    test("bounds extension dialogs without truncating a 64 KiB approval body", async () => {
+        const h = harness(process.cwd());
+        await h.bind();
+        const ui = h.bindings().uiContext;
+
+        expect(await ui.confirm("x".repeat(513), "body")).toBe(false);
+        expect(await ui.confirm("title", "x".repeat(64 * 1024 + 1))).toBe(false);
+        expect(
+            await ui.select(
+                "title",
+                Array.from({ length: 101 }, (_, index) => `${index}`),
+            ),
+        ).toBeUndefined();
+        expect(await ui.select("title", ["x".repeat(4097)])).toBeUndefined();
+        expect(await ui.input("title", "x".repeat(1025))).toBeUndefined();
+        expect(h.controller.snapshot().extensionDialog).toBeUndefined();
+
+        const exact = ui.confirm("title", "x".repeat(64 * 1024));
+        const exactDialog = h.controller.snapshot().extensionDialog!;
+        h.controller.resolveExtensionDialog(exactDialog.id, true);
+        expect(await exact).toBe(true);
+
+        const queued = Array.from({ length: 32 }, (_, index) => ui.input(`input ${index}`));
+        expect(await ui.input("overflow")).toBeUndefined();
+        for (let index = 0; index < queued.length; index += 1) {
+            const dialog = h.controller.snapshot().extensionDialog!;
+            h.controller.resolveExtensionDialog(dialog.id, `value ${index}`);
+        }
+        expect(await Promise.all(queued)).toHaveLength(32);
+        await h.controller.dispose();
     });
 
     test("resets on replacement and accepts only the replacement instance", async () => {

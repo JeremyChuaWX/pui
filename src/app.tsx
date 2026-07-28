@@ -3,6 +3,7 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { PuiController } from "./controller.js";
+import { extensionDialogOwner } from "./dialog-owner.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
 import { formatCount, formatWorkflowSummary, workflowStatusPresentation, workflowStatusTone } from "./format.js";
@@ -35,7 +36,7 @@ interface SubagentDisplayItem extends ToolDisplayItem {
     subagent: SubagentViewModel;
 }
 
-type DialogState =
+type DialogState = (
     | {
           kind: "picker";
           title: string;
@@ -45,7 +46,8 @@ type DialogState =
       }
     | { kind: "help" }
     | { kind: "confirm"; title: string; message: string; confirmLabel: string; action: () => void }
-    | { kind: "input"; title: string; placeholder?: string; action: (value: string) => void };
+    | { kind: "input"; title: string; placeholder?: string; action: (value: string) => void }
+) & { extensionRequestId?: number };
 
 const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
 
@@ -137,6 +139,7 @@ export function App(props: { controller: PuiController }) {
                 title: request.title,
                 message: request.message,
                 confirmLabel: "confirm",
+                extensionRequestId: request.id,
                 action: () => {
                     props.controller.resolveExtensionDialog(request.id, true);
                     setDialog(undefined);
@@ -147,6 +150,7 @@ export function App(props: { controller: PuiController }) {
                 kind: "picker",
                 title: request.title,
                 placeholder: "Choose an option",
+                extensionRequestId: request.id,
                 items: request.options.map((option) => ({
                     label: option,
                     search: option.toLowerCase(),
@@ -161,6 +165,7 @@ export function App(props: { controller: PuiController }) {
                 kind: "input",
                 title: request.title,
                 placeholder: request.placeholder,
+                extensionRequestId: request.id,
                 action: (value) => {
                     props.controller.resolveExtensionDialog(request.id, value);
                     setDialog(undefined);
@@ -928,8 +933,8 @@ export function App(props: { controller: PuiController }) {
                         height={dimensions().height}
                         onClose={() => {
                             dialogRequest += 1;
-                            const request = snapshot.extensionDialog;
-                            if (request) props.controller.resolveExtensionDialog(request.id, undefined);
+                            const requestId = extensionDialogOwner(value());
+                            if (requestId !== undefined) props.controller.resolveExtensionDialog(requestId, undefined);
                             setDialog(undefined);
                             setTimeout(() => prompt?.focus(), 0);
                         }}

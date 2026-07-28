@@ -448,7 +448,17 @@ export class PuiController {
             | Omit<Extract<ExtensionDialog, { kind: "input" }>, "id">,
         options?: ExtensionUIDialogOptions,
     ): Promise<boolean | string | undefined> {
-        if (this.disposed || options?.signal?.aborted) return Promise.resolve(undefined);
+        if (
+            this.disposed ||
+            options?.signal?.aborted ||
+            this.extensionDialogs.length >= 32 ||
+            value.title.length > 512 ||
+            (value.kind === "confirm" && value.message.length > 64 * 1024) ||
+            (value.kind === "input" && (value.placeholder?.length ?? 0) > 1024) ||
+            (value.kind === "select" &&
+                (value.options.length > 100 || value.options.some((option) => option.length > 4096)))
+        )
+            return Promise.resolve(undefined);
         return new Promise((resolve) => {
             const dialog = { ...value, id: ++this.extensionDialogId } as ExtensionDialog;
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -470,7 +480,19 @@ export class PuiController {
         const [request] = this.extensionDialogs.splice(index, 1);
         if (!request) return false;
         request.cleanup();
-        request.resolve(value);
+        const resolved =
+            request.dialog.kind === "confirm"
+                ? typeof value === "boolean"
+                    ? value
+                    : undefined
+                : request.dialog.kind === "select"
+                  ? typeof value === "string" && request.dialog.options.includes(value)
+                      ? value
+                      : undefined
+                  : typeof value === "string"
+                    ? value
+                    : undefined;
+        request.resolve(resolved);
         this.refresh();
         return true;
     }
