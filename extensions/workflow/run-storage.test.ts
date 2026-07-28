@@ -92,7 +92,10 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
         expect(stored?.corrupt).toBeUndefined();
         expect(stored?.snapshot.status).toBe("succeeded");
         expect(await second.claimDelivery(directory)).toBe(false);
+        const recovery = path.join(directory, "delivery.recovery.json");
+        await fs.promises.rename(marker, recovery);
         expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
+        await expect(fs.promises.lstat(recovery)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }

@@ -308,9 +308,9 @@ export class WorkflowRunStorage {
         await atomic(summaryFile, state.summary);
     }
     async claimDelivery(directory: string): Promise<boolean> {
-        await this.assertDirectory(directory);
+        directory = await this.assertDirectory(directory);
         const marker = path.join(directory, "delivery.json"),
-            temp = path.join(directory, `.delivery.${this.instanceToken}.tmp`);
+            temp = path.join(directory, `.delivery.${this.instanceToken}.${crypto.randomUUID()}.tmp`);
         try {
             const handle = await fs.promises.open(temp, "wx", 0o600);
             try {
@@ -338,49 +338,85 @@ export class WorkflowRunStorage {
             await fs.promises.rm(temp, { force: true });
         }
     }
-    /** Explicitly recover a stale or interrupted claim; normal claims never steal ownership. */
-    async recoverDeliveryClaim(directory: string, staleAfterMs = 30_000): Promise<boolean> {
-        await this.assertDirectory(directory);
-        const marker = path.join(directory, "delivery.json");
-        let initial: fs.Stats;
+    private async finishDeliveryRecovery(directory: string, recovery: string, staleAfterMs: number): Promise<boolean> {
+        let stat: fs.Stats;
         try {
-            initial = await fs.promises.lstat(marker);
+            stat = await fs.promises.lstat(recovery);
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.claimDelivery(directory);
             throw error;
         }
-        if (initial.isSymbolicLink() || !initial.isFile() || initial.size > MAX_ARTIFACT)
-            throw new Error(`Unsafe or oversized workflow artifact: ${marker}`);
-        const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined);
-        if (blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken)) return false;
-
-        const quarantine = path.join(directory, `.delivery.recovery.${crypto.randomUUID()}.tmp`);
+        if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
+            throw new Error(`Unsafe or oversized workflow artifact: ${recovery}`);
+        const state = await boundedJson<DeliveryState>(recovery).catch(() => undefined),
+            marker = path.join(directory, "delivery.json");
+        let durableReplacement = false;
         try {
-            try {
-                await fs.promises.rename(marker, quarantine);
-            } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.claimDelivery(directory);
-                throw error;
-            }
-            const stat = await fs.promises.lstat(quarantine);
-            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
-                throw new Error(`Unsafe or oversized workflow artifact: ${quarantine}`);
-            const state = await boundedJson<DeliveryState>(quarantine).catch(() => undefined);
-            const restore = async () => {
+            if (blocksDeliveryRecovery(state, stat.mtimeMs, staleAfterMs, this.instanceToken)) {
                 try {
-                    await fs.promises.link(quarantine, marker);
+                    await fs.promises.link(recovery, marker);
                 } catch (error) {
                     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
                 }
-            };
-            if (blocksDeliveryRecovery(state, stat.mtimeMs, staleAfterMs, this.instanceToken)) {
-                await restore();
+                await syncDirectory(directory);
+                durableReplacement = true;
                 return false;
             }
-            return this.claimDelivery(directory);
+            const claimed = await this.claimDelivery(directory);
+            if (claimed) {
+                durableReplacement = true;
+                return true;
+            }
+            durableReplacement = await fs.promises
+                .lstat(marker)
+                .then((value) => value.isFile() && !value.isSymbolicLink())
+                .catch(() => false);
+            return false;
         } finally {
-            await fs.promises.rm(quarantine, { force: true });
+            if (durableReplacement) {
+                await fs.promises.rm(recovery, { force: true });
+                await syncDirectory(directory);
+            }
         }
+    }
+    /** Explicitly recover a stale or interrupted claim; normal claims never steal ownership. */
+    async recoverDeliveryClaim(directory: string, staleAfterMs = 30_000): Promise<boolean> {
+        directory = await this.assertDirectory(directory);
+        const marker = path.join(directory, "delivery.json"),
+            recovery = path.join(directory, "delivery.recovery.json");
+        let initial: fs.Stats;
+        try {
+            initial = await fs.promises.lstat(marker);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT")
+                return this.finishDeliveryRecovery(directory, recovery, staleAfterMs);
+            throw error;
+        }
+        if (initial.isSymbolicLink() || !initial.isFile() || initial.size > MAX_ARTIFACT)
+            throw new Error(`Unsafe or oversized workflow artifact: ${marker}`);
+
+        const leftover = await fs.promises.lstat(recovery).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+        });
+        if (leftover) {
+            if (leftover.isSymbolicLink() || !leftover.isFile() || leftover.size > MAX_ARTIFACT)
+                throw new Error(`Unsafe or oversized workflow artifact: ${recovery}`);
+            const canonical = await boundedJson<DeliveryState>(marker);
+            if (!canonical.claimed && !canonical.delivered) throw new Error("Invalid workflow delivery state.");
+            await fs.promises.rm(recovery);
+            await syncDirectory(directory);
+        }
+
+        const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined);
+        if (blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken)) return false;
+        try {
+            await fs.promises.rename(marker, recovery);
+            await syncDirectory(directory);
+        } catch (error) {
+            if (!["ENOENT", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        }
+        return this.finishDeliveryRecovery(directory, recovery, staleAfterMs);
     }
     async markDelivered(directory: string) {
         const marker = path.join(await this.assertDirectory(directory), "delivery.json"),
