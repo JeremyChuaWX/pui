@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
 import type { WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
+import type { WorkflowRunStorage } from "./run-storage.js";
 import { executableWorkflowScript } from "./storage.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
@@ -42,6 +43,8 @@ export interface WorkflowLaunch {
     args?: unknown;
     sessionId: string;
     cwd: string;
+    limits?: Partial<typeof DEFAULT_WORKFLOW_LIMITS>;
+    parentRunId?: string;
 }
 export interface WorkflowHostPolicy {
     roles?: readonly string[];
@@ -60,6 +63,7 @@ export interface WorkflowBackendOptions {
     /** True for executors (such as runSubagent) that honor abort and reap their child process. */
     cooperativeExecutor?: boolean;
     shutdownGraceMs?: number;
+    storage?: WorkflowRunStorage;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch): Promise<{ runId: string }>;
@@ -77,6 +81,10 @@ interface ActiveRun {
     result?: string;
     settlement: Promise<void>;
     cooperativeTasks: Set<Promise<unknown>>;
+    directory?: string;
+    completions: Map<string, unknown>;
+    paused: boolean;
+    resumeWaiters: (() => void)[];
 }
 
 const emptyUsage = (): WorkflowUsageV1 => ({
@@ -199,6 +207,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         const copy = structuredClone(a.summary);
         options.eventSink?.(copy);
         for (const listener of listeners) listener(copy);
+        if (a.directory)
+            void options.storage
+                ?.snapshot(a.directory, copy)
+                .catch((error) => console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`));
     };
     const finishPhase = (a: ActiveRun, status: "succeeded" | "failed" | "cancelled", error?: string) => {
         const phase = a.summary.phases.find((p) => p.id === a.summary.currentPhase);
@@ -221,6 +233,14 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             if (json !== undefined) active.result = json;
             finishPhase(active, status, error);
             publish(active);
+            if (active.directory)
+                void options.storage
+                    ?.terminal(
+                        active.directory,
+                        json === undefined ? null : JSON.parse(json),
+                        structuredClone(active.summary),
+                    )
+                    .catch((e) => console.error(`Workflow terminal persistence failed: ${errorMessage(e)}`));
         };
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
@@ -318,8 +338,22 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         active.summary.recentActivity = active.summary.recentActivity.slice(-20);
                         publish(active);
                     } else if (frame.method === "agent") {
-                        if (++agents > DEFAULT_WORKFLOW_LIMITS.maxAgents)
-                            throw new Error("Workflow agent cap exceeded.");
+                        if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
+                        const operationId = `agent-${agents}`;
+                        if (active.completions.has(operationId)) {
+                            value = structuredClone(active.completions.get(operationId));
+                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                            return;
+                        }
+                        if (active.paused)
+                            await new Promise<void>((resolve, reject) => {
+                                const abort = () => reject(new Error("Workflow stopped while paused."));
+                                active.controller.signal.addEventListener("abort", abort, { once: true });
+                                active.resumeWaiters.push(() => {
+                                    active.controller.signal.removeEventListener("abort", abort);
+                                    resolve();
+                                });
+                            });
                         const prompt = frame.value?.prompt,
                             opts = frame.value?.options ?? {};
                         if (
@@ -341,7 +375,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         if (model && options.policy?.models && !options.policy.models.includes(model))
                             throw new Error(`Agent model is not allowed by host policy: ${model}`);
                         const agent: WorkflowAgentSummaryV1 = {
-                            id: `agent-${agents}`,
+                            id: operationId,
                             label: String(opts.label || prompt).slice(0, 512),
                             role,
                             ...(model ? { model } : {}),
@@ -402,6 +436,21 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                     }
                                 if (!result) throw new Error("Agent produced no result.");
                                 value = result.value;
+                                bounded(value);
+                                const nextTokens =
+                                        active.summary.usage.totalTokens + (Number(result.usage?.totalTokens) || 0),
+                                    nextCost = active.summary.usage.cost + (Number(result.usage?.cost) || 0);
+                                if (active.summary.limits.maxTokens && nextTokens > active.summary.limits.maxTokens)
+                                    throw new Error(
+                                        `Workflow token budget exceeded (${nextTokens}/${active.summary.limits.maxTokens}).`,
+                                    );
+                                if (active.summary.limits.maxCost && nextCost > active.summary.limits.maxCost)
+                                    throw new Error(
+                                        `Workflow cost budget exceeded (${nextCost}/${active.summary.limits.maxCost}).`,
+                                    );
+                                if (active.directory)
+                                    await options.storage?.complete(active.directory, operationId, value, now());
+                                active.completions.set(operationId, structuredClone(value));
                                 addUsage(agent.usage, result.usage);
                                 addUsage(active.summary.usage, result.usage);
                                 agent.status = "succeeded";
@@ -469,7 +518,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             const total = setTimeout(() => {
                 finish("failed", "Workflow run timed out.");
                 active.controller.abort();
-            }, options.runTimeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs);
+            }, options.runTimeoutMs ?? active.summary.limits.timeoutMs);
             await new Promise<void>((resolve) => {
                 child.once("error", (e) => {
                     finish("failed", errorMessage(e));
@@ -505,7 +554,21 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 }),
                 id = crypto.randomUUID(),
                 timestamp = now(),
-                controller = new AbortController();
+                controller = new AbortController(),
+                requested = input.limits ?? {},
+                limits = {
+                    maxConcurrency: Math.min(
+                        16,
+                        Math.max(1, Number(requested.maxConcurrency) || DEFAULT_WORKFLOW_LIMITS.maxConcurrency),
+                    ),
+                    maxAgents: Math.min(
+                        1_000,
+                        Math.max(1, Number(requested.maxAgents) || DEFAULT_WORKFLOW_LIMITS.maxAgents),
+                    ),
+                    timeoutMs: Math.max(1, Number(requested.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
+                    maxTokens: Math.max(0, Number(requested.maxTokens) || 0),
+                    maxCost: Math.max(0, Number(requested.maxCost) || 0),
+                };
             const summary: WorkflowRunSummaryV1 = {
                 schema: "pi.workflow",
                 version: 1,
@@ -517,7 +580,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 phases: [],
                 agents: [],
                 usage: emptyUsage(),
-                limits: { ...DEFAULT_WORKFLOW_LIMITS },
+                limits,
                 recentActivity: [],
                 updatedAt: timestamp,
             };
@@ -527,7 +590,25 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 controller,
                 settlement: Promise.resolve(),
                 cooperativeTasks: new Set(),
+                completions: new Map(),
+                paused: false,
+                resumeWaiters: [],
             };
+            if (options.storage)
+                active.directory = await options.storage.create(
+                    input.cwd,
+                    id,
+                    {
+                        script: input.script,
+                        args: input.args,
+                        policy: options.policy ?? {},
+                        roles: options.policy?.roles ?? [],
+                        models: options.policy?.models ?? [],
+                        limits,
+                        parentRunId: input.parentRunId,
+                    },
+                    summary,
+                );
             runs.set(id, active);
             publish(active);
             active.settlement = execute(active, input, node).catch((e) => {
@@ -556,10 +637,33 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async control(id, action) {
             const run = runs.get(id);
             if (!run) throw new Error(`Unknown workflow run: ${id}`);
-            if (action === "stop") run.controller.abort();
-            else if (action === "pause" || action === "resume")
-                throw new Error("Pause/resume scheduling is reserved for WS6.");
-            else throw new Error(`${action} is reserved for WS6.`);
+            if (action === "stop") {
+                if (TERMINAL.has(run.summary.status)) return;
+                run.controller.abort();
+            } else if (action === "pause") {
+                if (run.summary.status !== "running") throw new Error("Only a running workflow can be paused.");
+                run.paused = true;
+                run.summary.status = "paused";
+                publish(run);
+            } else if (action === "resume") {
+                if (run.summary.status !== "paused") throw new Error("Only a paused workflow can be resumed.");
+                run.paused = false;
+                run.summary.status = "running";
+                for (const wake of run.resumeWaiters.splice(0)) wake();
+                publish(run);
+            } else if (action === "retry") {
+                if (!TERMINAL.has(run.summary.status)) throw new Error("Only a terminal workflow can be retried.");
+                await this.launch({
+                    name: run.summary.name,
+                    script: run.script,
+                    sessionId: run.summary.sessionId,
+                    cwd: run.summary.cwd,
+                    parentRunId: run.summary.id,
+                });
+            } else
+                throw new Error(
+                    "Restart-agent requires an agent identity and is not available through this legacy control signature.",
+                );
         },
         async shutdown() {
             if (shuttingDown) return;

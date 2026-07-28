@@ -1,6 +1,8 @@
 # Workflow extension (WS2 alpha)
 
-Set `PUI_WORKFLOWS=1` before starting pui to register the `workflow` tool. Inline scripts are shown verbatim through Pi's `ctx.ui.confirm` surface and never run when confirmation is unavailable or denied. Saved names, persistence/recovery, worktrees, pause/resume, retry, and workflow UI are reserved for WS5/WS6.
+Set `PUI_WORKFLOWS=1` before starting pui to register the `workflow` tool. Inline scripts are shown verbatim through Pi's `ctx.ui.confirm` surface and never run when confirmation is unavailable or denied. Durable run artifacts live outside projects under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/`; injected `WorkflowRunStorage` roots keep recovery tests hermetic. Launch bytes and policy are immutable, snapshots are atomic, completion journals are append-only and fsynced, and corrupt/truncated or symlinked artifacts fail closed.
+
+Completed JSON-compatible operations replay from their structural identity. An operation active when the host is interrupted is not journaled and runs again after explicit recovery. Consequently interrupted model/tool/filesystem effects are **at least once**, not exactly once. Recovery must remain user-selected (ask by default); worktree branches are never merged automatically.
 
 The runtime is a deliberately narrow adaptation of the orchestration semantics reviewed at `pi-extensible-workflows` commit `11249e604ced3757bdd52e6c70f7282d38fb8b9f`: `agent`, `pipeline`, `parallel`, `phase`, `log`, `args`, loops/conditionals, bounded RPC, retries, timeout, and basic JSON Schema output checks. Package exports do not expose its host-neutral engine, so WS2 does **not** claim upstream parity. Durable structural identity, journals, recovery, budgets, and worktrees remain WS6 work. See ADR 0001.
 
