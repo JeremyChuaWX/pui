@@ -27,7 +27,8 @@ const MAX_SCRIPT_BYTES = 64 * 1024,
     MAX_PENDING = 16,
     STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
-    HEARTBEAT_TIMEOUT_MS = 5_000;
+    HEARTBEAT_TIMEOUT_MS = 5_000,
+    LARGE_RUN_WARNING_AGENTS = 25;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
 export interface AgentRequest {
@@ -258,6 +259,17 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
     };
+    const waitWhilePaused = async (active: ActiveRun) => {
+        while (active.paused)
+            await new Promise<void>((resolve, reject) => {
+                const abort = () => reject(new Error("Workflow stopped while paused."));
+                active.controller.signal.addEventListener("abort", abort, { once: true });
+                active.resumeWaiters.push(() => {
+                    active.controller.signal.removeEventListener("abort", abort);
+                    resolve();
+                });
+            });
+    };
     const finishPhase = (a: ActiveRun, status: "succeeded" | "failed" | "cancelled", error?: string) => {
         const phase = a.summary.phases.find((p) => p.id === a.summary.currentPhase);
         if (phase?.status === "running") {
@@ -385,6 +397,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         publish(active);
                     } else if (frame.method === "agent") {
                         if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
+                        if (agents === LARGE_RUN_WARNING_AGENTS) {
+                            active.summary.warning = `Large workflow run: ${LARGE_RUN_WARNING_AGENTS} agents scheduled.`;
+                            publish(active);
+                        }
                         if (
                             typeof frame.identity !== "string" ||
                             frame.identity.length > 1024 ||
@@ -401,15 +417,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
                             return;
                         }
-                        if (active.paused)
-                            await new Promise<void>((resolve, reject) => {
-                                const abort = () => reject(new Error("Workflow stopped while paused."));
-                                active.controller.signal.addEventListener("abort", abort, { once: true });
-                                active.resumeWaiters.push(() => {
-                                    active.controller.signal.removeEventListener("abort", abort);
-                                    resolve();
-                                });
-                            });
+                        await waitWhilePaused(active);
                         const prompt = frame.value?.prompt,
                             opts = frame.value?.options ?? {};
                         if (
@@ -466,15 +474,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                 active.activeSharedWriters++;
                                 sharedWriter = true;
                             }
-                            if (active.paused)
-                                await new Promise<void>((resolve, reject) => {
-                                    const abort = () => reject(new Error("Workflow stopped while paused."));
-                                    active.controller.signal.addEventListener("abort", abort, { once: true });
-                                    active.resumeWaiters.push(() => {
-                                        active.controller.signal.removeEventListener("abort", abort);
-                                        resolve();
-                                    });
-                                });
+                            await waitWhilePaused(active);
                             const timeoutMs = Math.min(
                                     DEFAULT_WORKFLOW_LIMITS.timeoutMs,
                                     Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
