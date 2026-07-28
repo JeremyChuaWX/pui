@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export const MAX_SAVED_WORKFLOW_BYTES = 64 * 1024;
-export const WORKFLOW_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+export const WORKFLOW_NAME_PATTERN = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export interface SavedWorkflow {
     name: string;

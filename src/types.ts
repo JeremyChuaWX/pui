@@ -82,6 +82,11 @@ export interface ToastMessage {
     type: "info" | "warning" | "error" | "success";
 }
 
+export type ExtensionDialog =
+    | { id: number; kind: "confirm"; title: string; message: string }
+    | { id: number; kind: "select"; title: string; options: readonly string[] }
+    | { id: number; kind: "input"; title: string; placeholder?: string };
+
 export interface PuiSnapshot {
     cwd: string;
     compactCwd: string;
@@ -102,6 +107,7 @@ export interface PuiSnapshot {
     activeTools: ActiveTool[];
     backgroundSubagents: BackgroundSubagentViewModel[];
     workflows: readonly WorkflowRunSummaryV1[];
+    extensionDialog?: ExtensionDialog;
     toasts: ToastMessage[];
     exitRequested: boolean;
 }

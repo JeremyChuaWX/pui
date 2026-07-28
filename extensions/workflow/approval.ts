@@ -17,8 +17,8 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
         private readonly boundary = os.homedir(),
     ) {}
     private async safeParents(create = false): Promise<void> {
+        const relative = path.relative(path.resolve(this.boundary), path.resolve(path.dirname(this.file)));
         const boundary = await fs.promises.realpath(this.boundary);
-        const relative = path.relative(boundary, path.dirname(this.file));
         if (relative.startsWith("..") || path.isAbsolute(relative))
             throw new Error("Approval store escapes its boundary.");
         let current = boundary;

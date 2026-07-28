@@ -44,7 +44,8 @@ type DialogState =
           loading?: boolean;
       }
     | { kind: "help" }
-    | { kind: "confirm"; title: string; message: string; confirmLabel: string; action: () => void };
+    | { kind: "confirm"; title: string; message: string; confirmLabel: string; action: () => void }
+    | { kind: "input"; title: string; placeholder?: string; action: (value: string) => void };
 
 const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
 
@@ -125,6 +126,47 @@ export function App(props: { controller: PuiController }) {
         completionAbort?.abort();
         releasePromptFocusTrap?.();
         unsubscribe?.();
+    });
+
+    createEffect(() => {
+        const request = snapshot.extensionDialog;
+        if (!request || dialog()) return;
+        if (request.kind === "confirm") {
+            setDialog({
+                kind: "confirm",
+                title: request.title,
+                message: request.message,
+                confirmLabel: "confirm",
+                action: () => {
+                    props.controller.resolveExtensionDialog(request.id, true);
+                    setDialog(undefined);
+                },
+            });
+        } else if (request.kind === "select") {
+            setDialog({
+                kind: "picker",
+                title: request.title,
+                placeholder: "Choose an option",
+                items: request.options.map((option) => ({
+                    label: option,
+                    search: option.toLowerCase(),
+                    action: () => {
+                        props.controller.resolveExtensionDialog(request.id, option);
+                        setDialog(undefined);
+                    },
+                })),
+            });
+        } else {
+            setDialog({
+                kind: "input",
+                title: request.title,
+                placeholder: request.placeholder,
+                action: (value) => {
+                    props.controller.resolveExtensionDialog(request.id, value);
+                    setDialog(undefined);
+                },
+            });
+        }
     });
 
     createEffect(() => {
@@ -561,7 +603,7 @@ export function App(props: { controller: PuiController }) {
                 action: () => {
                     const save = async (scope: "project" | "personal", overwrite = false) => {
                         try {
-                            const saved = await props.controller.saveWorkflow(run.id, run.name, scope, overwrite);
+                            const saved = await props.controller.saveWorkflow(run.id, scope, overwrite);
                             setDialog(undefined);
                             props.controller.notify(`Saved workflow to ${saved}.`, "success");
                         } catch (error) {
@@ -886,6 +928,8 @@ export function App(props: { controller: PuiController }) {
                         height={dimensions().height}
                         onClose={() => {
                             dialogRequest += 1;
+                            const request = snapshot.extensionDialog;
+                            if (request) props.controller.resolveExtensionDialog(request.id, undefined);
                             setDialog(undefined);
                             setTimeout(() => prompt?.focus(), 0);
                         }}
@@ -1656,6 +1700,13 @@ function Dialog(props: { state: DialogState; width: number; height: number; onCl
                         onClose={props.onClose}
                     />
                 </Match>
+                <Match when={props.state.kind === "input"}>
+                    <DialogInput
+                        state={props.state as Extract<DialogState, { kind: "input" }>}
+                        width={Math.max(1, Math.min(64, props.width - 4))}
+                        onClose={props.onClose}
+                    />
+                </Match>
                 <Match when={props.state.kind === "help"}>
                     <Help width={Math.max(1, Math.min(72, props.width - 4))} onClose={props.onClose} />
                 </Match>
@@ -1800,6 +1851,29 @@ function Confirmation(props: { state: Extract<DialogState, { kind: "confirm" }>;
             </text>
             <text fg={theme.text}>{props.state.message}</text>
             <text fg={theme.warning}>Enter/Y {props.state.confirmLabel} · Esc/N cancel</text>
+        </box>
+    );
+}
+
+function DialogInput(props: { state: Extract<DialogState, { kind: "input" }>; width: number; onClose: () => void }) {
+    const [value, setValue] = createSignal("");
+    useKeyboard((key) => {
+        if (key.name === "escape" || (key.ctrl && key.name === "c")) props.onClose();
+    });
+    return (
+        <box width={props.width} backgroundColor={theme.panel} border borderColor={theme.border} padding={2} gap={1}>
+            <text fg={theme.text}>
+                <strong>{props.state.title}</strong>
+            </text>
+            <input
+                focused
+                placeholder={props.state.placeholder}
+                textColor={theme.text}
+                backgroundColor={theme.element}
+                onInput={setValue}
+                onSubmit={() => props.state.action(value())}
+            />
+            <text fg={theme.muted}>Enter submit · Esc cancel</text>
         </box>
     );
 }

@@ -13,6 +13,7 @@ import {
     createAgentSessionServices,
     createEventBus,
     type EventBusController,
+    type ExtensionUIDialogOptions,
     getAgentDir,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -40,6 +41,7 @@ import type {
     ActiveTool,
     AppliedPromptCompletion,
     DisplayItem,
+    ExtensionDialog,
     ModelChoice,
     PromptAction,
     PromptCompletionItem,
@@ -178,6 +180,12 @@ export class PuiController {
     private workflowCwd = "";
     private unsubscribeWorkflow?: () => void;
     private pendingWorkflowSaves = new Set<(error: Error) => void>();
+    private extensionDialogs: Array<{
+        dialog: ExtensionDialog;
+        resolve: (value: boolean | string | undefined) => void;
+        cleanup: () => void;
+    }> = [];
+    private extensionDialogId = 0;
     private readonly eventBus: EventBusController;
     private readonly unsubscribeBackground: () => void;
 
@@ -260,6 +268,7 @@ export class PuiController {
     }
 
     private async bindSession(session: AgentSession): Promise<void> {
+        this.dismissExtensionDialogs();
         for (const reject of this.pendingWorkflowSaves) reject(new Error("Workflow session changed."));
         this.pendingWorkflowSaves.clear();
         this.unsubscribeSession?.();
@@ -283,8 +292,23 @@ export class PuiController {
         this.runningBash = undefined;
         this.gitBranch = readGitBranch(this.runtime.cwd);
 
+        const existingUI = session.extensionRunner.getUIContext?.() ?? {};
         await session.bindExtensions({
             mode: "tui",
+            uiContext: {
+                ...existingUI,
+                confirm: (title, message, options) =>
+                    this.requestExtensionDialog({ kind: "confirm", title, message }, options).then(Boolean),
+                select: (title, options, dialogOptions) =>
+                    this.requestExtensionDialog({ kind: "select", title, options }, dialogOptions) as Promise<
+                        string | undefined
+                    >,
+                input: (title, placeholder, options) =>
+                    this.requestExtensionDialog({ kind: "input", title, placeholder }, options) as Promise<
+                        string | undefined
+                    >,
+                notify: (message, type) => this.notify(message, type),
+            },
             commandContextActions: {
                 waitForIdle: () => this.runtime.session.waitForIdle(),
                 newSession: (options) => this.runtime.newSession(options),
@@ -411,9 +435,53 @@ export class PuiController {
             activeTools,
             backgroundSubagents: [...this.backgroundState.jobs.values()],
             workflows,
+            extensionDialog: this.extensionDialogs[0]?.dialog,
             toasts: [...this.toasts],
             exitRequested: this.exitRequested,
         };
+    }
+
+    private requestExtensionDialog(
+        value:
+            | Omit<Extract<ExtensionDialog, { kind: "confirm" }>, "id">
+            | Omit<Extract<ExtensionDialog, { kind: "select" }>, "id">
+            | Omit<Extract<ExtensionDialog, { kind: "input" }>, "id">,
+        options?: ExtensionUIDialogOptions,
+    ): Promise<boolean | string | undefined> {
+        if (this.disposed || options?.signal?.aborted) return Promise.resolve(undefined);
+        return new Promise((resolve) => {
+            const dialog = { ...value, id: ++this.extensionDialogId } as ExtensionDialog;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const abort = () => this.resolveExtensionDialog(dialog.id, undefined);
+            const cleanup = () => {
+                if (timer) clearTimeout(timer);
+                options?.signal?.removeEventListener("abort", abort);
+            };
+            this.extensionDialogs.push({ dialog, resolve, cleanup });
+            options?.signal?.addEventListener("abort", abort, { once: true });
+            if (options?.timeout !== undefined) timer = setTimeout(abort, Math.max(0, options.timeout));
+            this.refresh();
+        });
+    }
+
+    resolveExtensionDialog(id: number, value: boolean | string | undefined): boolean {
+        const index = this.extensionDialogs.findIndex((request) => request.dialog.id === id);
+        if (index < 0) return false;
+        const [request] = this.extensionDialogs.splice(index, 1);
+        if (!request) return false;
+        request.cleanup();
+        request.resolve(value);
+        this.refresh();
+        return true;
+    }
+
+    private dismissExtensionDialogs(): void {
+        const pending = this.extensionDialogs.splice(0);
+        for (const request of pending) {
+            request.cleanup();
+            request.resolve(undefined);
+        }
+        this.refresh();
     }
 
     private scheduleRefresh(): void {
@@ -825,12 +893,7 @@ export class PuiController {
     retryWorkflow(runId: string): boolean {
         return this.controlWorkflow(runId, "retry");
     }
-    async saveWorkflow(
-        runId: string,
-        _name: string,
-        scope: "project" | "personal",
-        overwrite = false,
-    ): Promise<string> {
+    async saveWorkflow(runId: string, scope: "project" | "personal", overwrite = false): Promise<string> {
         const run = this.workflowState.runs.get(runId),
             instanceId = this.workflowState.instanceId;
         if (!run || !instanceId) throw new Error("Workflow save is unavailable.");
@@ -897,6 +960,7 @@ export class PuiController {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
+        this.dismissExtensionDialogs();
         for (const reject of this.pendingWorkflowSaves) reject(new Error("Controller disposed."));
         this.pendingWorkflowSaves.clear();
         this.unsubscribeSession?.();

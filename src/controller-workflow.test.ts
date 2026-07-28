@@ -46,6 +46,7 @@ const envelope = (sessionId: string, cwd: string, type: string, extra: object = 
 function harness(cwd: string) {
     const bus = createEventBus();
     let sessionListener: (() => void) | undefined;
+    let extensionBindings: any;
     const session: any = {
         messages: [],
         sessionId: "session-1",
@@ -58,7 +59,9 @@ function harness(cwd: string) {
         getContextUsage: () => undefined,
         getSteeringMessages: () => [],
         getFollowUpMessages: () => [],
-        bindExtensions: async () => {},
+        bindExtensions: async (bindings: unknown) => {
+            extensionBindings = bindings;
+        },
         subscribe: () => () => {
             sessionListener = undefined;
         },
@@ -80,7 +83,7 @@ function harness(cwd: string) {
     ) => PuiController;
     const controller = new Controller(runtime, bus);
     const bind = (next = session) => (controller as any).bindSession(next);
-    return { bus, controller, runtime, session, bind, sessionListener };
+    return { bus, controller, runtime, session, bind, sessionListener, bindings: () => extensionBindings };
 }
 
 describe("PuiController workflow bridge", () => {
@@ -125,7 +128,7 @@ describe("PuiController workflow bridge", () => {
                     path: "/saved/review.js",
                 });
             });
-            expect(await h.controller.saveWorkflow("run-1", "review", "project")).toBe("/saved/review.js");
+            expect(await h.controller.saveWorkflow("run-1", "project")).toBe("/saved/review.js");
             expect(saveRequest).toMatchObject({ runId: "run-1", scope: "project", overwrite: false });
 
             const prior = h.controller.snapshot();
@@ -141,6 +144,43 @@ describe("PuiController workflow bridge", () => {
             expect(h.controller.snapshot().workflows).toEqual([]);
         } finally {
             await h.controller.dispose();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+
+    test("bridges queued extension dialogs with resolve, deny, abort, timeout, rebind, and dispose", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-dialog-controller-"));
+        const h = harness(temp);
+        try {
+            await h.bind();
+            const ui = h.bindings().uiContext;
+            const confirm = ui.confirm("Run?", "exact body");
+            const select = ui.select("Trust?", ["once", "trust"]);
+            expect(h.controller.snapshot().extensionDialog).toMatchObject({ kind: "confirm", message: "exact body" });
+            const first = h.controller.snapshot().extensionDialog!;
+            expect(h.controller.resolveExtensionDialog(first.id, true)).toBe(true);
+            expect(await confirm).toBe(true);
+            expect(h.controller.snapshot().extensionDialog).toMatchObject({
+                kind: "select",
+                options: ["once", "trust"],
+            });
+            const second = h.controller.snapshot().extensionDialog!;
+            h.controller.resolveExtensionDialog(second.id, undefined);
+            expect(await select).toBeUndefined();
+
+            const abort = new AbortController();
+            const input = ui.input("Value", "placeholder", { signal: abort.signal });
+            abort.abort();
+            expect(await input).toBeUndefined();
+            expect(await ui.confirm("Timeout", "body", { timeout: 1 })).toBe(false);
+
+            const rebound = ui.confirm("Old", "body");
+            await h.bind();
+            expect(await rebound).toBe(false);
+            const disposed = h.bindings().uiContext.input("Dispose");
+            await h.controller.dispose();
+            expect(await disposed).toBeUndefined();
+        } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });
         }
     });

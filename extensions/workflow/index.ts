@@ -192,14 +192,12 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     });
     const authorize = async (key: string, title: string, body: string, ui: any) => {
         if (await approvalStore.has(key)) return;
-        if (ui?.select) {
-            const choice = await ui.select(title, ["Run once", "Trust unchanged script in this project", "Deny"]);
-            if (choice === "Deny" || choice === undefined) throw new Error("Workflow launch was denied.");
-            if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
-            return;
-        }
         if (!ui?.confirm || !(await ui.confirm(title, body))) throw new Error("Workflow launch was denied.");
-        // A boolean prompt cannot express durable trust.
+        // Confirmation-only hosts can authorize this run but cannot express durable trust.
+        if (!ui?.select) return;
+        const choice = await ui.select(title, ["Run once", "Trust unchanged script in this project"]);
+        if (choice === undefined) throw new Error("Workflow launch was denied.");
+        if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
     };
     const launchSaved = async (name: string, args: unknown, ctx: any) => {
         const canonical = await fs.promises.realpath(ctx.cwd);
