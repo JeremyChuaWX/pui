@@ -51,10 +51,22 @@ export async function runCompiledWorkflowSmoke(): Promise<void> {
         await waitFor(() => backend.inspect(stopped.runId).run.agents.length === 1);
         await manager.control(stopped.runId, "stop");
         await waitFor(() => backend.inspect(stopped.runId).run.status === "cancelled");
-        const discovered = await storage.discover(project);
-        process.stdout.write(
-            `${JSON.stringify({ hostExecutable: process.execPath, completed: JSON.parse(backend.inspect(completed.runId).result ?? "null"), stopped: "cancelled", deliveries, recovered: discovered.some(({ id }) => id === completed.runId) })}\n`,
-        );
+        await waitFor(() => deliveries === 2);
+        const completedResult = JSON.parse(backend.inspect(completed.runId).result ?? "null");
+        await manager.shutdown();
+        const recoveredBackend = createWorkflowBackend({
+                storage: new WorkflowRunStorage(path.join(root, "runs")),
+                agentExecutor: async () => ({ value: null }),
+            }),
+            recoveredManager = new WorkflowRunManager({ backend: recoveredBackend, emit: () => {}, deliver: () => {} });
+        try {
+            const recovered = await recoveredManager.initialize(project);
+            process.stdout.write(
+                `${JSON.stringify({ hostExecutable: process.execPath, completed: completedResult, stopped: "cancelled", deliveries, recovered: recovered.some(({ id }) => id === completed.runId) })}\n`,
+            );
+        } finally {
+            await recoveredManager.shutdown();
+        }
     } finally {
         await manager.shutdown();
     }

@@ -314,15 +314,21 @@ const host=json=>new Promise((resolve,reject)=>{let request;try{request=JSON.par
 async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{const result=await new vm.Script('(async()=>{'+m.script+'\n})()',{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
-    const runs = new Map<string, ActiveRun>(),
+    const home = fs.realpathSync(os.homedir()),
+        worktreeBase = options.storage
+            ? path.join(path.dirname(options.storage.root), "workflow-worktrees")
+            : path.join(home, ".pi", "agent", "workflow-worktrees"),
+        relativeToHome = path.relative(home, worktreeBase),
+        runs = new Map<string, ActiveRun>(),
         listeners = new Set<(run: WorkflowRunSummaryV1) => void>(),
         worktrees =
             options.worktreeManager ??
-            new WorkflowWorktreeManager(
-                options.storage
-                    ? path.join(path.dirname(options.storage.root), "workflow-worktrees")
-                    : path.join(os.homedir(), ".pi", "agent", "workflow-worktrees"),
-            );
+            new WorkflowWorktreeManager(worktreeBase, {
+                trustedBoundary:
+                    relativeToHome === "" || (!relativeToHome.startsWith("..") && !path.isAbsolute(relativeToHome))
+                        ? home
+                        : undefined,
+            });
     let shuttingDown = false;
     const now = options.now ?? Date.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));

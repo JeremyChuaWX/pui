@@ -40,6 +40,17 @@ describe("workflow worktree isolation", () => {
         expect((await Bun.$`git -C ${root} for-each-ref refs/pui/workflows`.text()).includes(a.ref)).toBe(false);
         await manager.cleanup(root, b);
     });
+    test("rejects a symlink in the direct worktree-base ancestry", async () => {
+        const boundary = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-worktree-boundary-")),
+            outside = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-worktree-outside-")),
+            link = path.join(boundary, "linked");
+        temporary.push(boundary, outside);
+        await fs.promises.symlink(outside, link, "dir");
+        const manager = new WorkflowWorktreeManager(path.join(link, "worktrees"), { trustedBoundary: boundary });
+        await expect(manager.create(await repository(), "run", "operation")).rejects.toThrow(
+            "Unsafe directory component",
+        );
+    });
     test("backend rejects unsafe parallel writers and isolates workers without model calls", async () => {
         const root = await repository(),
             base = `${root}-owned`,

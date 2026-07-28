@@ -6,7 +6,7 @@
 
 ## Decision
 
-Use a **narrow maintained host-neutral adaptation** of the reviewed `pi-extensible-workflows` design rather than its current package unchanged or a fresh full scheduler rewrite. The implementation ultimately remained local because upstream package exports did not provide the required engine seam; it was reviewed against upstream commit `11249e604ced3757bdd52e6c70f7282d38fb8b9f` (workspace version 3.4.2), propose the host-neutral seam below upstream, and keep the compatibility patch reviewable until it is released upstream. Do not vendor the whole Pi extension (`host.ts` and its TUI).
+Use a **narrow maintained host-neutral adaptation** of the reviewed `pi-extensible-workflows` design rather than its current package unchanged or a fresh full scheduler rewrite. The implementation ultimately remained local because upstream package exports did not provide the required engine seam; it was reviewed against upstream commit `11249e604ced3757bdd52e6c70f7282d38fb8b9f` (workspace version 3.4.2), proposes the host-neutral seam below upstream, and keeps the compatibility patch reviewable until that seam is released upstream. Do not vendor the whole Pi extension (`host.ts` and its TUI).
 
 The patch must:
 
