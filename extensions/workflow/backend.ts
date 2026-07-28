@@ -98,15 +98,24 @@ const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {})
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
+export function executableWorkflowScript(script: string): string {
+    return script.replace(
+        /\bexport\s+const\s+meta\s*=\s*\{\s*name\s*:\s*(["'])[^"'\r\n]*\1\s*,\s*description\s*:\s*(["'])[^"'\r\n]*\2\s*,?\s*\}\s*;?/,
+        "",
+    );
+}
 export function preflightWorkflow(script: string): { phases: string[]; agents: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
+    const executable = executableWorkflowScript(script);
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest)\b|\bimport\s*(?:\(|["'{*])|\bexport\s|__proto__|constructor\s*\[)/;
-    if (forbidden.test(script)) throw new Error("Workflow script uses a forbidden runtime capability.");
+    if (forbidden.test(executable)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
-        phases: [...script.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)].map((m) => m[2] ?? "").slice(0, 100),
-        agents: [...script.matchAll(/\bagent\s*\(/g)].length,
+        phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
+            .map((m) => m[2] ?? "")
+            .slice(0, 100),
+        agents: [...executable.matchAll(/\bagent\s*\(/g)].length,
     };
 }
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
@@ -265,7 +274,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (frame.t === "ready") {
                     ready = true;
                     lastBeat = now();
-                    send({ v: 1, t: "start", script: input.script, args: input.args });
+                    send({ v: 1, t: "start", script: executableWorkflowScript(input.script), args: input.args });
                     return;
                 }
                 if (frame.t === "heartbeat") {

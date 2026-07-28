@@ -52,6 +52,8 @@ import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+    BACKGROUND_WORKFLOW_SAVE_CHANNEL,
+    BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     parseWorkflowBackgroundEvent,
     parseWorkflowControl,
     reduceWorkflowEvent,
@@ -818,8 +820,46 @@ export class PuiController {
     retryWorkflow(runId: string): boolean {
         return this.controlWorkflow(runId, "retry");
     }
-    saveWorkflow(_runId: string): boolean {
-        return false;
+    async saveWorkflow(runId: string, name: string, scope: "project" | "personal", overwrite = false): Promise<string> {
+        const run = this.workflowState.runs.get(runId),
+            instanceId = this.workflowState.instanceId;
+        if (!run || !instanceId) throw new Error("Workflow save is unavailable.");
+        const requestId = crypto.randomUUID();
+        return new Promise<string>((resolve, reject) => {
+            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, (value: any) => {
+                if (
+                    !value ||
+                    value.schema !== "pi.workflow.background.save.result" ||
+                    value.version !== 1 ||
+                    value.sessionId !== this.workflowSessionId ||
+                    value.instanceId !== instanceId ||
+                    value.cwd !== this.workflowCwd ||
+                    value.requestId !== requestId
+                )
+                    return;
+                clearTimeout(timer);
+                unsubscribe();
+                value.ok && typeof value.path === "string"
+                    ? resolve(value.path)
+                    : reject(new Error(typeof value.error === "string" ? value.error : "Workflow save failed."));
+            });
+            const timer = setTimeout(() => {
+                unsubscribe();
+                reject(new Error("Workflow save request timed out."));
+            }, 5_000);
+            this.eventBus.emit(BACKGROUND_WORKFLOW_SAVE_CHANNEL, {
+                schema: "pi.workflow.background.save",
+                version: 1,
+                sessionId: this.workflowSessionId,
+                instanceId,
+                cwd: this.workflowCwd,
+                requestId,
+                runId,
+                name,
+                scope,
+                overwrite,
+            });
+        });
     }
 
     async abort(): Promise<void> {

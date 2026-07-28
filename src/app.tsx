@@ -556,13 +556,47 @@ export function App(props: { controller: PuiController }) {
         items.push(
             {
                 label: "Save workflow",
-                detail: "Unavailable until WS5 saved definitions",
-                search: "save",
-                action: () =>
-                    props.controller.notify(
-                        "Saving workflows is reserved for WS5 and is not available yet.",
-                        "warning",
-                    ),
+                detail: "Save the immutable inspected script",
+                search: "save project personal",
+                action: () => {
+                    const save = async (scope: "project" | "personal", overwrite = false) => {
+                        try {
+                            const saved = await props.controller.saveWorkflow(run.id, run.name, scope, overwrite);
+                            setDialog(undefined);
+                            props.controller.notify(`Saved workflow to ${saved}.`, "success");
+                        } catch (error) {
+                            const text = error instanceof Error ? error.message : String(error);
+                            if (!overwrite && text.includes("confirm overwrite")) {
+                                setDialog({
+                                    kind: "confirm",
+                                    title: "Overwrite workflow?",
+                                    message: text,
+                                    confirmLabel: "Overwrite",
+                                    action: () => void save(scope, true),
+                                });
+                            } else props.controller.notify(text, "error");
+                        }
+                    };
+                    setDialog({
+                        kind: "picker",
+                        title: `Save ${run.name}`,
+                        placeholder: "Choose destination",
+                        items: [
+                            {
+                                label: "Project",
+                                detail: ".pi/workflows",
+                                search: "project",
+                                action: () => void save("project"),
+                            },
+                            {
+                                label: "Personal",
+                                detail: "~/.pi/agent/workflows",
+                                search: "personal global",
+                                action: () => void save("personal"),
+                            },
+                        ],
+                    });
+                },
             },
             {
                 label: "Open script/artifacts",

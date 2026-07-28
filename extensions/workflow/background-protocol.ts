@@ -2,6 +2,8 @@ import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 
 export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_SAVE_CHANNEL = "pui.workflow.background.save" as const;
+export const BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL = "pui.workflow.background.save.result" as const;
 export const BACKGROUND_WORKFLOW_SCHEMA = "pi.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
 export const BACKGROUND_WORKFLOW_VERSION = 1 as const;
@@ -30,6 +32,19 @@ export interface BackgroundWorkflowControlV1 {
     type: WorkflowControlAction;
     runId: string;
     agentId?: string;
+}
+
+export interface BackgroundWorkflowSaveV1 {
+    schema: "pi.workflow.background.save";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    runId: string;
+    name: string;
+    scope: "project" | "personal";
+    overwrite: boolean;
 }
 
 export interface WorkflowRoute {

@@ -286,6 +286,8 @@ export function parseWorkflowDetailsV1(value: unknown): WorkflowRunDetailsV1 | u
 
 export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_SAVE_CHANNEL = "pui.workflow.background.save" as const;
+export const BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL = "pui.workflow.background.save.result" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
 const BACKGROUND_SCHEMA = "pi.workflow.background";
 export type WorkflowControlAction = "pause" | "resume" | "stop" | "restart-agent" | "retry";
