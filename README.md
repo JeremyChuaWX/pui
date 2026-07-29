@@ -99,7 +99,7 @@ return parallel([agent("Review API", { role: "explore" }), agent("Review UI", { 
 
 Project definitions live at `.pi/workflows/*.js`; personal definitions live at `~/.pi/agent/workflows/*.js`. Lookup walks from the current directory to the repository root: the nearest project definition wins, then more distant project definitions, then personal definitions. Metadata must be one static `export const meta = { name: "lowercase-hyphen-name", description: "..." }` declaration and is parsed without execution.
 
-Every exact script is shown for approval. Choose **Run once** or **Trust unchanged script in this project**; trust is keyed by canonical project, name, and SHA-256 source bytes, so edits require approval again. Project workflows additionally require Pi project trust. Saving supports project or personal scope and refuses symlink traversal.
+Every exact workflow script is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Then choose **Run once** or **Trust unchanged script in this project**; trust is keyed by canonical project, name, and SHA-256 source bytes, so edits require approval again. Project workflows additionally require Pi project trust. Saving supports project or personal scope and refuses symlink traversal.
 
 Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, restart a completed agent, or save a run; `/workflow` directly launches a saved definition. Pause lets active agents finish but starts no new work. Stop aborts the worker and active agents. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
 

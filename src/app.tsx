@@ -4,6 +4,7 @@ import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, o
 import { createStore, reconcile } from "solid-js/store";
 import { type PuiController, WorkflowSaveError } from "./controller.js";
 import { extensionDialogOwner } from "./dialog-owner.js";
+import { extensionConfirmKeyHint, extensionConfirmKeyIntent } from "./extension-confirm-key.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
 import { formatCount, formatWorkflowSummary, workflowStatusPresentation, workflowStatusTone } from "./format.js";
@@ -106,16 +107,32 @@ export function App(props: { controller: PuiController }) {
     let promptAnchor: BoxRenderable | undefined;
     let transcript: ScrollBoxRenderable | undefined;
     let dialogRequest = 0;
+    let resolvedExtensionConfirmId: number | undefined;
     let completionRequest = 0;
     let completionAbort: AbortController | undefined;
     let externalEditorOpen = false;
     let appliedHistoryText: string | undefined;
     let releasePromptFocusTrap: (() => void) | undefined;
 
+    const extensionConfirm = createMemo(() => {
+        const request = snapshot.extensionDialog;
+        return !dialog() && request?.kind === "confirm" ? request : undefined;
+    });
+    const extensionConfirmActive = createMemo(() => extensionConfirm() !== undefined);
+
+    function resolveExtensionConfirm(id: number, approved: boolean): void {
+        if (resolvedExtensionConfirmId === id) return;
+        resolvedExtensionConfirmId = id;
+        props.controller.resolveExtensionDialog(id, approved);
+    }
+
     function setPromptRef(value: TextareaRenderable): void {
         releasePromptFocusTrap?.();
         prompt = value;
-        releasePromptFocusTrap = trapFocus(value, () => !dialog() && !externalEditorOpen && !renderer.isDestroyed);
+        releasePromptFocusTrap = trapFocus(
+            value,
+            () => !dialog() && !extensionConfirmActive() && !externalEditorOpen && !renderer.isDestroyed,
+        );
     }
 
     let unsubscribe: (() => void) | undefined;
@@ -140,17 +157,7 @@ export function App(props: { controller: PuiController }) {
         }
         if (owner === request.id) return;
         if (request.kind === "confirm") {
-            setDialog({
-                kind: "confirm",
-                title: request.title,
-                message: request.message,
-                confirmLabel: "confirm",
-                extensionRequestId: request.id,
-                action: () => {
-                    props.controller.resolveExtensionDialog(request.id, true);
-                    setDialog(undefined);
-                },
-            });
+            if (owner !== undefined) setDialog(undefined);
         } else if (request.kind === "select") {
             setDialog({
                 kind: "picker",
@@ -208,6 +215,10 @@ export function App(props: { controller: PuiController }) {
         setPromptCompletions(undefined);
         setCompletionIndex(0);
     }
+
+    createEffect(() => {
+        if (extensionConfirmActive()) closePromptCompletions();
+    });
 
     async function updatePromptCompletions(text: string, cursorOffset: number): Promise<void> {
         if (promptHistory.isTraversing || !shouldTriggerPromptAutocomplete(text, cursorOffset)) {
@@ -756,6 +767,17 @@ export function App(props: { controller: PuiController }) {
                 );
             return;
         }
+        const confirmation = extensionConfirm();
+        if (confirmation) {
+            key.preventDefault();
+            key.stopPropagation();
+            const intent = extensionConfirmKeyIntent(key);
+            if (intent === "approve") resolveExtensionConfirm(confirmation.id, true);
+            else if (intent === "deny") resolveExtensionConfirm(confirmation.id, false);
+            else if (intent === "page-up" && transcript) transcript.scrollBy(-Math.max(4, transcript.height - 4));
+            else if (intent === "page-down" && transcript) transcript.scrollBy(Math.max(4, transcript.height - 4));
+            return;
+        }
         if (dialog()) return;
 
         const historyKey = key.ctrl && (key.name === "p" || key.name === "n");
@@ -891,7 +913,10 @@ export function App(props: { controller: PuiController }) {
         >
             <box flexDirection="row" flexGrow={1} minHeight={0}>
                 <box flexGrow={1} minWidth={0} paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
-                    <Show when={snapshot.display.length > 0} fallback={<Welcome cwd={snapshot.compactCwd} />}>
+                    <Show
+                        when={snapshot.display.length > 0 || extensionConfirmActive()}
+                        fallback={<Welcome cwd={snapshot.compactCwd} />}
+                    >
                         <scrollbox
                             ref={(value) => (transcript = value)}
                             flexGrow={1}
@@ -923,6 +948,11 @@ export function App(props: { controller: PuiController }) {
                                     <QueuedMessage message={message()} label="follow up" color={theme.secondary} />
                                 )}
                             </Index>
+                            <Show when={extensionConfirm()}>
+                                {(request) => (
+                                    <ExtensionConfirmation title={request().title} message={request().message} />
+                                )}
+                            </Show>
                         </scrollbox>
                     </Show>
                     <Show when={promptCompletions()}>
@@ -936,7 +966,7 @@ export function App(props: { controller: PuiController }) {
                     </Show>
                     <Prompt
                         snapshot={snapshot}
-                        focused={!dialog()}
+                        focused={!dialog() && !extensionConfirmActive()}
                         setAnchorRef={(value) => (promptAnchor = value)}
                         setRef={setPromptRef}
                         onChange={handlePromptChange}
@@ -1846,6 +1876,18 @@ function Picker(props: {
                 </Show>
             </box>
             <text fg={theme.muted}>↑↓ navigate · enter select · esc close</text>
+        </box>
+    );
+}
+
+function ExtensionConfirmation(props: { title: string; message: string }) {
+    return (
+        <box border={["left"]} borderColor={theme.warning} paddingLeft={2} paddingRight={1} gap={1}>
+            <text fg={theme.warning}>
+                <strong>{props.title}</strong>
+            </text>
+            <text fg={theme.text}>{props.message}</text>
+            <text fg={theme.warning}>{extensionConfirmKeyHint}</text>
         </box>
     );
 }
