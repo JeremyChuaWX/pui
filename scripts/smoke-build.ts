@@ -25,7 +25,6 @@ if (help.exitCode !== 0) throw new Error(`Standalone executable smoke failed: ${
 const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-compiled-workflow-"));
 try {
     const workflow = run(["--workflow-smoke"], {
-        PUI_WORKFLOWS: "1",
         PUI_WORKFLOW_SMOKE: "1",
         PUI_WORKFLOW_SMOKE_ROOT: temp,
     });
@@ -47,7 +46,6 @@ try {
         { mode: 0o755 },
     );
     const old = run(["--workflow-smoke"], {
-        PUI_WORKFLOWS: "1",
         PUI_WORKFLOW_SMOKE: "1",
         PUI_WORKFLOW_SMOKE_ROOT: path.join(temp, "old"),
         PUI_WORKFLOW_NODE: oldNode,

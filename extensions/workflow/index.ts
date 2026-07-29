@@ -57,7 +57,6 @@ export interface WorkflowExtensionDependencies {
 
 export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: WorkflowExtensionDependencies = {}): void {
     const environment = dependencies.environment ?? process.env;
-    if (environment.PUI_WORKFLOWS !== "1") return;
     const instanceId = dependencies.instanceId ?? crypto.randomUUID();
     const approvalStore = dependencies.approvalStore ?? new FileWorkflowApprovalStore();
     const defaultExecutor: WorkflowBackendOptions["agentExecutor"] = async (request) => {

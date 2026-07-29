@@ -21,7 +21,7 @@ const summary = (status: "running" | "succeeded") => ({
     updatedAt: 1,
 });
 
-function fixture(enabled: boolean, dependencies: { backend?: Partial<WorkflowBackend>; [key: string]: unknown } = {}) {
+function fixture(dependencies: { backend?: Partial<WorkflowBackend>; [key: string]: unknown } = {}) {
     const handlers = new Map<string, (...args: any[]) => any>(),
         eventHandlers = new Map<string, (payload: any) => void>(),
         emitted: any[] = [],
@@ -72,7 +72,7 @@ function fixture(enabled: boolean, dependencies: { backend?: Partial<WorkflowBac
     };
     registerWorkflowExtension(pi, {
         backend,
-        environment: enabled ? { PUI_WORKFLOWS: "1" } : {},
+        environment: {},
         instanceId: "instance-1",
         ...extensionDependencies,
     });
@@ -103,9 +103,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
 }
 
 describe("workflow extension", () => {
-    test("feature flag, confirmation, launch, events, deduplication, and shutdown", async () => {
-        expect(fixture(false).tool).toBeUndefined();
-        const f = fixture(true);
+    test("registration, confirmation, launch, events, deduplication, and shutdown", async () => {
+        const f = fixture();
         expect(f.tool.name).toBe("workflow");
         await f.handlers.get("session_start")!(
             {},
@@ -153,7 +152,7 @@ describe("workflow extension", () => {
             resolveInitialization: () => void = () => {};
         const started = new Promise<void>((resolve) => (resolveStarted = resolve)),
             initialization = new Promise<void>((resolve) => (resolveInitialization = resolve));
-        const f = fixture(true, {
+        const f = fixture({
             backend: {
                 async initialize() {
                     initializeCalls++;
@@ -206,7 +205,7 @@ describe("workflow extension", () => {
                     script: `export const meta={name:"demo",description:"Demo"}; return 1`,
                 }),
             };
-            const f = fixture(true, { backend });
+            const f = fixture({ backend });
             await f.handlers.get("session_start")!(
                 {},
                 {
@@ -290,7 +289,7 @@ describe("workflow extension", () => {
             await fs.promises.mkdir(path.join(root, ".pi/workflows"), { recursive: true });
             const file = path.join(root, ".pi/workflows/demo.js");
             await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Demo"}; return args`);
-            const f = fixture(true, { storageOptions: { home }, approvalStore });
+            const f = fixture({ storageOptions: { home }, approvalStore });
             await f.handlers.get("session_start")!(
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },

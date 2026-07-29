@@ -78,9 +78,9 @@ pi -e /absolute/path/to/pui/extensions/subagent/index.ts
 
 See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
 
-## Workflows (opt-in)
+## Workflows
 
-Programmatic workflows are experimental and remain disabled by default. Start pui with `PUI_WORKFLOWS=1 pui`; this registers the `workflow` tool, `/workflow <name> [JSON args]` for saved definitions, and `/workflows` for run management. Workflows also require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
+Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <name> [JSON args]` for saved definitions, and `/workflows` for run management. Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
 
 An inline workflow is JavaScript using `agent`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
 

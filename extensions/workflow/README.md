@@ -1,6 +1,6 @@
 # Workflow extension
 
-Set `PUI_WORKFLOWS=1` before starting pui to register the `workflow` tool. Inline scripts are shown verbatim through Pi's `ctx.ui.confirm` surface and never run when confirmation is unavailable or denied. Durable run artifacts live outside projects under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/`; injected `WorkflowRunStorage` roots keep recovery tests hermetic. Launch bytes and policy are immutable, snapshots are atomic, completion journals are append-only and fsynced, and corrupt/truncated or symlinked artifacts fail closed.
+pui registers the bundled `workflow` tool by default. Inline scripts are shown verbatim through Pi's `ctx.ui.confirm` surface and never run when confirmation is unavailable or denied. Durable run artifacts live outside projects under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/`; injected `WorkflowRunStorage` roots keep recovery tests hermetic. Launch bytes and policy are immutable, snapshots are atomic, completion journals are append-only and fsynced, and corrupt/truncated or symlinked artifacts fail closed.
 
 Completed JSON-compatible operations replay from their structural identity. An operation active when the host is interrupted is not journaled and runs again after explicit recovery. Consequently interrupted model/tool/filesystem effects are **at least once**, not exactly once. Recovery must remain user-selected (ask by default); worktree branches are never merged automatically.
 

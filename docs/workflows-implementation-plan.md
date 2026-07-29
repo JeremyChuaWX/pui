@@ -1,6 +1,6 @@
 # Programmatic Workflows Implementation Plan
 
-Status: implemented alpha, opt-in behind `PUI_WORKFLOWS=1`; manual acceptance and default-enable criteria remain pending
+Status: implemented alpha and enabled by default; manual product acceptance remains pending
 
 This document is an implementation plan for adding Claude Code-style dynamic workflows to pui. It is organized so an orchestrating agent can delegate bounded work packages to subagents without assigning overlapping files.
 
@@ -42,7 +42,7 @@ This feature implements dynamic workflows, not Anthropic API programmatic tool c
 9. The compiled pui executable launches a real Node worker and never recursively launches itself.
 10. Every run is bounded by concurrency, agent-count, timeout, memory, and message-size limits.
 
-### Required before workflows are enabled by default
+### Default-enable safety requirements
 
 1. A versioned protocol with unknown-version fallback.
 2. Durable run snapshots and journaled completed operations.
@@ -508,7 +508,6 @@ Tasks:
 - Implement run manager lifecycle and exactly-once terminal delivery.
 - Emit protocol snapshots through `pi.events`.
 - Wire the bundled extension without importing Pi-TUI renderers.
-- Add the workflow feature flag.
 
 Exit criteria:
 
@@ -605,7 +604,7 @@ Exit criteria:
 
 - `bun run check` passes.
 - Security boundary and at-least-once caveat are documented.
-- Feature remains opt-in until all default-enable requirements pass.
+- Default-enable safety requirements have automated coverage.
 - No test requires paid model calls.
 
 ## Required test scenarios
@@ -650,13 +649,13 @@ Exit criteria:
 
 1. Merge WS0 documentation and upstream compatibility work.
 2. Merge WS1 protocol with no user-visible behavior.
-3. Merge WS2 behind `PUI_WORKFLOWS=1`.
+3. Merge WS2 behind an initial alpha gate.
 4. Merge WS3 and WS4 to make alpha runs observable and controllable.
 5. Merge WS5 for reusable workflows.
 6. Merge WS6 for durable, write-capable workflows.
 7. Merge WS7 hardening and documentation.
 8. Run a manual alpha on representative read-only and write-capable workflows.
-9. Enable by default only after compiled, security, recovery, and worktree acceptance criteria pass.
+9. Remove the initial gate after compiled, security, recovery, and worktree acceptance criteria pass.
 
 Every merge must preserve `bun run check`. If a workstream changes a protocol or backend contract, downstream subagents must be stopped and rebased onto the revised contract before continuing.
 

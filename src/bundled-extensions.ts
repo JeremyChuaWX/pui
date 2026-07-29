@@ -10,6 +10,6 @@ export const BUNDLED_SUBAGENT_SOURCE_PATH = fileURLToPath(new URL("../extensions
 export const BUNDLED_EXTENSION_FACTORIES: InlineExtension[] = [
     { name: "pui-file-search", factory: fileSearchExtension },
     { name: "pui-subagent", factory: subagentExtension },
-    ...(process.env.PUI_WORKFLOWS === "1" ? [{ name: "pui-workflow", factory: workflowExtension }] : []),
+    { name: "pui-workflow", factory: workflowExtension },
     { name: "pui-web", factory: webExtension },
 ];
