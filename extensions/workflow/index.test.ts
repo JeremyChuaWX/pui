@@ -141,6 +141,17 @@ describe("workflow extension", () => {
         expect(f.emitted.at(-1)?.[1].type).toBe("reset");
     });
 
+    test("ignores metadata-like text when naming inline workflows", async () => {
+        const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
+        );
+        const script = `// export const meta={name:"wrong",description:"Wrong"}\nreturn 1`;
+        await f.tool.execute("id", { script }, undefined, undefined, { cwd: process.cwd(), ui: {} });
+        expect(f.launches.at(-1)).toMatchObject({ name: "Inline workflow", script });
+    });
+
     test("publishes readiness only for the latest overlapping session start", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-lifecycle-")),
             firstCwd = path.join(root, "first"),
@@ -190,22 +201,136 @@ describe("workflow extension", () => {
         }
     });
 
-    test("control and save channels return routed success and bounded structured failures", async () => {
-        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
-        const longError = "x".repeat(3_000);
+    test("command accepts quoted paths with JSON args and preserves unquoted paths", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-command-"));
         try {
-            const backend: Partial<WorkflowBackend> = {
-                async control(_id, request) {
-                    const action = typeof request === "string" ? request : request.action;
-                    if (action === "pause") return { runId: "linked-run" };
-                    throw new Error(longError);
+            await Promise.all([
+                fs.promises.writeFile(path.join(root, "single quoted.js"), "return args"),
+                fs.promises.writeFile(path.join(root, "double quoted.js"), "return args"),
+                fs.promises.writeFile(path.join(root, "plain.js"), "return args"),
+            ]);
+            const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            const notifications: string[] = [];
+            const context = { cwd: root, ui: { notify: (message: string) => notifications.push(message) } };
+            await f.command.handler("   ", context);
+            expect(notifications).toEqual(["Usage: /workflow <path> [JSON args]"]);
+            await f.command.handler(`'single quoted.js' {"quote":"single"}`, context);
+            await f.command.handler(`"double quoted.js" {"quote":"double"}`, context);
+            await f.command.handler(`plain.js {"quote":"none"}`, context);
+            expect(f.launches.map(({ name, args }) => ({ name, args }))).toEqual([
+                { name: "single-quoted", args: { quote: "single" } },
+                { name: "double-quoted", args: { quote: "double" } },
+                { name: "plain", args: { quote: "none" } },
+            ]);
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("aborts a launch when the session changes while approval is pending", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-approval-session-"));
+        let resolveApproval: (approved: boolean) => void = () => {},
+            markConfirmationPending: () => void = () => {};
+        const approval = new Promise<boolean>((resolve) => (resolveApproval = resolve)),
+            confirmationPending = new Promise<void>((resolve) => (markConfirmationPending = resolve));
+        try {
+            await fs.promises.writeFile(path.join(root, "pending.js"), "return 1");
+            const f = fixture({ approvalStore: { has: async () => false, add: async () => {} } });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            const launch = f.tool.execute("id", { path: "pending.js" }, undefined, undefined, {
+                cwd: root,
+                ui: {
+                    confirm: () => {
+                        markConfirmationPending();
+                        return approval;
+                    },
                 },
-                inspect: () => ({
-                    run: summary("succeeded"),
-                    script: `export const meta={name:"demo",description:"Demo"}; return 1`,
-                }),
-            };
-            const f = fixture({ backend });
+            });
+            await confirmationPending;
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-2" } },
+            );
+            resolveApproval(true);
+            await expect(launch).rejects.toThrow("active session changed");
+            expect(f.launches).toHaveLength(0);
+        } finally {
+            resolveApproval(false);
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("aborts an inline launch when the session changes during backend setup", async () => {
+        let setupStarted: () => void = () => {};
+        let releaseSetup: () => void = () => {};
+        const started = new Promise<void>((resolve) => (setupStarted = resolve));
+        const release = new Promise<void>((resolve) => (releaseSetup = resolve));
+        const f = fixture({
+            backend: {
+                async launch(_input, signal) {
+                    setupStarted();
+                    await release;
+                    if (signal?.aborted) throw new Error("Workflow launch was cancelled.");
+                    return { runId: "stale" };
+                },
+            },
+        });
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
+        );
+        const launch = f.tool.execute("id", { script: "return 1" }, undefined, undefined, {
+            cwd: process.cwd(),
+            ui: { confirm: () => true },
+        });
+        await started;
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-2" } },
+        );
+        releaseSetup();
+        await expect(launch).rejects.toThrow("cancelled");
+    });
+
+    test("launches an explicit file outside a repository without project trust", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-file-"));
+        try {
+            await fs.promises.writeFile(path.join(root, "plain workflow.js"), "return args");
+            const f = fixture({
+                approvalStore: { has: async () => false, add: async () => {} },
+            });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            await f.tool.execute("id", { path: "plain workflow.js", args: { x: 1 } }, undefined, undefined, {
+                cwd: root,
+                isProjectTrusted: () => false,
+                ui: { confirm: () => true },
+            });
+            expect(f.launches.at(-1)).toMatchObject({ name: "plain-workflow", args: { x: 1 }, script: "return args" });
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("control channel remains and save bridge is removed", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
+        try {
+            const f = fixture({
+                backend: {
+                    async control() {
+                        return { runId: "linked-run" };
+                    },
+                },
+            });
             await f.handlers.get("session_start")!(
                 {},
                 {
@@ -214,69 +339,29 @@ describe("workflow extension", () => {
                     ui: { select: async () => "Later", notify: () => {} },
                 },
             );
-            const route = {
+            expect(f.eventHandlers.has("pui.workflow.background.save")).toBe(false);
+            f.eventHandlers.get("pui.workflow.background.control")!({
+                schema: "pi.workflow.background.control",
                 version: 1,
                 sessionId: "session-1",
                 instanceId: "instance-1",
                 cwd: await fs.promises.realpath(root),
-                runId: "run-1",
-            };
-            f.eventHandlers.get("pui.workflow.background.control")!({
-                ...route,
-                schema: "pi.workflow.background.control",
                 requestId: "control-ok",
+                runId: "run-1",
                 action: "pause",
             });
-            f.eventHandlers.get("pui.workflow.background.control")!({
-                ...route,
-                schema: "pi.workflow.background.control",
-                requestId: "control-fail",
-                action: "stop",
-            });
-            f.eventHandlers.get("pui.workflow.background.save")!({
-                ...route,
-                schema: "pi.workflow.background.save",
-                requestId: "save-ok",
-                scope: "project",
-                overwrite: false,
-            });
-            await waitFor(() =>
-                ["control-ok", "control-fail", "save-ok"].every((requestId) =>
-                    f.emitted.some(([, value]) => value.requestId === requestId),
-                ),
-            );
+            await waitFor(() => f.emitted.some(([, value]) => value.requestId === "control-ok"));
             expect(f.emitted.find(([, value]) => value.requestId === "control-ok")?.[1]).toMatchObject({
                 ok: true,
                 linkedRunId: "linked-run",
-            });
-            expect(f.emitted.find(([, value]) => value.requestId === "control-fail")?.[1]).toMatchObject({
-                ok: false,
-                error: "x".repeat(2_000),
-            });
-            expect(f.emitted.find(([, value]) => value.requestId === "save-ok")?.[1]).toMatchObject({
-                ok: true,
-                path: path.join(route.cwd, ".pi/workflows/demo.js"),
-            });
-            f.eventHandlers.get("pui.workflow.background.save")!({
-                ...route,
-                schema: "pi.workflow.background.save",
-                requestId: "save-fail",
-                scope: "project",
-                overwrite: false,
-            });
-            await waitFor(() => f.emitted.some(([, value]) => value.requestId === "save-fail"));
-            expect(f.emitted.find(([, value]) => value.requestId === "save-fail")?.[1]).toMatchObject({
-                ok: false,
-                code: "overwrite_required",
             });
         } finally {
             await fs.promises.rm(root, { recursive: true, force: true });
         }
     });
 
-    test("saved invocation passes structured args, requires project trust, completes commands, and reapproves changed bytes", async () => {
+    test("file invocation passes args, requires project trust, and reapproves changed bytes", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-index-"));
-        const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-index-home-"));
         const keys = new Set<string>();
         const approvalStore = {
             has: async (key: string) => keys.has(key),
@@ -286,10 +371,9 @@ describe("workflow extension", () => {
         };
         try {
             await fs.promises.mkdir(path.join(root, ".git"));
-            await fs.promises.mkdir(path.join(root, ".pi/workflows"), { recursive: true });
-            const file = path.join(root, ".pi/workflows/demo.js");
+            const file = path.join(root, "demo.js");
             await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Demo"}; return args`);
-            const f = fixture({ storageOptions: { home }, approvalStore });
+            const f = fixture({ approvalStore });
             await f.handlers.get("session_start")!(
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
@@ -300,24 +384,30 @@ describe("workflow extension", () => {
                 ui: { confirm: () => true, select: () => "Trust unchanged script in this project", notify: () => {} },
             };
             await expect(
-                f.tool.execute("id", { name: "demo", args: { x: 1 } }, undefined, undefined, context),
+                f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context),
             ).rejects.toThrow("not trusted");
             context.isProjectTrusted = () => true;
-            await f.tool.execute("id", { name: "demo", args: { x: 1 } }, undefined, undefined, context);
-            expect(f.launches.at(-1)).toMatchObject({ name: "demo", args: { x: 1 } });
-            expect(await f.command.getArgumentCompletions("de")).toEqual([expect.objectContaining({ value: "demo" })]);
+            await f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context);
+            expect(f.launches.at(-1)).toMatchObject({
+                name: "demo",
+                args: { x: 1 },
+                script: expect.stringContaining("return args"),
+            });
             const approved = keys.size;
-            await f.command.handler(`demo {"from":"command"}`, context);
+            await f.command.handler(`demo.js {"from":"command"}`, context);
             expect(keys.size).toBe(approved);
-            await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Changed"}; return args`);
-            await f.tool.execute("id", { name: "demo" }, undefined, undefined, context);
+            const moved = path.join(root, "moved.js");
+            await fs.promises.copyFile(file, moved);
+            await f.tool.execute("id", { path: moved }, undefined, undefined, context);
             expect(keys.size).toBe(approved + 1);
+            await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Changed"}; return args`);
+            await f.tool.execute("id", { path: file }, undefined, undefined, context);
+            expect(keys.size).toBe(approved + 2);
             await expect(
-                f.tool.execute("id", { name: "demo", script: "return 1" }, undefined, undefined, context),
+                f.tool.execute("id", { path: file, script: "return 1" }, undefined, undefined, context),
             ).rejects.toThrow("exactly one");
         } finally {
             await fs.promises.rm(root, { recursive: true, force: true });
-            await fs.promises.rm(home, { recursive: true, force: true });
         }
     });
 });

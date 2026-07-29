@@ -55,28 +55,14 @@ import {
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
-    BACKGROUND_WORKFLOW_SAVE_CHANNEL,
-    BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     parseWorkflowBackgroundEvent,
     parseWorkflowControl,
     parseWorkflowControlResult,
-    parseWorkflowSave,
-    parseWorkflowSaveResult,
     reduceWorkflowEvent,
     type WorkflowControlAction,
     type WorkflowRunSummaryV1,
     type WorkflowState,
 } from "./workflow.js";
-
-export class WorkflowSaveError extends Error {
-    constructor(
-        message: string,
-        readonly code?: "overwrite_required",
-    ) {
-        super(message);
-        this.name = "WorkflowSaveError";
-    }
-}
 
 export interface ControllerOptions {
     cwd: string;
@@ -192,7 +178,6 @@ export class PuiController {
     private workflowSessionId = "";
     private workflowCwd = "";
     private unsubscribeWorkflow?: () => void;
-    private pendingWorkflowSaves = new Set<(error: Error) => void>();
     private pendingWorkflowControls = new Set<(error: Error) => void>();
     private extensionDialogs: Array<{
         dialog: ExtensionDialog;
@@ -284,9 +269,7 @@ export class PuiController {
     private async bindSession(session: AgentSession): Promise<void> {
         const generation = ++this.bindGeneration;
         this.dismissExtensionDialogs();
-        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
-            reject(new Error("Workflow session changed."));
-        this.pendingWorkflowSaves.clear();
+        for (const reject of this.pendingWorkflowControls) reject(new Error("Workflow session changed."));
         this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
         this.unsubscribeWorkflow?.();
@@ -991,54 +974,6 @@ export class PuiController {
     retryWorkflowAsync(runId: string) {
         return this.controlWorkflowAsync(runId, "retry");
     }
-    async saveWorkflow(runId: string, scope: "project" | "personal", overwrite = false): Promise<string> {
-        const run = this.workflowState.runs.get(runId),
-            instanceId = this.workflowState.instanceId;
-        if (!run || !instanceId) throw new Error("Workflow save is unavailable.");
-        const requestId = crypto.randomUUID();
-        return new Promise<string>((resolve, reject) => {
-            let timer: ReturnType<typeof setTimeout>;
-            const cleanup = () => {
-                clearTimeout(timer);
-                unsubscribe();
-                this.pendingWorkflowSaves.delete(cancel);
-            };
-            const cancel = (error: Error) => {
-                cleanup();
-                reject(error);
-            };
-            this.pendingWorkflowSaves.add(cancel);
-            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, (payload) => {
-                const value = parseWorkflowSaveResult(payload, {
-                    sessionId: this.workflowSessionId,
-                    instanceId,
-                    cwd: this.workflowCwd,
-                });
-                if (!value || value.requestId !== requestId) return;
-                cleanup();
-                if (value.ok && value.path) resolve(value.path);
-                else reject(new WorkflowSaveError(value.error ?? "Workflow save failed.", value.code));
-            });
-            timer = setTimeout(() => cancel(new Error("Workflow save request timed out.")), 5_000);
-            const request = parseWorkflowSave(
-                {
-                    schema: "pi.workflow.background.save",
-                    version: 1,
-                    sessionId: this.workflowSessionId,
-                    instanceId,
-                    cwd: this.workflowCwd,
-                    requestId,
-                    runId,
-                    scope,
-                    overwrite,
-                },
-                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
-            );
-            if (!request) return cancel(new Error("Invalid workflow save request."));
-            this.eventBus.emit(BACKGROUND_WORKFLOW_SAVE_CHANNEL, request);
-        });
-    }
-
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -1060,9 +995,7 @@ export class PuiController {
         if (this.disposed) return;
         this.disposed = true;
         this.dismissExtensionDialogs();
-        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
-            reject(new Error("Controller disposed."));
-        this.pendingWorkflowSaves.clear();
+        for (const reject of this.pendingWorkflowControls) reject(new Error("Controller disposed."));
         this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
         this.unsubscribeBackground();

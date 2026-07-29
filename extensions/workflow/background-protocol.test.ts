@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-    parseBackgroundWorkflowControl,
-    parseBackgroundWorkflowEvent,
-    parseBackgroundWorkflowSaveResult,
-} from "./background-protocol.js";
+import { parseBackgroundWorkflowControl, parseBackgroundWorkflowEvent } from "./background-protocol.js";
 import { workflowRun } from "./workflow-fixture.js";
 
 const route = { sessionId: "session-1", instanceId: "instance-1", cwd: "/canonical/repo" };
@@ -51,28 +47,5 @@ describe("background workflow protocol", () => {
             control("pause", { version: 2 }),
         ])
             expect(parseBackgroundWorkflowControl(invalid, route)).toBeUndefined();
-    });
-
-    test("accepts only the structured overwrite save error code", () => {
-        const base = {
-            ...envelope("unused"),
-            schema: "pi.workflow.background.save.result",
-            requestId: "request-1",
-            ok: false,
-            error: "already exists",
-        };
-        expect(parseBackgroundWorkflowSaveResult({ ...base, code: "overwrite_required" }, route)?.code).toBe(
-            "overwrite_required",
-        );
-        expect(parseBackgroundWorkflowSaveResult({ ...base, code: "future" }, route)).toBeUndefined();
-        expect(
-            parseBackgroundWorkflowSaveResult({ ...base, ok: true, path: "/saved.js", error: undefined }, route),
-        ).toBeDefined();
-        expect(
-            parseBackgroundWorkflowSaveResult(
-                { ...base, ok: true, path: "/saved.js", error: undefined, code: "overwrite_required" },
-                route,
-            ),
-        ).toBeUndefined();
     });
 });

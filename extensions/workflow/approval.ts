@@ -24,9 +24,9 @@ function isProcessAlive(pid: number): boolean {
         return (error as NodeJS.ErrnoException).code === "EPERM";
     }
 }
-export function workflowApprovalKey(project: string, name: string, script: string): string {
+export function workflowApprovalKey(project: string, sourceIdentity: string, script: string): string {
     const hash = createHash("sha256").update(Buffer.from(script)).digest("hex");
-    return `${project}\0${name}\0${hash}`;
+    return `${project}\0${sourceIdentity}\0${hash}`;
 }
 export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
     constructor(

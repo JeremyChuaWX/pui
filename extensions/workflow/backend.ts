@@ -12,7 +12,7 @@ import {
     type WorkflowUsageV1,
 } from "./protocol.js";
 import type { WorkflowRunStorage } from "./run-storage.js";
-import { executableWorkflowScript } from "./storage.js";
+import { executableWorkflowScript } from "./source.js";
 import { WorkflowWorktreeManager } from "./worktree.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {
@@ -90,7 +90,7 @@ export interface WorkflowBackendOptions {
     afterDurableCompletion?: (operationId: string) => Promise<void> | void;
 }
 export interface WorkflowBackend {
-    launch(input: WorkflowLaunch): Promise<{ runId: string }>;
+    launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }>;
     initialize?(cwd: string): Promise<WorkflowRunSummaryV1[]>;
     recover?(id: string): Promise<void>;
     list(): WorkflowRunSummaryV1[];
@@ -337,7 +337,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         ? home
                         : undefined,
             });
-    let shuttingDown = false;
+    let shuttingDown = false,
+        pendingLaunches = 0,
+        pendingLaunchWaiter: (() => void) | undefined;
     const now = options.now ?? Date.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
     const emit = (copy: WorkflowRunSummaryV1) => {
@@ -839,116 +841,143 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         }
     };
     return {
-        async launch(input) {
+        async launch(input, signal) {
             if (shuttingDown) throw new Error("Workflow backend is shutting down.");
-            if (
-                typeof input.name !== "string" ||
-                !input.name ||
-                input.name.length > 512 ||
-                typeof input.sessionId !== "string" ||
-                !input.sessionId ||
-                input.sessionId.length > 256 ||
-                typeof input.cwd !== "string" ||
-                !input.cwd ||
-                input.cwd.length > 4_000
-            )
-                throw new Error("Invalid workflow launch metadata.");
-            preflightWorkflow(input.script);
-            input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
-            const node = await resolveWorkflowNode({
+            const checkCancelled = () => {
+                if (signal?.aborted) throw new Error("Workflow launch was cancelled.");
+            };
+            let durableDirectory: string | undefined;
+            pendingLaunches++;
+            try {
+                checkCancelled();
+                if (
+                    typeof input.name !== "string" ||
+                    !input.name ||
+                    input.name.length > 512 ||
+                    typeof input.sessionId !== "string" ||
+                    !input.sessionId ||
+                    input.sessionId.length > 256 ||
+                    typeof input.cwd !== "string" ||
+                    !input.cwd ||
+                    input.cwd.length > 4_000
+                )
+                    throw new Error("Invalid workflow launch metadata.");
+                preflightWorkflow(input.script);
+                input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
+                checkCancelled();
+                if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+                const node = await resolveWorkflowNode({
                     environment: options.environment,
                     configuredPath: options.nodePath,
-                }),
-                id = crypto.randomUUID(),
-                timestamp = now(),
-                controller = new AbortController(),
-                requested = input.limits ?? {};
-            for (const [key, value] of Object.entries(requested))
-                if (
-                    !["maxConcurrency", "maxAgents", "timeoutMs", "maxTokens", "maxCost"].includes(key) ||
-                    typeof value !== "number" ||
-                    !Number.isFinite(value) ||
-                    value < 0
-                )
-                    throw new Error("Invalid workflow limits.");
-            const limits = {
-                maxConcurrency: Math.min(
-                    16,
-                    Math.max(1, Math.floor(requested.maxConcurrency ?? DEFAULT_WORKFLOW_LIMITS.maxConcurrency)),
-                ),
-                maxAgents: Math.min(
-                    1_000,
-                    Math.max(1, Math.floor(requested.maxAgents ?? DEFAULT_WORKFLOW_LIMITS.maxAgents)),
-                ),
-                timeoutMs: Math.min(
-                    DEFAULT_WORKFLOW_LIMITS.timeoutMs,
-                    Math.max(1, requested.timeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                ),
-                maxTokens: requested.maxTokens ?? 0,
-                maxCost: requested.maxCost ?? 0,
-            };
-            const summary: WorkflowRunSummaryV1 = {
-                schema: "pi.workflow",
-                version: 1,
-                id,
-                name: input.name,
-                sessionId: input.sessionId,
-                cwd: input.cwd,
-                status: "queued",
-                phases: [],
-                agents: [],
-                usage: emptyUsage(),
-                limits,
-                recentActivity: [],
-                updatedAt: timestamp,
-            };
-            const active: ActiveRun = {
-                summary,
-                script: input.script,
-                controller,
-                settlement: Promise.resolve(),
-                cooperativeTasks: new Set(),
-                completions: new Map(input.seedCompletions ?? []),
-                paused: false,
-                resumeWaiters: [],
-                persistence: Promise.resolve(),
-                input: { ...input, limits: input.limits },
-                semaphore: new AbortableSemaphore(limits.maxConcurrency),
-                activeSharedWriters: 0,
-            };
-            if (options.storage)
-                active.directory = await options.storage.create(
-                    input.cwd,
+                });
+                checkCancelled();
+                if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+                const id = crypto.randomUUID(),
+                    timestamp = now(),
+                    controller = new AbortController(),
+                    requested = input.limits ?? {};
+                for (const [key, value] of Object.entries(requested))
+                    if (
+                        !["maxConcurrency", "maxAgents", "timeoutMs", "maxTokens", "maxCost"].includes(key) ||
+                        typeof value !== "number" ||
+                        !Number.isFinite(value) ||
+                        value < 0
+                    )
+                        throw new Error("Invalid workflow limits.");
+                const limits = {
+                    maxConcurrency: Math.min(
+                        16,
+                        Math.max(1, Math.floor(requested.maxConcurrency ?? DEFAULT_WORKFLOW_LIMITS.maxConcurrency)),
+                    ),
+                    maxAgents: Math.min(
+                        1_000,
+                        Math.max(1, Math.floor(requested.maxAgents ?? DEFAULT_WORKFLOW_LIMITS.maxAgents)),
+                    ),
+                    timeoutMs: Math.min(
+                        DEFAULT_WORKFLOW_LIMITS.timeoutMs,
+                        Math.max(1, requested.timeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs),
+                    ),
+                    maxTokens: requested.maxTokens ?? 0,
+                    maxCost: requested.maxCost ?? 0,
+                };
+                const summary: WorkflowRunSummaryV1 = {
+                    schema: "pi.workflow",
+                    version: 1,
                     id,
-                    {
-                        name: input.name,
-                        sessionId: input.sessionId,
-                        cwd: await realpath(input.cwd),
-                        script: input.script,
-                        args: input.args,
-                        policy: options.policy ?? {},
-                        roles: options.policy?.roles ?? [],
-                        models: options.policy?.models ?? [],
-                        limits,
-                        parentRunId: input.parentRunId,
-                    },
+                    name: input.name,
+                    sessionId: input.sessionId,
+                    cwd: input.cwd,
+                    status: "queued",
+                    phases: [],
+                    agents: [],
+                    usage: emptyUsage(),
+                    limits,
+                    recentActivity: [],
+                    updatedAt: timestamp,
+                };
+                const active: ActiveRun = {
                     summary,
-                );
-            if (active.directory && options.storage)
-                for (const [operation, value] of active.completions)
-                    await options.storage.complete(active.directory, operation, value, now());
-            runs.set(id, active);
-            publish(active);
-            active.settlement = execute(active, input, node).catch(async (e) => {
-                if (!active.interrupted && !TERMINAL.has(active.summary.status)) {
-                    active.summary.status = "failed";
-                    active.summary.endedAt = now();
-                    active.summary.error = errorMessage(e);
-                    publishTerminal(active, null);
-                    await active.persistence;
+                    script: input.script,
+                    controller,
+                    settlement: Promise.resolve(),
+                    cooperativeTasks: new Set(),
+                    completions: new Map(input.seedCompletions ?? []),
+                    paused: false,
+                    resumeWaiters: [],
+                    persistence: Promise.resolve(),
+                    input: { ...input, limits: input.limits },
+                    semaphore: new AbortableSemaphore(limits.maxConcurrency),
+                    activeSharedWriters: 0,
+                };
+                if (options.storage) {
+                    const durableCwd = await realpath(input.cwd);
+                    checkCancelled();
+                    active.directory = durableDirectory = await options.storage.create(
+                        input.cwd,
+                        id,
+                        {
+                            name: input.name,
+                            sessionId: input.sessionId,
+                            cwd: durableCwd,
+                            script: input.script,
+                            args: input.args,
+                            policy: options.policy ?? {},
+                            roles: options.policy?.roles ?? [],
+                            models: options.policy?.models ?? [],
+                            limits,
+                            parentRunId: input.parentRunId,
+                        },
+                        summary,
+                    );
+                    checkCancelled();
                 }
-            });
-            return { runId: id };
+                if (active.directory && options.storage)
+                    for (const [operation, value] of active.completions) {
+                        await options.storage.complete(active.directory, operation, value, now());
+                        checkCancelled();
+                    }
+                if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+                runs.set(id, active);
+                durableDirectory = undefined;
+                publish(active);
+                active.settlement = execute(active, input, node).catch(async (e) => {
+                    if (!active.interrupted && !TERMINAL.has(active.summary.status)) {
+                        active.summary.status = "failed";
+                        active.summary.endedAt = now();
+                        active.summary.error = errorMessage(e);
+                        publishTerminal(active, null);
+                        await active.persistence;
+                    }
+                });
+                return { runId: id };
+            } catch (error) {
+                if (durableDirectory)
+                    await fs.promises.rm(durableDirectory, { recursive: true, force: true }).catch(() => {});
+                throw error;
+            } finally {
+                pendingLaunches--;
+                if (pendingLaunches === 0) pendingLaunchWaiter?.();
+            }
         },
         async initialize(cwd) {
             if (!options.storage) return [];
@@ -1097,6 +1126,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async shutdown() {
             if (shuttingDown) return;
             shuttingDown = true;
+            if (pendingLaunches > 0) {
+                let timer: NodeJS.Timeout | undefined;
+                await Promise.race([
+                    new Promise<void>((resolve) => (pendingLaunchWaiter = resolve)),
+                    new Promise<void>((resolve) => {
+                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                    }),
+                ]);
+                if (timer) clearTimeout(timer);
+            }
             const interrupted = [...runs.values()].filter((run) => !TERMINAL.has(run.summary.status) && !run.stopping);
             for (const run of interrupted) {
                 run.interrupted = true;

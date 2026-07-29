@@ -62,8 +62,8 @@ export class WorkflowRunManager {
         await Promise.all(runs.filter((run) => terminal(run.status)).map((run) => this.deliver(run, true)));
         return runs;
     }
-    launch(input: WorkflowLaunch): Promise<{ runId: string }> {
-        return this.options.backend.launch(input);
+    launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }> {
+        return this.options.backend.launch(input, signal);
     }
     list(): WorkflowRunSummaryV1[] {
         return this.options.backend.list();

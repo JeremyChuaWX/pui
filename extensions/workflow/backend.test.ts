@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { WorkflowBackendOptions } from "./backend.js";
 import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
 import { parseWorkflowRunV1 } from "./protocol.js";
+import { WorkflowRunStorage } from "./run-storage.js";
 
 // Legacy backend fixtures intentionally exercise the unsafe shared-checkout mode.
 const createWorkflowBackend = (options: WorkflowBackendOptions) =>
@@ -44,6 +45,144 @@ describe("workflow backend", () => {
         expect(() => preflightWorkflow("log(`ordinary $" + "{globalThis['pro'+'cess']}`)")).not.toThrow();
         expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
+    });
+    test("shutdown cancels and waits for a launch still resolving its repository", async () => {
+        let releaseRepository: () => void = () => {},
+            markRepositoryStarted: () => void = () => {};
+        const repositoryStarted = new Promise<void>((resolve) => (markRepositoryStarted = resolve)),
+            repositoryRelease = new Promise<void>((resolve) => (releaseRepository = resolve)),
+            backend = createWorkflowBackend({
+                agentExecutor: async () => ({ value: null }),
+                worktreeManager: {
+                    async repository(cwd: string) {
+                        markRepositoryStarted();
+                        await repositoryRelease;
+                        return cwd;
+                    },
+                } as never,
+            }),
+            launch = backend.launch({
+                name: "pending",
+                script: "return 1",
+                sessionId: "session",
+                cwd: process.cwd(),
+            });
+        let shutdown: Promise<void> | undefined;
+        try {
+            await repositoryStarted;
+            let shutdownFinished = false;
+            shutdown = backend.shutdown().then(() => {
+                shutdownFinished = true;
+            });
+            await Bun.sleep(0);
+            expect(shutdownFinished).toBe(false);
+            releaseRepository();
+            await expect(launch).rejects.toThrow("shutting down");
+            await shutdown;
+            expect(backend.list()).toEqual([]);
+            await expect(
+                backend.launch({ name: "late", script: "return 1", sessionId: "session", cwd: process.cwd() }),
+            ).rejects.toThrow("shutting down");
+        } finally {
+            releaseRepository();
+            await shutdown;
+        }
+    });
+    test("bounds shutdown waiting for a pending launch", async () => {
+        let releaseRepository: () => void = () => {},
+            markRepositoryStarted: () => void = () => {};
+        const repositoryStarted = new Promise<void>((resolve) => (markRepositoryStarted = resolve)),
+            repositoryRelease = new Promise<void>((resolve) => (releaseRepository = resolve)),
+            backend = createWorkflowBackend({
+                shutdownGraceMs: 20,
+                agentExecutor: async () => ({ value: null }),
+                worktreeManager: {
+                    async repository(cwd: string) {
+                        markRepositoryStarted();
+                        await repositoryRelease;
+                        return cwd;
+                    },
+                } as never,
+            }),
+            launch = backend.launch({
+                name: "pending",
+                script: "return 1",
+                sessionId: "session",
+                cwd: process.cwd(),
+            });
+        try {
+            await repositoryStarted;
+            await backend.shutdown();
+            expect(backend.list()).toEqual([]);
+        } finally {
+            releaseRepository();
+            await expect(launch).rejects.toThrow("shutting down");
+        }
+    });
+    test("cancellation during durable setup removes the unregistered run", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-cancel-"));
+        const project = path.join(temp, "project");
+        await fs.promises.mkdir(project);
+        const storage = new WorkflowRunStorage(path.join(temp, "runs"));
+        const create = storage.create.bind(storage);
+        let releaseCreate: () => void = () => {};
+        let createdDirectory = "";
+        const createRelease = new Promise<void>((resolve) => (releaseCreate = resolve));
+        storage.create = async (...args) => {
+            createdDirectory = await create(...args);
+            await createRelease;
+            return createdDirectory;
+        };
+        const backend = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: null }) });
+        const controller = new AbortController();
+        try {
+            const launch = backend.launch(
+                { name: "cancelled", script: "return 1", sessionId: "session", cwd: project },
+                controller.signal,
+            );
+            await waitFor(() => Boolean(createdDirectory));
+            controller.abort();
+            releaseCreate();
+            await expect(launch).rejects.toThrow("cancelled");
+            expect(backend.list()).toEqual([]);
+            await expect(fs.promises.stat(createdDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+            releaseCreate();
+            await backend.shutdown();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+    test("storage completion failure removes the unregistered durable run", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-complete-failure-"));
+        const project = path.join(temp, "project");
+        await fs.promises.mkdir(project);
+        const storage = new WorkflowRunStorage(path.join(temp, "runs"));
+        let createdDirectory = "";
+        const create = storage.create.bind(storage);
+        storage.create = async (...args) => {
+            createdDirectory = await create(...args);
+            return createdDirectory;
+        };
+        storage.complete = async () => {
+            throw new Error("deliberate completion failure");
+        };
+        const backend = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: null }) });
+        try {
+            await expect(
+                backend.launch({
+                    name: "failed",
+                    script: "return 1",
+                    sessionId: "session",
+                    cwd: project,
+                    seedCompletions: new Map([["agent-seed", "value"]]),
+                }),
+            ).rejects.toThrow("deliberate completion failure");
+            expect(backend.list()).toEqual([]);
+            await expect(fs.promises.stat(createdDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+            await backend.shutdown();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
     });
     test("reports missing and old external Node actionably", async () => {
         const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-node-"));
@@ -93,7 +232,7 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
-    test("executes the documented multiline saved definition and retains exact source bytes", async () => {
+    test("executes documented multiline metadata source and retains exact source bytes", async () => {
         const source = `export const meta = {
     name: "review",
     description: "Review changed files",
