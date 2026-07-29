@@ -184,14 +184,9 @@ function deliveryReleaseFile(directory: string, owner: string): string {
 }
 async function hasDeliveryRelease(directory: string, owner: string | undefined): Promise<boolean> {
     if (!owner) return false;
-    const file = deliveryReleaseFile(directory, owner);
-    try {
-        const release = await boundedJson<{ version?: unknown; owner?: unknown }>(file, 4_096);
-        return release.version === 1 && release.owner === owner;
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-        throw error;
-    }
+    const file = deliveryReleaseFile(directory, owner),
+        release = await boundedJson<{ version?: unknown; owner?: unknown }>(file, 4_096).catch(() => undefined);
+    return release?.version === 1 && release.owner === owner;
 }
 async function readDeliveryRecoveryLockOwner(ownerDirectory: string): Promise<DeliveryRecoveryLockOwner | undefined> {
     const file = path.join(ownerDirectory, "owner.json");

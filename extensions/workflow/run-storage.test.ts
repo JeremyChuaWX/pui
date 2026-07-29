@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -82,6 +83,11 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
             }),
         );
         await fs.promises.utimes(marker, old, old);
+        const malformedRelease = path.join(
+            directory,
+            `.delivery.release-${createHash("sha256").update("stopped-host").digest("hex")}.json`,
+        );
+        await fs.promises.writeFile(malformedRelease, "{");
         expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
         await second.releaseClaim(directory);
         await first.terminal(directory, "done", makeSummary(project, { status: "succeeded", endedAt: Date.now() }));
