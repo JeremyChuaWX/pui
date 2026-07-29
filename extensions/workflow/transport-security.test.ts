@@ -24,14 +24,14 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
         if (Date.now() > deadline) throw new Error("hostile worker did not terminate");
         await Bun.sleep(10);
     }
-    const result = backend.inspect(runId).run;
+    const details = backend.inspect(runId);
     await Promise.race([
         backend.shutdown(),
         Bun.sleep(1_000).then(() => {
             throw new Error("hostile worker was not reaped");
         }),
     ]);
-    return result;
+    return { ...details.run, result: details.result };
 }
 
 const failureCases = [
@@ -58,6 +58,7 @@ describe("workflow hostile transport and watchdog", () => {
         );
         expect(Buffer.byteLength(JSON.stringify("x".repeat(262142)))).toBe(262144);
         expect(result.status).toBe("succeeded");
+        expect(result.result).toBe(JSON.stringify("x".repeat(262142)));
     });
 
     test("rejects a terminal frame while an agent RPC is pending and aborts the executor", async () => {
@@ -67,16 +68,14 @@ describe("workflow hostile transport and watchdog", () => {
             {
                 cooperativeExecutor: true,
                 agentExecutor: ({ signal }) =>
-                    new Promise((_resolve, reject) =>
-                        signal.addEventListener(
-                            "abort",
-                            () => {
-                                aborted = true;
-                                reject(new Error("aborted"));
-                            },
-                            { once: true },
-                        ),
-                    ),
+                    new Promise((_resolve, reject) => {
+                        const abort = () => {
+                            aborted = true;
+                            reject(new Error("aborted"));
+                        };
+                        if (signal.aborted) abort();
+                        else signal.addEventListener("abort", abort, { once: true });
+                    }),
             },
         );
         expect(result.status).toBe("failed");

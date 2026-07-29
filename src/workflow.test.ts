@@ -74,6 +74,7 @@ describe("workflow host protocol", () => {
         const replacement = reduceWorkflowEvent(reset, parse(payload("ready", { instanceId: "instance-2" })), route);
         const upsert = reduceWorkflowEvent(replacement, parse(payload("upsert", { instanceId: "instance-2" })), route);
         expect(replacement).toEqual({ instanceId: "instance-2", runs: new Map() });
+        expect(upsert.instanceId).toBe("instance-2");
         expect(upsert.runs.get("run-1")?.name).toBe("Review");
     });
 
