@@ -171,7 +171,7 @@ describe("runSubagent", () => {
     });
 
     test("kills descendants in the child process group on timeout", async () => {
-        const { result } = await runFixture("descendant-hang", { timeoutMs: 40 });
+        const { result } = await runFixture("descendant-hang", { timeoutMs: 500 });
         const pid = Number(result.stderr.match(/descendant:(\d+)/)?.[1]);
         expect(result.details.run.status).toBe("timed_out");
         expect(pid).toBeGreaterThan(0);

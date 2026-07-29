@@ -26,6 +26,7 @@ const bundledTools = {
         "subagent_cancel",
         "subagent_list",
     ],
+    "<inline:pui-workflow>": ["workflow"],
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
@@ -46,6 +47,7 @@ describe("bundled extensions", () => {
         expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual([
             "pui-file-search",
             "pui-subagent",
+            "pui-workflow",
             "pui-web",
         ]);
         expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);

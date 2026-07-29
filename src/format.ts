@@ -2,13 +2,60 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
 import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
+import {
+    MAX_WORKFLOW_ID,
+    parseWorkflowRunV1,
+    type WorkflowAgentStatus,
+    type WorkflowRunStatus,
+    type WorkflowRunSummaryV1,
+} from "./workflow.js";
 
 const MAX_TOOL_TEXT = 8_000;
+export const WORKFLOW_LIST_WINDOW = 50;
+
+const WORKFLOW_STATUS_PRESENTATION: Record<WorkflowRunStatus | WorkflowAgentStatus, { icon: string; label: string }> = {
+    awaiting_approval: { icon: "?", label: "Awaiting approval" },
+    queued: { icon: "·", label: "Queued" },
+    running: { icon: "◌", label: "Running" },
+    paused: { icon: "Ⅱ", label: "Paused" },
+    succeeded: { icon: "✓", label: "Succeeded" },
+    failed: { icon: "×", label: "Failed" },
+    cancelled: { icon: "■", label: "Stopped" },
+    timed_out: { icon: "×", label: "Timed out" },
+};
+
+export function workflowStatusPresentation(status: WorkflowRunStatus | WorkflowAgentStatus) {
+    return WORKFLOW_STATUS_PRESENTATION[status];
+}
+
+export function workflowStatusTone(
+    status: WorkflowRunStatus | WorkflowAgentStatus,
+): "success" | "error" | "warning" | "muted" | "info" {
+    if (status === "succeeded") return "success";
+    if (status === "failed" || status === "timed_out") return "error";
+    if (status === "running" || status === "paused" || status === "awaiting_approval") return "warning";
+    return status === "queued" || status === "cancelled" ? "muted" : "info";
+}
+
+export function boundedWorkflowItems<T>(items: readonly T[], selected = 0, count = WORKFLOW_LIST_WINDOW): T[] {
+    const size = Math.max(1, count);
+    const start = Math.max(0, Math.min(selected - Math.floor(size / 2), Math.max(0, items.length - size)));
+    return items.slice(start, start + size);
+}
+
+export function formatWorkflowSummary(run: WorkflowRunSummaryV1): string {
+    const state = workflowStatusPresentation(run.status);
+    const done = run.agents.filter((agent) =>
+        ["succeeded", "failed", "cancelled", "timed_out"].includes(agent.status),
+    ).length;
+    return `${state.icon} ${run.name} · ${state.label} · ${done}/${run.agents.length} agents${run.currentPhase ? ` · ${run.currentPhase}` : ""}`;
+}
 
 type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
 
 export interface DisplayFormatOptions {
     toolExecutions?: ToolExecutionState;
+    workflows?: readonly WorkflowRunSummaryV1[];
 }
 
 function truncate(value: string, max = MAX_TOOL_TEXT): string {
@@ -58,6 +105,51 @@ function resultContent(value: unknown): string {
     return typeof value === "object" && value !== null && "content" in value
         ? truncate(contentText((value as { content?: unknown }).content))
         : "";
+}
+
+function workflowLaunchRunId(details: unknown): string | undefined {
+    if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+    const launch = details as Record<string, unknown>;
+    return launch.schema === "pi.workflow.launch" &&
+        launch.version === 1 &&
+        typeof launch.runId === "string" &&
+        launch.runId.length > 0 &&
+        launch.runId.length <= MAX_WORKFLOW_ID
+        ? launch.runId
+        : undefined;
+}
+
+export function resolveWorkflowRun(
+    details: unknown,
+    workflows: readonly WorkflowRunSummaryV1[] = [],
+): { run?: WorkflowRunSummaryV1; runId?: string } {
+    const envelope =
+        details && typeof details === "object" && !Array.isArray(details) && "run" in details
+            ? (details as Record<string, unknown>)
+            : undefined;
+    const candidate =
+        envelope?.schema === "pi.workflow" && envelope.version === 1 ? envelope.run : envelope ? undefined : details;
+    const embedded = parseWorkflowRunV1(candidate);
+    if (embedded) return { run: embedded, runId: embedded.id };
+    const runId = workflowLaunchRunId(details);
+    return { run: runId ? workflows.find((run) => run.id === runId) : undefined, runId };
+}
+
+function applyWorkflowPresentation(
+    item: ToolDisplayItem,
+    details: unknown,
+    workflows: readonly WorkflowRunSummaryV1[] = [],
+): void {
+    const { run, runId } = resolveWorkflowRun(details, workflows);
+    if (runId) item.workflowRunId = runId;
+    else delete item.workflowRunId;
+    if (!run) {
+        delete item.workflow;
+        item.workflowKey = runId;
+        return;
+    }
+    item.workflow = run;
+    item.workflowKey = `${runId}:${run.updatedAt}:${run.status}`;
 }
 
 function applySubagentPresentation(
@@ -134,6 +226,7 @@ function buildToolDisplayItem(
     args: Record<string, unknown>,
     execution?: ToolExecution,
     timestamp?: number,
+    workflows: readonly WorkflowRunSummaryV1[] = [],
 ): ToolDisplayItem {
     const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
     const details = executionDetails(execution);
@@ -149,6 +242,7 @@ function buildToolDisplayItem(
         ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
     };
     applySubagentPresentation(item, details, args, execution?.updatedAt ?? timestamp);
+    applyWorkflowPresentation(item, details, workflows);
     return item;
 }
 
@@ -165,6 +259,7 @@ export function buildDisplayItems(
     const argsById = new Map<string, Record<string, unknown>>();
     const detailsById = new Map<string, unknown>();
     const executions = options.toolExecutions ?? new Map();
+    const workflows = options.workflows ?? [];
 
     source.forEach((message, messageIndex) => {
         const id = `${messageIndex}:${message.timestamp ?? messageIndex}`;
@@ -205,6 +300,7 @@ export function buildDisplayItems(
                             args,
                             executions.get(part.id),
                             message.timestamp,
+                            workflows,
                         );
                         result.push(item);
                         toolById.set(part.id, item);
@@ -232,12 +328,14 @@ export function buildDisplayItems(
                         argsById.get(message.toolCallId) ?? {},
                         message.timestamp,
                     );
+                    applyWorkflowPresentation(existing, details, workflows);
                 } else {
                     const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
                     item.result = output;
                     item.isError = message.isError;
                     item.running = false;
                     applySubagentPresentation(item, message.details, {}, message.timestamp);
+                    applyWorkflowPresentation(item, message.details, workflows);
                     result.push(item);
                     toolById.set(message.toolCallId, item);
                 }
@@ -276,6 +374,8 @@ export function buildDisplayItems(
             execution.name,
             execution.args,
             execution,
+            undefined,
+            workflows,
         );
         result.push(item);
     }
@@ -305,7 +405,9 @@ function sameDisplayPresentation(left: DisplayItem, right: DisplayItem): boolean
                 left.result === right.result &&
                 left.isError === right.isError &&
                 left.running === right.running &&
-                left.subagentKey === right.subagentKey
+                left.subagentKey === right.subagentKey &&
+                left.workflowRunId === right.workflowRunId &&
+                left.workflowKey === right.workflowKey
             );
         case "bash":
             return (

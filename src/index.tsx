@@ -7,6 +7,7 @@ import { render } from "@opentui/solid";
 import { App } from "./app.js";
 import { type ControllerOptions, PuiController } from "./controller.js";
 import { syntaxStyle, theme } from "./theme.js";
+import { runCompiledWorkflowSmoke } from "./workflow-smoke.js";
 
 // pi-ai's OAuth implementations use bundler-opaque imports in source mode.
 // Register their static equivalents so Bun embeds them in the executable.
@@ -72,6 +73,10 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 async function main(): Promise<void> {
+    if (process.argv[2] === "--workflow-smoke") {
+        await runCompiledWorkflowSmoke();
+        return;
+    }
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
         process.stdout.write(`${usage()}\n`);

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -12,6 +13,7 @@ import {
     createAgentSessionServices,
     createEventBus,
     type EventBusController,
+    type ExtensionUIDialogOptions,
     getAgentDir,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -39,6 +41,7 @@ import type {
     ActiveTool,
     AppliedPromptCompletion,
     DisplayItem,
+    ExtensionDialog,
     ModelChoice,
     PromptAction,
     PromptCompletionItem,
@@ -47,6 +50,33 @@ import type {
     SessionChoice,
     ToastMessage,
 } from "./types.js";
+import {
+    BACKGROUND_WORKFLOW_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
+    BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+    BACKGROUND_WORKFLOW_SAVE_CHANNEL,
+    BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
+    parseWorkflowBackgroundEvent,
+    parseWorkflowControl,
+    parseWorkflowControlResult,
+    parseWorkflowSave,
+    parseWorkflowSaveResult,
+    reduceWorkflowEvent,
+    type WorkflowControlAction,
+    type WorkflowRunSummaryV1,
+    type WorkflowState,
+} from "./workflow.js";
+
+export class WorkflowSaveError extends Error {
+    constructor(
+        message: string,
+        readonly code?: "overwrite_required",
+    ) {
+        super(message);
+        this.name = "WorkflowSaveError";
+    }
+}
 
 export interface ControllerOptions {
     cwd: string;
@@ -119,6 +149,14 @@ function compactPath(cwd: string): string {
     return cwd;
 }
 
+function canonicalPath(cwd: string): string {
+    try {
+        return fs.realpathSync.native(cwd);
+    } catch {
+        return path.resolve(cwd);
+    }
+}
+
 function readGitBranch(cwd: string): string | undefined {
     try {
         const branch = execFileSync("git", ["branch", "--show-current"], {
@@ -145,10 +183,23 @@ export class PuiController {
     private toastTimers = new Set<ReturnType<typeof setTimeout>>();
     private refreshTimer?: ReturnType<typeof setTimeout>;
     private disposed = false;
+    private bindGeneration = 0;
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
     private backgroundState: BackgroundSubagentState = { jobs: new Map() };
+    private workflowState: WorkflowState = { runs: new Map() };
+    private workflowSessionId = "";
+    private workflowCwd = "";
+    private unsubscribeWorkflow?: () => void;
+    private pendingWorkflowSaves = new Set<(error: Error) => void>();
+    private pendingWorkflowControls = new Set<(error: Error) => void>();
+    private extensionDialogs: Array<{
+        dialog: ExtensionDialog;
+        resolve: (value: boolean | string | undefined) => void;
+        cleanup: () => void;
+    }> = [];
+    private extensionDialogId = 0;
     private readonly eventBus: EventBusController;
     private readonly unsubscribeBackground: () => void;
 
@@ -231,15 +282,50 @@ export class PuiController {
     }
 
     private async bindSession(session: AgentSession): Promise<void> {
+        const generation = ++this.bindGeneration;
+        this.dismissExtensionDialogs();
+        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
+            reject(new Error("Workflow session changed."));
+        this.pendingWorkflowSaves.clear();
+        this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
+        this.unsubscribeWorkflow?.();
         this.backgroundState = { jobs: new Map() };
+        this.workflowState = { runs: new Map() };
+        this.workflowSessionId = session.sessionId;
+        this.workflowCwd = canonicalPath(this.runtime.cwd);
+        this.unsubscribeWorkflow = this.eventBus.on(BACKGROUND_WORKFLOW_CHANNEL, (payload) => {
+            if (this.disposed) return;
+            const route = { sessionId: this.workflowSessionId, cwd: this.workflowCwd };
+            const event = parseWorkflowBackgroundEvent(payload, route);
+            if (!event) return;
+            const next = reduceWorkflowEvent(this.workflowState, event, route);
+            if (next === this.workflowState) return;
+            this.workflowState = next;
+            this.scheduleRefresh();
+        });
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
         this.gitBranch = readGitBranch(this.runtime.cwd);
 
+        const existingUI = session.extensionRunner.getUIContext?.() ?? {};
         await session.bindExtensions({
             mode: "tui",
+            uiContext: {
+                ...existingUI,
+                confirm: (title, message, options) =>
+                    this.requestExtensionDialog({ kind: "confirm", title, message }, options).then(Boolean),
+                select: (title, options, dialogOptions) =>
+                    this.requestExtensionDialog({ kind: "select", title, options }, dialogOptions) as Promise<
+                        string | undefined
+                    >,
+                input: (title, placeholder, options) =>
+                    this.requestExtensionDialog({ kind: "input", title, placeholder }, options) as Promise<
+                        string | undefined
+                    >,
+                notify: (message, type) => this.notify(message, type),
+            },
             commandContextActions: {
                 waitForIdle: () => this.runtime.session.waitForIdle(),
                 newSession: (options) => this.runtime.newSession(options),
@@ -261,6 +347,7 @@ export class PuiController {
             onError: (error) => this.notify(`${path.basename(error.extensionPath)}: ${error.error}`, "error"),
         });
 
+        if (this.disposed || generation !== this.bindGeneration || this.runtime.session !== session) return;
         this.setupAutocompleteProvider();
         this.unsubscribeSession = session.subscribe((event) => this.handleEvent(event));
         this.refresh();
@@ -321,7 +408,11 @@ export class PuiController {
         const context = session.getContextUsage();
         const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
         this.toolExecutions = this.reconcileToolExecutionState();
-        const display = buildDisplayItems(session.messages, streamingMessage, { toolExecutions: this.toolExecutions });
+        const workflows = [...this.workflowState.runs.values()];
+        const display = buildDisplayItems(session.messages, streamingMessage, {
+            toolExecutions: this.toolExecutions,
+            workflows,
+        });
 
         if (this.runningBash) {
             display.push({
@@ -361,9 +452,77 @@ export class PuiController {
             display: stableDisplay,
             activeTools,
             backgroundSubagents: [...this.backgroundState.jobs.values()],
+            workflows,
+            extensionDialog: this.extensionDialogs[0]?.dialog,
             toasts: [...this.toasts],
             exitRequested: this.exitRequested,
         };
+    }
+
+    private requestExtensionDialog(
+        value:
+            | Omit<Extract<ExtensionDialog, { kind: "confirm" }>, "id">
+            | Omit<Extract<ExtensionDialog, { kind: "select" }>, "id">
+            | Omit<Extract<ExtensionDialog, { kind: "input" }>, "id">,
+        options?: ExtensionUIDialogOptions,
+    ): Promise<boolean | string | undefined> {
+        if (
+            this.disposed ||
+            options?.signal?.aborted ||
+            this.extensionDialogs.length >= 32 ||
+            value.title.length > 512 ||
+            // A 64 KiB workflow script plus approval headers must remain inspectable byte-for-byte.
+            (value.kind === "confirm" && value.message.length > 72 * 1024) ||
+            (value.kind === "input" && (value.placeholder?.length ?? 0) > 1024) ||
+            (value.kind === "select" &&
+                (value.options.length > 100 || value.options.some((option) => option.length > 4096)))
+        )
+            return Promise.resolve(undefined);
+        return new Promise((resolve) => {
+            const dialog = { ...value, id: ++this.extensionDialogId } as ExtensionDialog;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const abort = () => this.resolveExtensionDialog(dialog.id, undefined);
+            const cleanup = () => {
+                if (timer) clearTimeout(timer);
+                options?.signal?.removeEventListener("abort", abort);
+            };
+            this.extensionDialogs.push({ dialog, resolve, cleanup });
+            options?.signal?.addEventListener("abort", abort, { once: true });
+            if (options?.timeout !== undefined) timer = setTimeout(abort, Math.max(0, options.timeout));
+            this.refresh();
+        });
+    }
+
+    resolveExtensionDialog(id: number, value: boolean | string | undefined): boolean {
+        const index = this.extensionDialogs.findIndex((request) => request.dialog.id === id);
+        if (index < 0) return false;
+        const [request] = this.extensionDialogs.splice(index, 1);
+        if (!request) return false;
+        request.cleanup();
+        const resolved =
+            request.dialog.kind === "confirm"
+                ? typeof value === "boolean"
+                    ? value
+                    : undefined
+                : request.dialog.kind === "select"
+                  ? typeof value === "string" && request.dialog.options.includes(value)
+                      ? value
+                      : undefined
+                  : typeof value === "string"
+                    ? value
+                    : undefined;
+        request.resolve(resolved);
+        this.refresh();
+        return true;
+    }
+
+    private dismissExtensionDialogs(): void {
+        const pending = this.extensionDialogs.splice(0);
+        for (const request of pending) {
+            request.cleanup();
+            request.resolve(undefined);
+        }
+        this.refresh();
     }
 
     private scheduleRefresh(): void {
@@ -514,6 +673,8 @@ export class PuiController {
                 return "commands";
             case "/subagents":
                 return "subagents";
+            case "/workflows":
+                return "workflows";
             case "/help":
             case "/hotkeys":
                 return "help";
@@ -727,6 +888,157 @@ export class PuiController {
         return true;
     }
 
+    listWorkflows(): readonly WorkflowRunSummaryV1[] {
+        return [...this.workflowState.runs.values()];
+    }
+
+    inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
+        return this.workflowState.runs.get(runId);
+    }
+
+    async controlWorkflowAsync(
+        runId: string,
+        action: WorkflowControlAction,
+        agentId?: string,
+    ): Promise<string | undefined> {
+        const run = this.workflowState.runs.get(runId),
+            instanceId = this.workflowState.instanceId;
+        if (!run || !instanceId) throw new Error("Workflow control is unavailable.");
+        if (action === "restart-agent" && !run.agents.some((agent) => agent.id === agentId))
+            throw new Error("Workflow agent is unavailable.");
+        const requestId = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const cleanup = () => {
+                clearTimeout(timer);
+                unsubscribe();
+                this.pendingWorkflowControls.delete(cancel);
+            };
+            const cancel = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+            this.pendingWorkflowControls.add(cancel);
+            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, (payload) => {
+                const result = parseWorkflowControlResult(payload, {
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                });
+                if (!result || result.requestId !== requestId) return;
+                cleanup();
+                result.ok ? resolve(result.linkedRunId) : reject(new Error(result.error ?? "Workflow control failed."));
+            });
+            timer = setTimeout(() => cancel(new Error("Workflow control request timed out.")), 5_000);
+            const control = parseWorkflowControl(
+                {
+                    schema: BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
+                    version: 1,
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                    requestId,
+                    runId,
+                    action,
+                    ...(agentId === undefined ? {} : { agentId }),
+                },
+                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
+            );
+            if (!control) return cancel(new Error("Invalid workflow control request."));
+            this.eventBus.emit(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, control);
+        });
+    }
+
+    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
+        const run = this.workflowState.runs.get(runId);
+        const available =
+            !!this.workflowState.instanceId &&
+            !!run &&
+            (action !== "restart-agent" || run.agents.some((agent) => agent.id === agentId));
+        if (available)
+            void this.controlWorkflowAsync(runId, action, agentId).catch((error: unknown) =>
+                this.notify(error instanceof Error ? error.message : String(error), "error"),
+            );
+        return available;
+    }
+    pauseWorkflow(runId: string) {
+        return this.controlWorkflow(runId, "pause");
+    }
+    resumeWorkflow(runId: string) {
+        return this.controlWorkflow(runId, "resume");
+    }
+    stopWorkflow(runId: string) {
+        return this.controlWorkflow(runId, "stop");
+    }
+    restartWorkflowAgent(runId: string, agentId: string) {
+        return this.controlWorkflow(runId, "restart-agent", agentId);
+    }
+    retryWorkflow(runId: string) {
+        return this.controlWorkflow(runId, "retry");
+    }
+    pauseWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "pause");
+    }
+    resumeWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "resume");
+    }
+    stopWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "stop");
+    }
+    restartWorkflowAgentAsync(runId: string, agentId: string) {
+        return this.controlWorkflowAsync(runId, "restart-agent", agentId);
+    }
+    retryWorkflowAsync(runId: string) {
+        return this.controlWorkflowAsync(runId, "retry");
+    }
+    async saveWorkflow(runId: string, scope: "project" | "personal", overwrite = false): Promise<string> {
+        const run = this.workflowState.runs.get(runId),
+            instanceId = this.workflowState.instanceId;
+        if (!run || !instanceId) throw new Error("Workflow save is unavailable.");
+        const requestId = crypto.randomUUID();
+        return new Promise<string>((resolve, reject) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const cleanup = () => {
+                clearTimeout(timer);
+                unsubscribe();
+                this.pendingWorkflowSaves.delete(cancel);
+            };
+            const cancel = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+            this.pendingWorkflowSaves.add(cancel);
+            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, (payload) => {
+                const value = parseWorkflowSaveResult(payload, {
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                });
+                if (!value || value.requestId !== requestId) return;
+                cleanup();
+                if (value.ok && value.path) resolve(value.path);
+                else reject(new WorkflowSaveError(value.error ?? "Workflow save failed.", value.code));
+            });
+            timer = setTimeout(() => cancel(new Error("Workflow save request timed out.")), 5_000);
+            const request = parseWorkflowSave(
+                {
+                    schema: "pi.workflow.background.save",
+                    version: 1,
+                    sessionId: this.workflowSessionId,
+                    instanceId,
+                    cwd: this.workflowCwd,
+                    requestId,
+                    runId,
+                    scope,
+                    overwrite,
+                },
+                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
+            );
+            if (!request) return cancel(new Error("Invalid workflow save request."));
+            this.eventBus.emit(BACKGROUND_WORKFLOW_SAVE_CHANNEL, request);
+        });
+    }
+
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -747,11 +1059,18 @@ export class PuiController {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
+        this.dismissExtensionDialogs();
+        for (const reject of [...this.pendingWorkflowSaves, ...this.pendingWorkflowControls])
+            reject(new Error("Controller disposed."));
+        this.pendingWorkflowSaves.clear();
+        this.pendingWorkflowControls.clear();
         this.unsubscribeSession?.();
         this.unsubscribeBackground();
+        this.unsubscribeWorkflow?.();
         this.eventBus.clear();
         this.backgroundState = { jobs: new Map() };
-        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [] };
+        this.workflowState = { runs: new Map() };
+        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);

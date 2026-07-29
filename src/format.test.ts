@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { buildDisplayItems, formatCount, formatToolTitle } from "./format.js";
+import {
+    boundedWorkflowItems,
+    buildDisplayItems,
+    formatCount,
+    formatToolTitle,
+    formatWorkflowSummary,
+    reconcileDisplayItems,
+    resolveWorkflowRun,
+    workflowStatusPresentation,
+    workflowStatusTone,
+} from "./format.js";
 
 describe("pui formatting", () => {
     test("combines a tool call with its result", () => {
@@ -86,6 +96,72 @@ describe("pui formatting", () => {
     test("formats compact token counts and tool labels", () => {
         expect(formatCount(1_250)).toBe("1.3k");
         expect(formatToolTitle("bash", { command: "git status" })).toBe("bash  git status");
+    });
+
+    test("formats workflow status and bounds thousand-agent list work", () => {
+        const agents = Array.from({ length: 1_000 }, (_, index) => index);
+        expect(boundedWorkflowItems(agents, 500)).toEqual(Array.from({ length: 50 }, (_, index) => index + 475));
+        expect(workflowStatusPresentation("timed_out")).toEqual({ icon: "×", label: "Timed out" });
+        expect(workflowStatusTone("failed")).toBe("error");
+        expect(formatWorkflowSummary(workflowRun())).toBe("◌ Review · Running · 0/1 agents · review");
+    });
+
+    test("resolves embedded summaries and actual v1 launch details against authoritative runs", () => {
+        const run = workflowRun();
+        expect(resolveWorkflowRun({ schema: "pi.workflow", version: 1, run })).toEqual({ run, runId: "run-1" });
+
+        const launch = { schema: "pi.workflow.launch", version: 1, runId: "run-1", preflight: { agents: 1 } };
+        expect(resolveWorkflowRun(launch, [run])).toEqual({ run, runId: "run-1" });
+        expect(buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [run] })[0]).toEqual(
+            expect.objectContaining({
+                kind: "tool",
+                workflowRunId: "run-1",
+                workflow: expect.objectContaining({ id: "run-1" }),
+            }),
+        );
+    });
+
+    test("keeps malformed, unknown, and unavailable launches generic", () => {
+        for (const details of [
+            { schema: "pi.workflow.launch", version: 2, runId: "run-1" },
+            { schema: "pi.workflow", version: 2, run: workflowRun() },
+            { schema: "pi.workflow.launch", version: 1, runId: "" },
+            { schema: "pi.workflow.launch", version: 1, runId: "x".repeat(257) },
+            { schema: "pi.workflow.launch", version: 1, runId: 42 },
+        ]) {
+            const item = buildDisplayItems(workflowMessages(details, true), undefined, {
+                workflows: [workflowRun()],
+            })[0];
+            expect(item).toEqual(expect.objectContaining({ kind: "tool", result: "started" }));
+            expect(item && "workflow" in item ? item.workflow : undefined).toBeUndefined();
+            expect(item && "workflowRunId" in item ? item.workflowRunId : undefined).toBeUndefined();
+        }
+        const unavailable = buildDisplayItems(
+            workflowMessages({ schema: "pi.workflow.launch", version: 1, runId: "missing" }, true),
+        )[0];
+        expect(unavailable && "workflow" in unavailable ? unavailable.workflow : undefined).toBeUndefined();
+        expect(unavailable && "workflowRunId" in unavailable ? unavailable.workflowRunId : undefined).toBe("missing");
+    });
+
+    test("presentation reconciliation notices launch run ID changes", () => {
+        const launch = (runId: string) =>
+            buildDisplayItems(workflowMessages({ schema: "pi.workflow.launch", version: 1, runId }, true))[0];
+        const previous = launch("run-1");
+        const next = launch("run-2");
+        expect(reconcileDisplayItems([previous], [next])[0]).toBe(next);
+    });
+
+    test("reconciles live workflow changes for the same run ID", () => {
+        const run = workflowRun();
+        const launch = { schema: "pi.workflow.launch", version: 1, runId: run.id };
+        const previous = buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [run] })[0];
+        const changed = { ...run, status: "succeeded" as const, updatedAt: run.updatedAt + 1 };
+        const next = buildDisplayItems(workflowMessages(launch, true), undefined, { workflows: [changed] })[0];
+
+        expect(previous && "workflowKey" in previous ? previous.workflowKey : undefined).not.toBe(
+            next && "workflowKey" in next ? next.workflowKey : undefined,
+        );
+        expect(reconcileDisplayItems([previous], [next])[0]).toBe(next);
     });
 
     test("prefers live partial subagent details and reducer-derived running state", () => {
@@ -243,6 +319,50 @@ describe("pui formatting", () => {
         expect(unknownItem && "subagent" in unknownItem ? unknownItem.subagent : undefined).toBeUndefined();
     });
 });
+
+function workflowRun() {
+    const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 };
+    return {
+        schema: "pi.workflow" as const,
+        version: 1 as const,
+        id: "run-1",
+        name: "Review",
+        sessionId: "session-1",
+        cwd: "/repo",
+        status: "running" as const,
+        currentPhase: "review",
+        phases: [],
+        agents: [
+            {
+                id: "agent-1",
+                label: "Reviewer",
+                role: "explore",
+                status: "running" as const,
+                updatedAt: 1,
+                usage,
+                recentActivity: [],
+            },
+        ],
+        usage,
+        limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1000, maxTokens: 0, maxCost: 0 },
+        recentActivity: [],
+        updatedAt: 1,
+    };
+}
+
+function workflowMessages(details: unknown, raw = false): AgentMessage[] {
+    return [
+        {
+            role: "toolResult",
+            toolCallId: "workflow-1",
+            toolName: "workflow",
+            content: [{ type: "text", text: "started" }],
+            details: raw ? details : { schema: "pi.workflow", version: 1, run: details },
+            isError: false,
+            timestamp: 1,
+        },
+    ] as AgentMessage[];
+}
 
 function subagentDetails(id: string, status: "running" | "succeeded" | "timed_out"): Record<string, unknown> {
     const terminal = status !== "running";

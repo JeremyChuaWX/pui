@@ -2,10 +2,11 @@ import type { BoxRenderable, KeyBinding, KeyEvent, ScrollBoxRenderable, Textarea
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { PuiController } from "./controller.js";
+import { type PuiController, WorkflowSaveError } from "./controller.js";
+import { extensionDialogOwner } from "./dialog-owner.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
-import { formatCount } from "./format.js";
+import { formatCount, formatWorkflowSummary, workflowStatusPresentation, workflowStatusTone } from "./format.js";
 import { cycleIndex } from "./list-navigation.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { PromptHistory } from "./prompt-history.js";
@@ -22,6 +23,7 @@ import {
 } from "./subagent.js";
 import { syntaxStyle, theme } from "./theme.js";
 import type { DisplayItem, PromptCompletions, PuiSnapshot, ToastMessage, ToolDisplayItem } from "./types.js";
+import type { WorkflowRunSummaryV1 } from "./workflow.js";
 
 interface PickerItem {
     label: string;
@@ -34,7 +36,7 @@ interface SubagentDisplayItem extends ToolDisplayItem {
     subagent: SubagentViewModel;
 }
 
-type DialogState =
+type DialogState = (
     | {
           kind: "picker";
           title: string;
@@ -42,7 +44,10 @@ type DialogState =
           items: PickerItem[];
           loading?: boolean;
       }
-    | { kind: "help" };
+    | { kind: "help" }
+    | { kind: "confirm"; title: string; message: string; confirmLabel: string; action: () => void }
+    | { kind: "input"; title: string; placeholder?: string; action: (value: string) => void }
+) & { extensionRequestId?: number };
 
 const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
 
@@ -123,6 +128,56 @@ export function App(props: { controller: PuiController }) {
         completionAbort?.abort();
         releasePromptFocusTrap?.();
         unsubscribe?.();
+    });
+
+    createEffect(() => {
+        const request = snapshot.extensionDialog;
+        const owner = extensionDialogOwner(dialog());
+        if (dialog() && owner === undefined) return;
+        if (!request) {
+            if (owner !== undefined) setDialog(undefined);
+            return;
+        }
+        if (owner === request.id) return;
+        if (request.kind === "confirm") {
+            setDialog({
+                kind: "confirm",
+                title: request.title,
+                message: request.message,
+                confirmLabel: "confirm",
+                extensionRequestId: request.id,
+                action: () => {
+                    props.controller.resolveExtensionDialog(request.id, true);
+                    setDialog(undefined);
+                },
+            });
+        } else if (request.kind === "select") {
+            setDialog({
+                kind: "picker",
+                title: request.title,
+                placeholder: "Choose an option",
+                extensionRequestId: request.id,
+                items: request.options.map((option) => ({
+                    label: option,
+                    search: option.toLowerCase(),
+                    action: () => {
+                        props.controller.resolveExtensionDialog(request.id, option);
+                        setDialog(undefined);
+                    },
+                })),
+            });
+        } else {
+            setDialog({
+                kind: "input",
+                title: request.title,
+                placeholder: request.placeholder,
+                extensionRequestId: request.id,
+                action: (value) => {
+                    props.controller.resolveExtensionDialog(request.id, value);
+                    setDialog(undefined);
+                },
+            });
+        }
     });
 
     createEffect(() => {
@@ -289,6 +344,7 @@ export function App(props: { controller: PuiController }) {
         if (action === "models") void openModels();
         if (action === "sessions") void openSessions();
         if (action === "subagents") openSubagents();
+        if (action === "workflows") openWorkflows();
         if (action === "commands") openCommands();
         if (action === "help") setDialog({ kind: "help" });
     }
@@ -389,6 +445,265 @@ export function App(props: { controller: PuiController }) {
         });
     }
 
+    function confirmDestructive(
+        title: string,
+        message: string,
+        confirmLabel: string,
+        action: () => Promise<string | undefined>,
+        success = "Workflow control completed.",
+    ): void {
+        setDialog({
+            kind: "confirm",
+            title,
+            message,
+            confirmLabel,
+            action: () => {
+                setDialog(undefined);
+                void action().then(
+                    (linked) => props.controller.notify(linked ? `${success} New run: ${linked}.` : success, "success"),
+                    (error) => props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                );
+            },
+        });
+    }
+
+    function openWorkflowAgent(run: WorkflowRunSummaryV1, agentId: string): void {
+        const agent = run.agents.find((item) => item.id === agentId);
+        if (!agent) return;
+        const status = workflowStatusPresentation(agent.status);
+        setDialog({
+            kind: "picker",
+            title: `${status.icon} ${agent.label}`,
+            placeholder: "Inspect or choose an action",
+            items: [
+                {
+                    label: "Status",
+                    detail: `${status.label} · ${agent.role}${agent.model ? ` · ${agent.model}` : ""}`,
+                    search: "status",
+                    action: () => {},
+                },
+                ...(agent.prompt
+                    ? [{ label: "Prompt", detail: agent.prompt, search: `prompt ${agent.prompt}`, action: () => {} }]
+                    : []),
+                ...(agent.output
+                    ? [{ label: "Output", detail: agent.output, search: `output ${agent.output}`, action: () => {} }]
+                    : []),
+                ...(agent.error
+                    ? [{ label: "Error", detail: agent.error, search: `error ${agent.error}`, action: () => {} }]
+                    : []),
+                ...agent.recentActivity.map((activity) => ({
+                    label: activity.isError ? "× Activity" : "· Activity",
+                    detail: activity.title,
+                    search: `activity ${activity.title}`,
+                    action: () => {},
+                })),
+                {
+                    label: "Restart agent",
+                    detail: "Destructive: abort and rerun this operation",
+                    search: "restart rerun",
+                    action: () =>
+                        confirmDestructive(
+                            "Restart agent?",
+                            `Abort and rerun ${agent.label}? Existing output may be replaced.`,
+                            "Restart",
+                            () => props.controller.restartWorkflowAgentAsync(run.id, agent.id),
+                        ),
+                },
+            ],
+        });
+    }
+
+    function openWorkflowPhase(run: WorkflowRunSummaryV1, phaseId: string): void {
+        const phase = run.phases.find((item) => item.id === phaseId);
+        if (!phase) return;
+        setDialog({
+            kind: "picker",
+            title: `Phase · ${phase.name}`,
+            placeholder: "Search agents",
+            items: phase.agentIds.map((id) => {
+                const agent = run.agents.find((item) => item.id === id);
+                return {
+                    label: agent ? `${workflowStatusPresentation(agent.status).icon} ${agent.label}` : id,
+                    detail: agent ? workflowStatusPresentation(agent.status).label : "Unavailable",
+                    search: `${agent?.label ?? id} ${agent?.status ?? ""}`.toLowerCase(),
+                    action: () => openWorkflowAgent(run, id),
+                };
+            }),
+        });
+    }
+
+    function openWorkflowRun(runId: string): void {
+        const run = props.controller.inspectWorkflow(runId);
+        if (!run) {
+            props.controller.notify("Workflow is no longer available.", "error");
+            return;
+        }
+        const items: PickerItem[] = [
+            {
+                label: formatWorkflowSummary(run),
+                detail: `${formatCount(run.usage.totalTokens)} tokens · $${run.usage.cost.toFixed(4)}`,
+                search: `${run.name} ${run.status}`,
+                action: () => {},
+            },
+            ...run.phases.map((phase) => ({
+                label: `${workflowStatusPresentation(phase.status === "skipped" ? "cancelled" : phase.status).icon} ${phase.name}`,
+                detail: `${phase.status} · ${phase.agentIds.length} agents`,
+                search: `${phase.name} ${phase.status}`,
+                action: () => openWorkflowPhase(run, phase.id),
+            })),
+            {
+                label: "All agents",
+                detail: `${run.agents.length} total · list rendering is windowed`,
+                search: "agents",
+                action: () =>
+                    setDialog({
+                        kind: "picker",
+                        title: `${run.name} · agents`,
+                        placeholder: "Search agents",
+                        items: run.agents.map((agent) => ({
+                            label: `${workflowStatusPresentation(agent.status).icon} ${agent.label}`,
+                            detail: `${workflowStatusPresentation(agent.status).label} · ${agent.role}`,
+                            search: `${agent.label} ${agent.role} ${agent.model ?? ""} ${agent.status}`.toLowerCase(),
+                            action: () => openWorkflowAgent(run, agent.id),
+                        })),
+                    }),
+            },
+        ];
+        if (run.status === "running" || run.status === "queued")
+            items.push({
+                label: "Pause",
+                detail: "Allow active agents to finish; schedule no new work",
+                search: "pause",
+                action: () => {
+                    setDialog(undefined);
+                    void props.controller.pauseWorkflowAsync(run.id).then(
+                        () => props.controller.notify("Workflow paused.", "success"),
+                        (error) =>
+                            props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                    );
+                },
+            });
+        if (run.status === "paused")
+            items.push({
+                label: "Resume",
+                detail: "Continue scheduling",
+                search: "resume",
+                action: () => {
+                    setDialog(undefined);
+                    void props.controller.resumeWorkflowAsync(run.id).then(
+                        () => props.controller.notify("Workflow resumed.", "success"),
+                        (error) =>
+                            props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                    );
+                },
+            });
+        if (["running", "queued", "paused"].includes(run.status))
+            items.push({
+                label: "Stop",
+                detail: "Destructive: abort worker and active agents",
+                search: "stop",
+                action: () =>
+                    confirmDestructive("Stop workflow?", `Stop ${run.name} and all active agents?`, "Stop", () =>
+                        props.controller.stopWorkflowAsync(run.id),
+                    ),
+            });
+        if (["failed", "cancelled", "succeeded"].includes(run.status))
+            items.push({
+                label: "Retry run",
+                detail: "Destructive: create a replay run",
+                search: "retry",
+                action: () =>
+                    confirmDestructive("Retry workflow?", `Create a new replay of ${run.name}?`, "Retry", () =>
+                        props.controller.retryWorkflowAsync(run.id),
+                    ),
+            });
+        items.push(
+            {
+                label: "Save workflow",
+                detail: "Save the immutable inspected script",
+                search: "save project personal",
+                action: () => {
+                    const save = async (scope: "project" | "personal", overwrite = false) => {
+                        try {
+                            const saved = await props.controller.saveWorkflow(run.id, scope, overwrite);
+                            setDialog(undefined);
+                            props.controller.notify(`Saved workflow to ${saved}.`, "success");
+                        } catch (error) {
+                            const text = error instanceof Error ? error.message : String(error);
+                            if (
+                                !overwrite &&
+                                error instanceof WorkflowSaveError &&
+                                error.code === "overwrite_required"
+                            ) {
+                                setDialog({
+                                    kind: "confirm",
+                                    title: "Overwrite workflow?",
+                                    message: text,
+                                    confirmLabel: "Overwrite",
+                                    action: () => {
+                                        setDialog(undefined);
+                                        void save(scope, true);
+                                    },
+                                });
+                            } else props.controller.notify(text, "error");
+                        }
+                    };
+                    setDialog({
+                        kind: "picker",
+                        title: `Save ${run.name}`,
+                        placeholder: "Choose destination",
+                        items: [
+                            {
+                                label: "Project",
+                                detail: ".pi/workflows",
+                                search: "project",
+                                action: () => void save("project"),
+                            },
+                            {
+                                label: "Personal",
+                                detail: "~/.pi/agent/workflows",
+                                search: "personal global",
+                                action: () => void save("personal"),
+                            },
+                        ],
+                    });
+                },
+            },
+            {
+                label: "Open script/artifacts",
+                detail: "Unavailable until WS5/WS6 detail and artifact APIs",
+                search: "editor script artifact",
+                action: () =>
+                    props.controller.notify(
+                        "Script and artifact inspection requires the WS5/WS6 host APIs.",
+                        "warning",
+                    ),
+            },
+        );
+        setDialog({
+            kind: "picker",
+            title: `Workflow · ${run.name}`,
+            placeholder: "Inspect phases, agents, or controls",
+            items,
+        });
+    }
+
+    function openWorkflows(): void {
+        closePromptCompletions();
+        const runs = [...snapshot.workflows].sort((a, b) => b.updatedAt - a.updatedAt);
+        setDialog({
+            kind: "picker",
+            title: "Workflows",
+            placeholder: "Search name, phase, or status",
+            items: runs.map((run) => ({
+                label: formatWorkflowSummary(run),
+                detail: `${formatCount(run.usage.totalTokens)} tokens`,
+                search: `${run.name} ${run.status} ${run.currentPhase ?? ""}`.toLowerCase(),
+                action: () => openWorkflowRun(run.id),
+            })),
+        });
+    }
+
     function openCommands(): void {
         closePromptCompletions();
         const command = (label: string, detail: string, action: () => void): PickerItem => ({
@@ -408,6 +723,7 @@ export function App(props: { controller: PuiController }) {
                 command("Models", "Switch the active model", () => void openModels()),
                 command("Sessions", "Resume a previous session", () => void openSessions()),
                 command("Subagents", "Inspect or cancel background jobs", openSubagents),
+                command("Workflows", "Inspect and control workflow runs", openWorkflows),
                 command("New session", "Start with a clean conversation", () => void props.controller.newSession()),
                 command(
                     "Compact context",
@@ -641,6 +957,8 @@ export function App(props: { controller: PuiController }) {
                         height={dimensions().height}
                         onClose={() => {
                             dialogRequest += 1;
+                            const requestId = extensionDialogOwner(value());
+                            if (requestId !== undefined) props.controller.resolveExtensionDialog(requestId, undefined);
                             setDialog(undefined);
                             setTimeout(() => prompt?.focus(), 0);
                         }}
@@ -751,6 +1069,9 @@ function MessageItem(props: {
                     </Show>
                 </box>
             </Match>
+            <Match when={toolItem()?.workflow}>
+                {(workflow) => <WorkflowTool run={workflow()} expanded={props.toolsExpanded} />}
+            </Match>
             <Match when={toolItem()}>
                 <Show
                     when={toolItem()?.subagent}
@@ -845,6 +1166,55 @@ function MessageItem(props: {
                 </box>
             </Match>
         </Switch>
+    );
+}
+
+function WorkflowTool(props: { run: WorkflowRunSummaryV1; expanded: boolean }) {
+    const state = () => workflowStatusPresentation(props.run.status);
+    const color = () => {
+        const tone = workflowStatusTone(props.run.status);
+        return tone === "success"
+            ? theme.success
+            : tone === "error"
+              ? theme.error
+              : tone === "warning"
+                ? theme.warning
+                : theme.muted;
+    };
+    return (
+        <box marginTop={1} border={["left"]} borderColor={color()} backgroundColor={theme.toolBackground}>
+            <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+                <text fg={color()} wrapMode="none">
+                    {formatWorkflowSummary(props.run)}
+                </text>
+                <Show
+                    when={props.expanded}
+                    fallback={<text fg={theme.muted}>Ctrl+O to show workflow details · /workflows to control</text>}
+                >
+                    <text fg={theme.muted}>
+                        {props.run.phases.length} phases · {formatCount(props.run.usage.totalTokens)} tokens · $
+                        {props.run.usage.cost.toFixed(4)}
+                    </text>
+                    <For each={props.run.phases.slice(0, 12)}>
+                        {(phase) => (
+                            <text fg={theme.subtle} wrapMode="none">
+                                · {phase.name} · {phase.status} · {phase.agentIds.length} agents
+                            </text>
+                        )}
+                    </For>
+                    <Show when={props.run.phases.length > 12}>
+                        <text fg={theme.muted}>… {props.run.phases.length - 12} more phases</text>
+                    </Show>
+                    <Show when={props.run.warning}>
+                        <text fg={theme.warning}>{props.run.warning}</text>
+                    </Show>
+                    <Show when={props.run.error}>
+                        <text fg={theme.error}>{props.run.error}</text>
+                    </Show>
+                    <text fg={theme.muted}>{state().label} · use /workflows for bounded agent/activity inspection</text>
+                </Show>
+            </box>
+        </box>
     );
 }
 
@@ -1142,6 +1512,11 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
     const backgroundSubagents = () =>
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
     const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
+    const activeWorkflows = createMemo(() =>
+        props.snapshot.workflows.filter((run) =>
+            ["awaiting_approval", "queued", "running", "paused"].includes(run.status),
+        ),
+    );
 
     return (
         <box
@@ -1232,6 +1607,27 @@ function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 </box>
             </Show>
 
+            <Show when={activeWorkflows().length > 0}>
+                <box marginTop={1}>
+                    <text fg={theme.text}>
+                        <strong>Workflows</strong>
+                    </text>
+                    <For each={activeWorkflows().slice(0, 6)}>
+                        {(run) => (
+                            <text
+                                fg={workflowStatusTone(run.status) === "warning" ? theme.warning : theme.muted}
+                                wrapMode="none"
+                            >
+                                {formatWorkflowSummary(run)}
+                            </text>
+                        )}
+                    </For>
+                    <Show when={activeWorkflows().length > 6}>
+                        <text fg={theme.muted}>… more · /workflows</text>
+                    </Show>
+                </box>
+            </Show>
+
             <Show when={genericTools().length > 0}>
                 <box marginTop={1}>
                     <text fg={theme.text}>
@@ -1308,17 +1704,33 @@ function Dialog(props: { state: DialogState; width: number; height: number; onCl
             justifyContent="center"
             zIndex={200}
         >
-            <Show
-                when={props.state.kind === "picker"}
-                fallback={<Help width={Math.max(1, Math.min(72, props.width - 4))} onClose={props.onClose} />}
-            >
-                <Picker
-                    state={props.state as Extract<DialogState, { kind: "picker" }>}
-                    width={Math.max(1, Math.min(82, props.width - 4))}
-                    height={Math.max(1, Math.min(28, props.height - 4))}
-                    onClose={props.onClose}
-                />
-            </Show>
+            <Switch>
+                <Match when={props.state.kind === "picker"}>
+                    <Picker
+                        state={props.state as Extract<DialogState, { kind: "picker" }>}
+                        width={Math.max(1, Math.min(82, props.width - 4))}
+                        height={Math.max(1, Math.min(28, props.height - 4))}
+                        onClose={props.onClose}
+                    />
+                </Match>
+                <Match when={props.state.kind === "confirm"}>
+                    <Confirmation
+                        state={props.state as Extract<DialogState, { kind: "confirm" }>}
+                        width={Math.max(1, Math.min(64, props.width - 4))}
+                        onClose={props.onClose}
+                    />
+                </Match>
+                <Match when={props.state.kind === "input"}>
+                    <DialogInput
+                        state={props.state as Extract<DialogState, { kind: "input" }>}
+                        width={Math.max(1, Math.min(64, props.width - 4))}
+                        onClose={props.onClose}
+                    />
+                </Match>
+                <Match when={props.state.kind === "help"}>
+                    <Help width={Math.max(1, Math.min(72, props.width - 4))} onClose={props.onClose} />
+                </Match>
+            </Switch>
         </box>
     );
 }
@@ -1434,6 +1846,58 @@ function Picker(props: {
                 </Show>
             </box>
             <text fg={theme.muted}>↑↓ navigate · enter select · esc close</text>
+        </box>
+    );
+}
+
+function Confirmation(props: { state: Extract<DialogState, { kind: "confirm" }>; width: number; onClose: () => void }) {
+    useKeyboard((key) => {
+        if (key.name === "escape" || (key.ctrl && key.name === "c") || key.name === "n") {
+            key.preventDefault();
+            key.stopPropagation();
+            props.onClose();
+            return;
+        }
+        if (key.name === "y" || isEnterName(key.name)) {
+            key.preventDefault();
+            key.stopPropagation();
+            props.state.action();
+        }
+    });
+    return (
+        <box width={props.width} backgroundColor={theme.panel} border borderColor={theme.warning} padding={2} gap={1}>
+            <text fg={theme.warning}>
+                <strong>{props.state.title}</strong>
+            </text>
+            <text fg={theme.text}>{props.state.message}</text>
+            <text fg={theme.warning}>Enter/Y {props.state.confirmLabel} · Esc/N cancel</text>
+        </box>
+    );
+}
+
+function DialogInput(props: { state: Extract<DialogState, { kind: "input" }>; width: number; onClose: () => void }) {
+    const [value, setValue] = createSignal("");
+    useKeyboard((key) => {
+        if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+            key.preventDefault();
+            key.stopPropagation();
+            props.onClose();
+        }
+    });
+    return (
+        <box width={props.width} backgroundColor={theme.panel} border borderColor={theme.border} padding={2} gap={1}>
+            <text fg={theme.text}>
+                <strong>{props.state.title}</strong>
+            </text>
+            <input
+                focused
+                placeholder={props.state.placeholder}
+                textColor={theme.text}
+                backgroundColor={theme.element}
+                onInput={setValue}
+                onSubmit={() => props.state.action(value())}
+            />
+            <text fg={theme.muted}>Enter submit · Esc cancel</text>
         </box>
     );
 }
