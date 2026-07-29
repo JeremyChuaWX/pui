@@ -3,8 +3,6 @@ import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL = "pui.workflow.background.control.result" as const;
-export const BACKGROUND_WORKFLOW_SAVE_CHANNEL = "pui.workflow.background.save" as const;
-export const BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL = "pui.workflow.background.save.result" as const;
 export const BACKGROUND_WORKFLOW_SCHEMA = "pi.workflow.background" as const;
 export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
 export const BACKGROUND_WORKFLOW_VERSION = 1 as const;
@@ -54,30 +52,6 @@ export interface BackgroundWorkflowControlResultV1 {
     error?: string;
 }
 
-export interface BackgroundWorkflowSaveV1 {
-    schema: "pi.workflow.background.save";
-    version: 1;
-    sessionId: string;
-    instanceId: string;
-    cwd: string;
-    requestId: string;
-    runId: string;
-    scope: "project" | "personal";
-    overwrite: boolean;
-}
-export interface BackgroundWorkflowSaveResultV1 {
-    schema: "pi.workflow.background.save.result";
-    version: 1;
-    sessionId: string;
-    instanceId: string;
-    cwd: string;
-    requestId: string;
-    ok: boolean;
-    path?: string;
-    error?: string;
-    code?: "overwrite_required";
-}
-
 export interface WorkflowRoute {
     sessionId: string;
     instanceId?: string;
@@ -125,48 +99,6 @@ export function parseBackgroundWorkflowEvent(
     if (value.type === "remove" && identity(value.runId) && value.run === undefined)
         return value as unknown as BackgroundWorkflowEventV1;
     return undefined;
-}
-
-export function parseBackgroundWorkflowSave(
-    value: unknown,
-    route?: WorkflowRoute,
-): BackgroundWorkflowSaveV1 | undefined {
-    if (
-        !record(value) ||
-        value.schema !== "pi.workflow.background.save" ||
-        value.version !== 1 ||
-        !routed(value, route) ||
-        !identity(value.requestId) ||
-        !identity(value.runId) ||
-        (value.scope !== "project" && value.scope !== "personal") ||
-        typeof value.overwrite !== "boolean"
-    )
-        return undefined;
-    return value as unknown as BackgroundWorkflowSaveV1;
-}
-
-export function parseBackgroundWorkflowSaveResult(
-    value: unknown,
-    route?: WorkflowRoute,
-): BackgroundWorkflowSaveResultV1 | undefined {
-    if (
-        !record(value) ||
-        value.schema !== "pi.workflow.background.save.result" ||
-        value.version !== 1 ||
-        !routed(value, route) ||
-        !identity(value.requestId) ||
-        typeof value.ok !== "boolean"
-    )
-        return undefined;
-    if (value.ok) {
-        if (!identity(value.path, MAX_CWD) || value.error !== undefined || value.code !== undefined) return undefined;
-    } else if (
-        !identity(value.error, 2_000) ||
-        value.path !== undefined ||
-        (value.code !== undefined && value.code !== "overwrite_required")
-    )
-        return undefined;
-    return value as unknown as BackgroundWorkflowSaveResultV1;
 }
 
 export function parseBackgroundWorkflowControl(

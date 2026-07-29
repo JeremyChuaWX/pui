@@ -80,7 +80,7 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 
 ## Workflows
 
-Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <name> [JSON args]` for saved definitions, and `/workflows` for run management. Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
+Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
 
 An inline workflow is JavaScript using `agent`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
 
@@ -90,18 +90,13 @@ const reports = await parallel([agent("Review API", { role: "explore" }), agent(
 return { reports, requestedBy: args.user };
 ```
 
-Saved definitions add static metadata and can be invoked without regenerating the script:
+The `workflow` tool accepts exactly one source: inline JavaScript in `script`, or an explicit workflow file in `path`. `/workflow <path> [JSON args]` launches a file directly. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
 
-```js
-export const meta = { name: "review-pair", description: "Run two independent reviews" };
-return parallel([agent("Review API", { role: "explore" }), agent("Review UI", { role: "explore" })]);
-```
+File metadata is optional. A static `export const meta = { name: "review-pair", description: "Run two independent reviews" }` supplies the display name and description; without it, the name falls back to the file's basename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name.
 
-Project definitions live at `.pi/workflows/*.js`; personal definitions live at `~/.pi/agent/workflows/*.js`. Lookup walks from the current directory to the repository root: the nearest project definition wins, then more distant project definitions, then personal definitions. Metadata must be one static `export const meta = { name: "lowercase-hyphen-name", description: "..." }` declaration and is parsed without execution.
+Every exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Then choose **Run once** or **Trust unchanged script in this project**. Approval is tied to the canonical file path and exact source, so moving or changing a file requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. File paths are explicit inputs, not implicit trust: the host reads the file and approval covers the bytes that will launch.
 
-Every exact workflow script is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Then choose **Run once** or **Trust unchanged script in this project**; trust is keyed by canonical project, name, and SHA-256 source bytes, so edits require approval again. Project workflows additionally require Pi project trust. Saving supports project or personal scope and refuses symlink traversal.
-
-Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, restart a completed agent, or save a run; `/workflow` directly launches a saved definition. Pause lets active agents finish but starts no new work. Stop aborts the worker and active agents. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
+Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, or restart a completed agent. Pause lets active agents finish but starts no new work. Stop aborts the worker and active agents. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
 
 Private run artifacts are stored under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/` (exact source/arguments, snapshots, journal, result, and summary). On startup pui discovers interrupted runs and asks whether to resume, inspect, stop, or defer. Completed structural operations replay from the journal; an operation interrupted before durable completion runs again. Model, tool, and filesystem side effects are therefore **at least once**, not exactly once. Terminal result delivery uses a durable claim to suppress duplicates during ordinary recovery, but a crash between the external message send and recording delivery has an unavoidable duplicate-versus-loss window; it does not promise strict exactly-once delivery across that send.
 

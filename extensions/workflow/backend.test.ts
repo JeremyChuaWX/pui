@@ -93,7 +93,7 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
-    test("executes the documented multiline saved definition and retains exact source bytes", async () => {
+    test("executes documented multiline metadata source and retains exact source bytes", async () => {
         const source = `export const meta = {
     name: "review",
     description: "Review changed files",

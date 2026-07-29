@@ -168,30 +168,6 @@ describe("PuiController workflow bridge", () => {
                 expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
                 expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
             ]);
-            let saveRequest: any,
-                saveFailure = false;
-            h.bus.on("pui.workflow.background.save", (value: any) => {
-                saveRequest = value;
-                h.bus.emit("pui.workflow.background.save.result", {
-                    schema: "pi.workflow.background.save.result",
-                    version: 1,
-                    sessionId: "session-1",
-                    instanceId: "instance-1",
-                    cwd: canonical,
-                    requestId: value.requestId,
-                    ...(saveFailure
-                        ? { ok: false, error: "already exists", code: "overwrite_required" }
-                        : { ok: true, path: "/saved/review.js" }),
-                });
-            });
-            expect(await h.controller.saveWorkflow("run-1", "project")).toBe("/saved/review.js");
-            expect(saveRequest).toMatchObject({ runId: "run-1", scope: "project", overwrite: false });
-            saveFailure = true;
-            await expect(h.controller.saveWorkflow("run-1", "project")).rejects.toMatchObject({
-                message: "already exists",
-                code: "overwrite_required",
-            });
-
             const prior = h.controller.snapshot();
             h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
             h.bus.emit("pui.workflow.background", envelope("session-1", `${canonical}/..`, "reset"));

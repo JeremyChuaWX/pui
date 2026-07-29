@@ -12,7 +12,7 @@ import {
     type WorkflowUsageV1,
 } from "./protocol.js";
 import type { WorkflowRunStorage } from "./run-storage.js";
-import { executableWorkflowScript } from "./storage.js";
+import { executableWorkflowScript } from "./source.js";
 import { WorkflowWorktreeManager } from "./worktree.js";
 
 export const DEFAULT_WORKFLOW_LIMITS = {

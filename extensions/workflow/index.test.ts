@@ -190,22 +190,38 @@ describe("workflow extension", () => {
         }
     });
 
-    test("control and save channels return routed success and bounded structured failures", async () => {
-        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
-        const longError = "x".repeat(3_000);
+    test("launches an explicit file outside a repository without project trust", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-file-"));
         try {
-            const backend: Partial<WorkflowBackend> = {
-                async control(_id, request) {
-                    const action = typeof request === "string" ? request : request.action;
-                    if (action === "pause") return { runId: "linked-run" };
-                    throw new Error(longError);
+            await fs.promises.writeFile(path.join(root, "plain workflow.js"), "return args");
+            const f = fixture({
+                approvalStore: { has: async () => false, add: async () => {} },
+            });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            await f.tool.execute("id", { path: "plain workflow.js", args: { x: 1 } }, undefined, undefined, {
+                cwd: root,
+                isProjectTrusted: () => false,
+                ui: { confirm: () => true },
+            });
+            expect(f.launches.at(-1)).toMatchObject({ name: "plain-workflow", args: { x: 1 }, script: "return args" });
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("control channel remains and save bridge is removed", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-events-"));
+        try {
+            const f = fixture({
+                backend: {
+                    async control() {
+                        return { runId: "linked-run" };
+                    },
                 },
-                inspect: () => ({
-                    run: summary("succeeded"),
-                    script: `export const meta={name:"demo",description:"Demo"}; return 1`,
-                }),
-            };
-            const f = fixture({ backend });
+            });
             await f.handlers.get("session_start")!(
                 {},
                 {
@@ -214,69 +230,29 @@ describe("workflow extension", () => {
                     ui: { select: async () => "Later", notify: () => {} },
                 },
             );
-            const route = {
+            expect(f.eventHandlers.has("pui.workflow.background.save")).toBe(false);
+            f.eventHandlers.get("pui.workflow.background.control")!({
+                schema: "pi.workflow.background.control",
                 version: 1,
                 sessionId: "session-1",
                 instanceId: "instance-1",
                 cwd: await fs.promises.realpath(root),
-                runId: "run-1",
-            };
-            f.eventHandlers.get("pui.workflow.background.control")!({
-                ...route,
-                schema: "pi.workflow.background.control",
                 requestId: "control-ok",
+                runId: "run-1",
                 action: "pause",
             });
-            f.eventHandlers.get("pui.workflow.background.control")!({
-                ...route,
-                schema: "pi.workflow.background.control",
-                requestId: "control-fail",
-                action: "stop",
-            });
-            f.eventHandlers.get("pui.workflow.background.save")!({
-                ...route,
-                schema: "pi.workflow.background.save",
-                requestId: "save-ok",
-                scope: "project",
-                overwrite: false,
-            });
-            await waitFor(() =>
-                ["control-ok", "control-fail", "save-ok"].every((requestId) =>
-                    f.emitted.some(([, value]) => value.requestId === requestId),
-                ),
-            );
+            await waitFor(() => f.emitted.some(([, value]) => value.requestId === "control-ok"));
             expect(f.emitted.find(([, value]) => value.requestId === "control-ok")?.[1]).toMatchObject({
                 ok: true,
                 linkedRunId: "linked-run",
-            });
-            expect(f.emitted.find(([, value]) => value.requestId === "control-fail")?.[1]).toMatchObject({
-                ok: false,
-                error: "x".repeat(2_000),
-            });
-            expect(f.emitted.find(([, value]) => value.requestId === "save-ok")?.[1]).toMatchObject({
-                ok: true,
-                path: path.join(route.cwd, ".pi/workflows/demo.js"),
-            });
-            f.eventHandlers.get("pui.workflow.background.save")!({
-                ...route,
-                schema: "pi.workflow.background.save",
-                requestId: "save-fail",
-                scope: "project",
-                overwrite: false,
-            });
-            await waitFor(() => f.emitted.some(([, value]) => value.requestId === "save-fail"));
-            expect(f.emitted.find(([, value]) => value.requestId === "save-fail")?.[1]).toMatchObject({
-                ok: false,
-                code: "overwrite_required",
             });
         } finally {
             await fs.promises.rm(root, { recursive: true, force: true });
         }
     });
 
-    test("saved invocation passes structured args, requires project trust, completes commands, and reapproves changed bytes", async () => {
+    test("file invocation passes args, requires project trust, and reapproves changed bytes", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-index-"));
-        const home = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-index-home-"));
         const keys = new Set<string>();
         const approvalStore = {
             has: async (key: string) => keys.has(key),
@@ -286,10 +262,9 @@ describe("workflow extension", () => {
         };
         try {
             await fs.promises.mkdir(path.join(root, ".git"));
-            await fs.promises.mkdir(path.join(root, ".pi/workflows"), { recursive: true });
-            const file = path.join(root, ".pi/workflows/demo.js");
+            const file = path.join(root, "demo.js");
             await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Demo"}; return args`);
-            const f = fixture({ storageOptions: { home }, approvalStore });
+            const f = fixture({ approvalStore });
             await f.handlers.get("session_start")!(
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
@@ -300,24 +275,30 @@ describe("workflow extension", () => {
                 ui: { confirm: () => true, select: () => "Trust unchanged script in this project", notify: () => {} },
             };
             await expect(
-                f.tool.execute("id", { name: "demo", args: { x: 1 } }, undefined, undefined, context),
+                f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context),
             ).rejects.toThrow("not trusted");
             context.isProjectTrusted = () => true;
-            await f.tool.execute("id", { name: "demo", args: { x: 1 } }, undefined, undefined, context);
-            expect(f.launches.at(-1)).toMatchObject({ name: "demo", args: { x: 1 } });
-            expect(await f.command.getArgumentCompletions("de")).toEqual([expect.objectContaining({ value: "demo" })]);
+            await f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context);
+            expect(f.launches.at(-1)).toMatchObject({
+                name: "demo",
+                args: { x: 1 },
+                script: expect.stringContaining("return args"),
+            });
             const approved = keys.size;
-            await f.command.handler(`demo {"from":"command"}`, context);
+            await f.command.handler(`demo.js {"from":"command"}`, context);
             expect(keys.size).toBe(approved);
-            await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Changed"}; return args`);
-            await f.tool.execute("id", { name: "demo" }, undefined, undefined, context);
+            const moved = path.join(root, "moved.js");
+            await fs.promises.copyFile(file, moved);
+            await f.tool.execute("id", { path: moved }, undefined, undefined, context);
             expect(keys.size).toBe(approved + 1);
+            await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Changed"}; return args`);
+            await f.tool.execute("id", { path: file }, undefined, undefined, context);
+            expect(keys.size).toBe(approved + 2);
             await expect(
-                f.tool.execute("id", { name: "demo", script: "return 1" }, undefined, undefined, context),
+                f.tool.execute("id", { path: file, script: "return 1" }, undefined, undefined, context),
             ).rejects.toThrow("exactly one");
         } finally {
             await fs.promises.rm(root, { recursive: true, force: true });
-            await fs.promises.rm(home, { recursive: true, force: true });
         }
     });
 });

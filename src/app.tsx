@@ -2,7 +2,7 @@ import type { BoxRenderable, KeyBinding, KeyEvent, ScrollBoxRenderable, Textarea
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { type PuiController, WorkflowSaveError } from "./controller.js";
+import type { PuiController } from "./controller.js";
 import { extensionDialogOwner } from "./dialog-owner.js";
 import { extensionConfirmKeyHint, extensionConfirmKeyIntent } from "./extension-confirm-key.js";
 import { editPromptInNvim } from "./external-editor.js";
@@ -628,69 +628,13 @@ export function App(props: { controller: PuiController }) {
                         props.controller.retryWorkflowAsync(run.id),
                     ),
             });
-        items.push(
-            {
-                label: "Save workflow",
-                detail: "Save the immutable inspected script",
-                search: "save project personal",
-                action: () => {
-                    const save = async (scope: "project" | "personal", overwrite = false) => {
-                        try {
-                            const saved = await props.controller.saveWorkflow(run.id, scope, overwrite);
-                            setDialog(undefined);
-                            props.controller.notify(`Saved workflow to ${saved}.`, "success");
-                        } catch (error) {
-                            const text = error instanceof Error ? error.message : String(error);
-                            if (
-                                !overwrite &&
-                                error instanceof WorkflowSaveError &&
-                                error.code === "overwrite_required"
-                            ) {
-                                setDialog({
-                                    kind: "confirm",
-                                    title: "Overwrite workflow?",
-                                    message: text,
-                                    confirmLabel: "Overwrite",
-                                    action: () => {
-                                        setDialog(undefined);
-                                        void save(scope, true);
-                                    },
-                                });
-                            } else props.controller.notify(text, "error");
-                        }
-                    };
-                    setDialog({
-                        kind: "picker",
-                        title: `Save ${run.name}`,
-                        placeholder: "Choose destination",
-                        items: [
-                            {
-                                label: "Project",
-                                detail: ".pi/workflows",
-                                search: "project",
-                                action: () => void save("project"),
-                            },
-                            {
-                                label: "Personal",
-                                detail: "~/.pi/agent/workflows",
-                                search: "personal global",
-                                action: () => void save("personal"),
-                            },
-                        ],
-                    });
-                },
-            },
-            {
-                label: "Open script/artifacts",
-                detail: "Unavailable until WS5/WS6 detail and artifact APIs",
-                search: "editor script artifact",
-                action: () =>
-                    props.controller.notify(
-                        "Script and artifact inspection requires the WS5/WS6 host APIs.",
-                        "warning",
-                    ),
-            },
-        );
+        items.push({
+            label: "Open script/artifacts",
+            detail: "Unavailable until WS5/WS6 detail and artifact APIs",
+            search: "editor script artifact",
+            action: () =>
+                props.controller.notify("Script and artifact inspection requires the WS5/WS6 host APIs.", "warning"),
+        });
         setDialog({
             kind: "picker",
             title: `Workflow · ${run.name}`,

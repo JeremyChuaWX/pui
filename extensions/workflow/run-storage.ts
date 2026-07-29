@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
-import { findRepositoryRoot } from "./storage.js";
+import { findRepositoryRoot } from "./source.js";
 import type { OwnedWorktree } from "./worktree.js";
 
 const MAX_ARTIFACT = 16 * 1024 * 1024;

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type {
     ExtensionAPI,
     ExtensionCommandContext,
@@ -20,29 +21,20 @@ import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
-    BACKGROUND_WORKFLOW_SAVE_CHANNEL,
-    BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL,
     BACKGROUND_WORKFLOW_SCHEMA,
     BACKGROUND_WORKFLOW_VERSION,
     parseBackgroundWorkflowControl,
-    parseBackgroundWorkflowSave,
 } from "./background-protocol.js";
 import { WorkflowRunManager } from "./manager.js";
 import { WorkflowRunStorage } from "./run-storage.js";
-import {
-    discoverWorkflows,
-    findRepositoryRoot,
-    parseWorkflowMetadata,
-    saveWorkflow,
-    type WorkflowStorageOptions,
-} from "./storage.js";
+import { findRepositoryRoot, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
         Type.String({ description: "Exact inline JavaScript orchestration script to approve and run." }),
     ),
-    name: Type.Optional(
-        Type.String({ description: "Saved workflow name. Exactly one of script or name is required." }),
+    path: Type.Optional(
+        Type.String({ description: "Explicit workflow file path. Exactly one of script or path is required." }),
     ),
     args: Type.Optional(Type.Unknown()),
 });
@@ -51,7 +43,6 @@ export interface WorkflowExtensionDependencies {
     backendOptions?: Omit<WorkflowBackendOptions, "eventSink">;
     environment?: NodeJS.ProcessEnv;
     instanceId?: string;
-    storageOptions?: WorkflowStorageOptions;
     approvalStore?: WorkflowApprovalStore;
 }
 
@@ -114,7 +105,6 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         recoveryAbort: AbortController | undefined,
         initializationQueue: Promise<void> = Promise.resolve(),
         unsubscribeControl: (() => void) | undefined,
-        unsubscribeSave: (() => void) | undefined,
         manager: WorkflowRunManager;
     const emitEnvelope = (
         type: "ready" | "reset" | "upsert" | "remove",
@@ -188,52 +178,6 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 }
             })();
         });
-        unsubscribeSave?.();
-        unsubscribeSave = pi.events?.on(BACKGROUND_WORKFLOW_SAVE_CHANNEL, (payload) => {
-            if (generation !== lifecycleGeneration) return;
-            const value = parseBackgroundWorkflowSave(payload, { ...route, instanceId });
-            if (!value) return;
-            void (async () => {
-                try {
-                    const inspected = manager.inspect(value.runId);
-                    const metadata = parseWorkflowMetadata(inspected.script, "inspected workflow");
-                    const savedPath = await saveWorkflow(
-                        {
-                            cwd: route.cwd,
-                            name: metadata.name,
-                            script: inspected.script,
-                            scope: value.scope,
-                            overwrite: value.overwrite,
-                        },
-                        dependencies.storageOptions,
-                    );
-                    if (generation !== lifecycleGeneration) return;
-                    pi.events?.emit(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, {
-                        schema: "pi.workflow.background.save.result",
-                        version: 1,
-                        ...route,
-                        instanceId,
-                        requestId: value.requestId,
-                        ok: true,
-                        path: savedPath,
-                    });
-                } catch (error) {
-                    if (generation !== lifecycleGeneration) return;
-                    pi.events?.emit(BACKGROUND_WORKFLOW_SAVE_RESULT_CHANNEL, {
-                        schema: "pi.workflow.background.save.result",
-                        version: 1,
-                        ...route,
-                        instanceId,
-                        requestId: value.requestId,
-                        ok: false,
-                        ...((error as { code?: unknown })?.code === "overwrite_required"
-                            ? { code: "overwrite_required" as const }
-                            : {}),
-                        error: error instanceof Error ? error.message.slice(0, 2000) : String(error).slice(0, 2000),
-                    });
-                }
-            })();
-        });
         let recovered: Awaited<ReturnType<WorkflowRunManager["initialize"]>> | undefined;
         const initialize = initializationQueue.then(async () => {
             if (generation !== lifecycleGeneration || abort.signal.aborted) return;
@@ -275,8 +219,6 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         recoveryAbort = undefined;
         unsubscribeControl?.();
         unsubscribeControl = undefined;
-        unsubscribeSave?.();
-        unsubscribeSave = undefined;
         const route = { sessionId, cwd };
         const shutdown = initializationQueue.then(() => manager.shutdown());
         initializationQueue = shutdown.catch(() => {});
@@ -292,47 +234,41 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         if (choice === undefined) throw new Error("Workflow launch was denied.");
         if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
     };
-    const launchSaved = async (name: string, args: unknown, ctx: ExtensionContext) => {
+    const launchFile = async (requestedPath: string, args: unknown, ctx: ExtensionContext) => {
         const canonical = await fs.promises.realpath(ctx.cwd);
-        const saved = (await discoverWorkflows(canonical, dependencies.storageOptions)).find(
-            (item) => item.name === name,
-        );
-        if (!saved) throw new Error(`Unknown saved workflow "${name}". Use /workflow completion to list definitions.`);
-        if (saved.scope === "project" && !ctx.isProjectTrusted?.())
-            throw new Error(`Project workflow "${name}" is not trusted. Trust the project before running it.`);
-        const project = saved.projectRoot ?? (await findRepositoryRoot(canonical)) ?? canonical;
-        const key = workflowApprovalKey(project, saved.name, saved.script);
-        const preview = preflightWorkflow(saved.script);
+        const source = await readWorkflowFile(canonical, requestedPath);
+        const repositoryRoot = await findRepositoryRoot(canonical);
+        const project = repositoryRoot ?? canonical;
+        const relative = path.relative(project, source.path);
+        const insideProject = relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+        if (repositoryRoot && insideProject && !ctx.isProjectTrusted?.())
+            throw new Error(`Project workflow "${source.name}" is not trusted. Trust the project before running it.`);
+        const preview = preflightWorkflow(source.script);
         await authorize(
-            key,
-            `Approve saved workflow: ${saved.name}`,
-            `Source: ${saved.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${saved.script}`,
+            workflowApprovalKey(project, source.path, source.script),
+            `Approve workflow file: ${source.name}`,
+            `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${source.script}`,
             ctx.ui,
         );
-        return manager.launch({ name: saved.name, script: saved.script, args, sessionId, cwd: canonical });
+        return manager.launch({ name: source.name, script: source.script, args, sessionId, cwd: canonical });
     };
     pi.registerCommand("workflow", {
-        description: "Run a saved workflow without regenerating its script",
-        getArgumentCompletions: async (prefix: string) =>
-            (await discoverWorkflows(cwd || process.cwd(), dependencies.storageOptions))
-                .filter((item) => item.name.startsWith(prefix.trim().split(/\s+/, 1)[0] ?? ""))
-                .map((item) => ({ value: item.name, label: item.name, description: item.description })),
+        description: "Run a workflow file",
         handler: async (text: string, ctx: ExtensionCommandContext) => {
-            const [name, ...rest] = text.trim().split(/\s+/);
-            if (!name) {
-                ctx.ui.notify("Usage: /workflow <name> [JSON args]", "warning");
+            const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(text.trim());
+            if (!match?.[1]) {
+                ctx.ui.notify("Usage: /workflow <path> [JSON args]", "warning");
                 return;
             }
             let args: unknown;
-            const raw = rest.join(" ");
-            if (raw) {
+            if (match[2]) {
                 try {
-                    args = JSON.parse(raw);
+                    args = JSON.parse(match[2]);
                 } catch {
                     throw new Error("Workflow arguments must be valid JSON.");
                 }
             }
-            const launched = await launchSaved(name, args, ctx);
+            const launched = await launchFile(match[1], args, ctx);
             ctx.ui.notify(`Started workflow ${launched.runId}.`, "info");
         },
     });
@@ -340,20 +276,21 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         name: "workflow",
         label: "Workflow",
         description:
-            "Approve and launch either an inline script or a saved workflow name with structured arguments (exactly one).",
+            "Approve and launch either an inline script or an explicit workflow file path with structured arguments (exactly one).",
         parameters: WorkflowParams,
         async execute(_id, params, _signal, _update, ctx) {
-            if (Boolean(params.script) === Boolean(params.name))
-                throw new Error("Provide exactly one of script or saved workflow name.");
-            if (params.name) {
-                const launched = await launchSaved(params.name, params.args, ctx);
+            const hasScript = params.script !== undefined;
+            const hasPath = params.path !== undefined;
+            if (hasScript === hasPath) throw new Error("Provide exactly one of inline script or workflow file path.");
+            if (params.path !== undefined) {
+                const launched = await launchFile(params.path, params.args, ctx);
                 return {
-                    content: [{ type: "text", text: `Started saved workflow ${params.name} (${launched.runId}).` }],
+                    content: [{ type: "text", text: `Started workflow file ${params.path} (${launched.runId}).` }],
                     details: { schema: "pi.workflow.launch", version: 1, runId: launched.runId },
                 };
             }
             const script = params.script;
-            if (!script) throw new Error("Provide exactly one of script or saved workflow name.");
+            if (script === undefined) throw new Error("Provide exactly one of inline script or workflow file path.");
             const preview = preflightWorkflow(script);
             const ui = ctx.ui;
             const canonical = await fs.promises.realpath(ctx.cwd);
