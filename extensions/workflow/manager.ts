@@ -11,6 +11,7 @@ const terminal = (status: string) => status === "succeeded" || status === "faile
 /** Session-facing lifecycle guard around a host-neutral backend. */
 export class WorkflowRunManager {
     private readonly delivered = new Set<string>();
+    private readonly released = new Set<string>();
     private readonly unsubscribe: () => void;
     private shuttingDown = false;
     constructor(private readonly options: WorkflowManagerOptions) {
@@ -31,11 +32,15 @@ export class WorkflowRunManager {
         let claimed = !this.options.backend.claimTerminalDelivery;
         try {
             if (this.options.backend.claimTerminalDelivery) {
-                claimed = await this.options.backend.claimTerminalDelivery(run.id, { recovery });
+                claimed = await this.options.backend.claimTerminalDelivery(run.id, {
+                    recovery: recovery || this.released.has(run.id),
+                });
                 if (!claimed) {
                     this.delivered.delete(run.id);
+                    this.released.delete(run.id);
                     return;
                 }
+                this.released.delete(run.id);
             }
             let result: string | undefined;
             try {
@@ -45,7 +50,10 @@ export class WorkflowRunManager {
             await this.options.backend.markTerminalDelivered?.(run.id);
         } catch (error) {
             this.delivered.delete(run.id);
-            if (claimed) await this.options.backend.releaseTerminalDelivery?.(run.id);
+            if (claimed && this.options.backend.claimTerminalDelivery && this.options.backend.releaseTerminalDelivery) {
+                await this.options.backend.releaseTerminalDelivery(run.id);
+                this.released.add(run.id);
+            }
             throw error;
         }
     }

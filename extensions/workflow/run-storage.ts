@@ -171,6 +171,20 @@ function blocksDeliveryRecovery(
     const livePidGrace = Math.max(30_000, staleWindow * 2);
     return age < livePidGrace && state?.host === os.hostname() && state.pid !== undefined && isProcessAlive(state.pid);
 }
+function deliveryReleaseFile(directory: string, owner: string): string {
+    return path.join(directory, `.delivery.release-${createHash("sha256").update(owner).digest("hex")}.json`);
+}
+async function hasDeliveryRelease(directory: string, owner: string | undefined): Promise<boolean> {
+    if (!owner) return false;
+    const file = deliveryReleaseFile(directory, owner);
+    try {
+        const release = await boundedJson<{ version?: unknown; owner?: unknown }>(file, 4_096);
+        return release.version === 1 && release.owner === owner;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+    }
+}
 
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
 export class WorkflowRunStorage {
@@ -349,10 +363,11 @@ export class WorkflowRunStorage {
         if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_ARTIFACT)
             throw new Error(`Unsafe or oversized workflow artifact: ${recovery}`);
         const state = await boundedJson<DeliveryState>(recovery).catch(() => undefined),
-            marker = path.join(directory, "delivery.json");
+            marker = path.join(directory, "delivery.json"),
+            released = await hasDeliveryRelease(directory, state?.owner);
         let durableReplacement = false;
         try {
-            if (blocksDeliveryRecovery(state, stat.mtimeMs, staleAfterMs, this.instanceToken)) {
+            if (!released && blocksDeliveryRecovery(state, stat.mtimeMs, staleAfterMs, this.instanceToken)) {
                 try {
                     await fs.promises.link(recovery, marker);
                 } catch (error) {
@@ -375,6 +390,8 @@ export class WorkflowRunStorage {
         } finally {
             if (durableReplacement) {
                 await fs.promises.rm(recovery, { force: true });
+                if (released && state?.owner)
+                    await fs.promises.rm(deliveryReleaseFile(directory, state.owner), { force: true });
                 await syncDirectory(directory);
             }
         }
@@ -409,8 +426,10 @@ export class WorkflowRunStorage {
             await syncDirectory(directory);
         }
 
-        const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined);
-        if (blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken)) return false;
+        const initialState = await boundedJson<DeliveryState>(marker).catch(() => undefined),
+            released = await hasDeliveryRelease(directory, initialState?.owner);
+        if (!released && blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken))
+            return false;
         try {
             await fs.promises.rename(marker, recovery);
             await syncDirectory(directory);
@@ -428,10 +447,14 @@ export class WorkflowRunStorage {
         await atomic(marker, { version: 1, delivered: true });
     }
     async releaseClaim(directory: string) {
-        const file = path.join(await this.assertDirectory(directory), "delivery.json");
-        const state = await boundedJson<DeliveryState>(file).catch(() => undefined);
+        directory = await this.assertDirectory(directory);
+        const state = await boundedJson<DeliveryState>(path.join(directory, "delivery.json")).catch(() => undefined);
         if (state?.claimed && !state.delivered && state.owner === this.instanceToken)
-            await fs.promises.rm(file, { force: true });
+            await atomic(deliveryReleaseFile(directory, this.instanceToken), {
+                version: 1,
+                owner: this.instanceToken,
+                releasedAt: Date.now(),
+            });
     }
     async discover(cwd: string): Promise<StoredRun[]> {
         const project = await this.project(cwd);

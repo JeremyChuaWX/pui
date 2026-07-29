@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -97,6 +97,59 @@ test("reserves a run while a terminal delivery claim is pending", async () => {
     await manager.shutdown();
 });
 
+test("retries a released terminal claim through recovery", async () => {
+    let listener: (run: WorkflowRunSummaryV1) => void = () => {};
+    const recoveries: boolean[] = [];
+    let attempts = 0;
+    let resolveFailure: () => void = () => {};
+    let resolveDelivery: () => void = () => {};
+    const failure = new Promise<void>((resolve) => {
+            resolveFailure = resolve;
+        }),
+        delivered = new Promise<void>((resolve) => {
+            resolveDelivery = resolve;
+        });
+    const backend: WorkflowBackend = {
+        launch: async () => ({ runId: "r" }),
+        list: () => [],
+        inspect: () => ({ run: run("succeeded"), script: "", result: "ok" }),
+        subscribe: (fn) => {
+            listener = fn;
+            return () => {};
+        },
+        control: async () => undefined,
+        claimTerminalDelivery: async (_id, options) => {
+            recoveries.push(options?.recovery ?? false);
+            return true;
+        },
+        markTerminalDelivered: async () => {},
+        releaseTerminalDelivery: async () => {},
+        shutdown: async () => {},
+    };
+    const manager = new WorkflowRunManager({
+        backend,
+        emit: () => {},
+        deliver: async () => {
+            attempts++;
+            if (attempts === 1) throw new Error("temporary delivery failure");
+            resolveDelivery();
+        },
+    });
+    const terminalError = spyOn(console, "error").mockImplementation(() => resolveFailure());
+
+    try {
+        listener(run("succeeded"));
+        await failure;
+        listener(run("succeeded"));
+        await delivered;
+        expect(recoveries).toEqual([false, true]);
+        expect(terminalError).toHaveBeenCalledTimes(1);
+    } finally {
+        terminalError.mockRestore();
+        await manager.shutdown();
+    }
+});
+
 test("durably delivers recovered terminal runs across storage instances", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-delivery-"));
     const project = path.join(temp, "project");
@@ -184,8 +237,10 @@ test("durably delivers recovered terminal runs across storage instances", async 
         });
         await expect(failing.initialize(project)).rejects.toThrow("delivery unavailable");
         expect(
-            await fs.promises.stat(path.join(retryDirectory, "delivery.json")).catch(() => undefined),
-        ).toBeUndefined();
+            JSON.parse(await fs.promises.readFile(path.join(retryDirectory, "delivery.json"), "utf8")),
+        ).toMatchObject({
+            claimed: true,
+        });
 
         const retried: unknown[] = [];
         await manager(new WorkflowRunStorage(root), (summary, value) => {

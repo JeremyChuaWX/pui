@@ -103,6 +103,13 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
         await fs.promises.utimes(marker, old, old);
         expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
         await expect(fs.promises.lstat(recovery)).rejects.toMatchObject({ code: "ENOENT" });
+
+        await second.releaseClaim(directory);
+        const replacementOwner = new WorkflowRunStorage(root);
+        expect(await replacementOwner.recoverDeliveryClaim(directory, 3_600_000)).toBe(true);
+        const replacement = JSON.parse(await fs.promises.readFile(marker, "utf8"));
+        await second.releaseClaim(directory);
+        expect(JSON.parse(await fs.promises.readFile(marker, "utf8"))).toEqual(replacement);
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
