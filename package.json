@@ -1,6 +1,6 @@
 {
     "name": "pui",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "private": true,
     "description": "An OpenCode-inspired OpenTUI client for Pi",
     "type": "module",
