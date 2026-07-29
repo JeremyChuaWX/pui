@@ -87,12 +87,16 @@ describe("workflow file source", () => {
         expect(() => parseWorkflowMetadata(regexStatements)).toThrow("exactly one");
     });
 
-    test("keeps regex statements after function declaration bodies inert", () => {
+    test("keeps regex statements after declaration bodies inert", () => {
         const regexStatements = [
             `function f() {}\n/export const meta =/.test("x")`,
             `async function f() {}\n/export const meta =/.test("x")`,
             `function* f() {}\n/export const meta =/.test("x")`,
-            `class Example {}\n/export const meta =/.test("x")`,
+            `class Example {} /export const meta =/.test("x")`,
+            `export class Example {} /export const meta =/.test("x")`,
+            `export default class Example {} /export const meta =/.test("x")`,
+            `class Example extends Base {} /export const meta =/.test("x")`,
+            `export default class extends Base {} /export const meta =/.test("x")`,
         ];
         for (const script of regexStatements) {
             expect(() => parseWorkflowMetadata(script)).toThrow("exactly one");
@@ -102,8 +106,13 @@ describe("workflow file source", () => {
         }
     });
 
-    test("keeps division after object expressions distinct from regex statements", () => {
-        const script = `const ratio = {} / export / constValue;\nexport const meta={name:"demo",description:"Demo"}`;
-        expect(parseWorkflowMetadata(script)).toMatchObject({ name: "demo" });
+    test("keeps division after object and class expressions distinct from regex statements", () => {
+        const metadata = `export const meta={name:"demo",description:"Demo"}`;
+        expect(parseWorkflowMetadata(`const ratio = {} / export / constValue;\n${metadata}`)).toMatchObject({
+            name: "demo",
+        });
+        expect(parseWorkflowMetadata(`const ratio = class {} / export / constValue;\n${metadata}`)).toMatchObject({
+            name: "demo",
+        });
     });
 });

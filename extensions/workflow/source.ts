@@ -79,7 +79,7 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
     let depth = 0;
     let previousWord: string | undefined;
     let functionDeclarationPending = false;
-    let followsDeclarationParameters = false;
+    let declarationBlockPending = false;
     let followsControlCondition = false;
     for (let index = 0; index < script.length; index++) {
         const character = script[index];
@@ -124,9 +124,13 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
         } else if (/[A-Za-z_$]/.test(character)) {
             const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
             previousWord = script.slice(index, index + end + 1);
-            if (previousWord === "function") {
+            if (previousWord === "function" || previousWord === "class") {
                 const prefix = script.slice(0, index).trimEnd();
-                functionDeclarationPending = /(?:^|[{};])\s*(?:export(?:\s+default)?|async)?$/.test(prefix);
+                const declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
+                if (previousWord === "function")
+                    functionDeclarationPending =
+                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
+                else declarationBlockPending = declarationPrefix.test(prefix);
             }
             followsControlCondition = false;
             index += end;
@@ -139,12 +143,12 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
             followsControlCondition = false;
         } else if (character === "{") {
             blockBraces.push(
-                followsDeclarationParameters ||
+                declarationBlockPending ||
                     followsControlCondition ||
                     /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
                     !script.slice(0, index).trim(),
             );
-            followsDeclarationParameters = false;
+            declarationBlockPending = false;
             depth++;
             previousWord = undefined;
             followsControlCondition = false;
@@ -155,7 +159,7 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
         } else if (character === ")") {
             depth = Math.max(0, depth - 1);
             followsControlCondition = controlParens.pop() ?? false;
-            followsDeclarationParameters = declarationParens.pop() ?? false;
+            declarationBlockPending ||= declarationParens.pop() ?? false;
             previousWord = undefined;
         } else if (character === "}") {
             depth = Math.max(0, depth - 1);
