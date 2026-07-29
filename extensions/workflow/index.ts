@@ -27,7 +27,7 @@ import {
 } from "./background-protocol.js";
 import { WorkflowRunManager } from "./manager.js";
 import { WorkflowRunStorage } from "./run-storage.js";
-import { findRepositoryRoot, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
+import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
@@ -38,6 +38,23 @@ const WorkflowParams = Type.Object({
     ),
     args: Type.Optional(Type.Unknown()),
 });
+function parseWorkflowCommand(text: string): { requestedPath: string; argsText?: string } | undefined {
+    const input = text.trim();
+    if (!input) return undefined;
+    const quote = input[0];
+    if (quote !== '"' && quote !== "'") {
+        const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(input);
+        return match ? { requestedPath: match[1], argsText: match[2] } : undefined;
+    }
+    const end = input.indexOf(quote, 1);
+    if (end < 0 || (input[end + 1] !== undefined && !/\s/.test(input[end + 1])))
+        throw new Error("Quoted workflow paths must end with a matching quote before JSON arguments.");
+    const requestedPath = input.slice(1, end);
+    if (!requestedPath) return undefined;
+    const argsText = input.slice(end + 1).trim();
+    return { requestedPath, ...(argsText ? { argsText } : {}) };
+}
+
 export interface WorkflowExtensionDependencies {
     backend?: WorkflowBackend;
     backendOptions?: Omit<WorkflowBackendOptions, "eventSink">;
@@ -235,6 +252,8 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
     };
     const launchFile = async (requestedPath: string, args: unknown, ctx: ExtensionContext) => {
+        const launchGeneration = lifecycleGeneration;
+        const launchSessionId = sessionId;
         const canonical = await fs.promises.realpath(ctx.cwd);
         const source = await readWorkflowFile(canonical, requestedPath);
         const repositoryRoot = await findRepositoryRoot(canonical);
@@ -250,25 +269,33 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${source.script}`,
             ctx.ui,
         );
-        return manager.launch({ name: source.name, script: source.script, args, sessionId, cwd: canonical });
+        if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
+            throw new Error("Workflow launch was cancelled because the active session changed during approval.");
+        return manager.launch({
+            name: source.name,
+            script: source.script,
+            args,
+            sessionId: launchSessionId,
+            cwd: canonical,
+        });
     };
     pi.registerCommand("workflow", {
         description: "Run a workflow file",
         handler: async (text: string, ctx: ExtensionCommandContext) => {
-            const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(text.trim());
-            if (!match?.[1]) {
+            const parsed = parseWorkflowCommand(text);
+            if (!parsed) {
                 ctx.ui.notify("Usage: /workflow <path> [JSON args]", "warning");
                 return;
             }
             let args: unknown;
-            if (match[2]) {
+            if (parsed.argsText) {
                 try {
-                    args = JSON.parse(match[2]);
+                    args = JSON.parse(parsed.argsText);
                 } catch {
                     throw new Error("Workflow arguments must be valid JSON.");
                 }
             }
-            const launched = await launchFile(match[1], args, ctx);
+            const launched = await launchFile(parsed.requestedPath, args, ctx);
             ctx.ui.notify(`Started workflow ${launched.runId}.`, "info");
         },
     });
@@ -293,22 +320,25 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             if (script === undefined) throw new Error("Provide exactly one of inline script or workflow file path.");
             const preview = preflightWorkflow(script);
             const ui = ctx.ui;
+            const launchGeneration = lifecycleGeneration;
+            const launchSessionId = sessionId;
             const canonical = await fs.promises.realpath(ctx.cwd);
             const project = (await findRepositoryRoot(canonical)) ?? canonical;
             let inlineName = "Inline workflow";
-            if (/\bexport\s+const\s+meta\s*=/.test(script))
-                inlineName = parseWorkflowMetadata(script, "inline workflow").name;
+            if (hasWorkflowMetadata(script)) inlineName = parseWorkflowMetadata(script, "inline workflow").name;
             await authorize(
                 workflowApprovalKey(project, inlineName, script),
                 "Run inline workflow",
                 `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${script}`,
                 ui,
             );
+            if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
+                throw new Error("Workflow launch was cancelled because the active session changed during approval.");
             const launched = await manager.launch({
                 name: inlineName,
                 script,
                 args: params.args,
-                sessionId,
+                sessionId: launchSessionId,
                 cwd: canonical,
             });
             return {

@@ -49,5 +49,23 @@ describe("workflow file source", () => {
             parseWorkflowMetadata(`export const meta={name:'demo',description:'Demo'}; throw new Error()`),
         ).toMatchObject({ name: "demo" });
         expect(() => parseWorkflowMetadata("return 1")).toThrow("exactly one");
+        expect(() =>
+            parseWorkflowMetadata(`export const meta={name:'demo',description:'bad\\q'}`, "example.js"),
+        ).toThrow("example.js: meta contains an unsupported string escape \\q");
+    });
+
+    test("ignores metadata-like text outside a top-level declaration", () => {
+        const inert = [
+            `// export const meta={name:"wrong",description:"Wrong"}`,
+            `/* export const meta={name:"wrong",description:"Wrong"} */`,
+            `const string = 'export const meta={name:"wrong",description:"Wrong"}'`,
+            'const template = `export const meta={name:"wrong",description:"Wrong"}`',
+            `const regex = /export const meta = {name:"wrong"}/`,
+            `function nested() { export const meta={name:"wrong",description:"Wrong"} }`,
+        ].join("\n");
+        expect(parseWorkflowMetadata(`${inert}\nexport const meta={name:"demo",description:"Demo"}`)).toMatchObject({
+            name: "demo",
+        });
+        expect(() => parseWorkflowMetadata(inert)).toThrow("exactly one");
     });
 });

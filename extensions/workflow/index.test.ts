@@ -141,6 +141,17 @@ describe("workflow extension", () => {
         expect(f.emitted.at(-1)?.[1].type).toBe("reset");
     });
 
+    test("ignores metadata-like text when naming inline workflows", async () => {
+        const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
+        );
+        const script = `// export const meta={name:"wrong",description:"Wrong"}\nreturn 1`;
+        await f.tool.execute("id", { script }, undefined, undefined, { cwd: process.cwd(), ui: {} });
+        expect(f.launches.at(-1)).toMatchObject({ name: "Inline workflow", script });
+    });
+
     test("publishes readiness only for the latest overlapping session start", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-lifecycle-")),
             firstCwd = path.join(root, "first"),
@@ -186,6 +197,64 @@ describe("workflow extension", () => {
         } finally {
             resolveInitialization();
             await f.handlers.get("session_shutdown")!();
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("command accepts quoted paths with JSON args and preserves unquoted paths", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-command-"));
+        try {
+            await Promise.all([
+                fs.promises.writeFile(path.join(root, "single quoted.js"), "return args"),
+                fs.promises.writeFile(path.join(root, "double quoted.js"), "return args"),
+                fs.promises.writeFile(path.join(root, "plain.js"), "return args"),
+            ]);
+            const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            const notifications: string[] = [];
+            const context = { cwd: root, ui: { notify: (message: string) => notifications.push(message) } };
+            await f.command.handler("   ", context);
+            expect(notifications).toEqual(["Usage: /workflow <path> [JSON args]"]);
+            await f.command.handler(`'single quoted.js' {"quote":"single"}`, context);
+            await f.command.handler(`"double quoted.js" {"quote":"double"}`, context);
+            await f.command.handler(`plain.js {"quote":"none"}`, context);
+            expect(f.launches.map(({ name, args }) => ({ name, args }))).toEqual([
+                { name: "single-quoted", args: { quote: "single" } },
+                { name: "double-quoted", args: { quote: "double" } },
+                { name: "plain", args: { quote: "none" } },
+            ]);
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("aborts a launch when the session changes while approval is pending", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-approval-session-"));
+        let resolveApproval: (approved: boolean) => void = () => {};
+        const approval = new Promise<boolean>((resolve) => (resolveApproval = resolve));
+        try {
+            await fs.promises.writeFile(path.join(root, "pending.js"), "return 1");
+            const f = fixture({ approvalStore: { has: async () => false, add: async () => {} } });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
+            );
+            const launch = f.tool.execute("id", { path: "pending.js" }, undefined, undefined, {
+                cwd: root,
+                ui: { confirm: () => approval },
+            });
+            await f.handlers.get("session_start")!(
+                {},
+                { cwd: root, sessionManager: { getSessionId: () => "session-2" } },
+            );
+            resolveApproval(true);
+            await expect(launch).rejects.toThrow("active session changed");
+            expect(f.launches).toHaveLength(0);
+        } finally {
+            resolveApproval(false);
             await fs.promises.rm(root, { recursive: true, force: true });
         }
     });

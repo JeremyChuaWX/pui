@@ -90,7 +90,7 @@ const reports = await parallel([agent("Review API", { role: "explore" }), agent(
 return { reports, requestedBy: args.user };
 ```
 
-The `workflow` tool accepts exactly one source: inline JavaScript in `script`, or an explicit workflow file in `path`. `/workflow <path> [JSON args]` launches a file directly. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
+The `workflow` tool accepts exactly one source: inline JavaScript in `script`, or an explicit workflow file in `path`. `/workflow <path> [JSON args]` launches a file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
 
 File metadata is optional. A static `export const meta = { name: "review-pair", description: "Run two independent reviews" }` supplies the display name and description; without it, the name falls back to the file's basename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name.
 

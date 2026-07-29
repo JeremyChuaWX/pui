@@ -17,7 +17,13 @@ export interface WorkflowMetadata {
 }
 const JS_STRING = String.raw`("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`;
 function parseStaticString(literal: string, source: string): string {
-    if (literal.startsWith('"')) return JSON.parse(literal);
+    if (literal.startsWith('"')) {
+        try {
+            return JSON.parse(literal);
+        } catch {
+            throw new Error(`${source}: meta contains an invalid escaped string literal.`);
+        }
+    }
     let result = "";
     for (let index = 1; index < literal.length - 1; index++) {
         const character = literal[index];
@@ -46,9 +52,63 @@ function parseStaticString(literal: string, source: string): string {
     return result;
 }
 
+function regexLiteralStartsAt(script: string, index: number): boolean {
+    const prefix = script.slice(0, index).trimEnd();
+    if (!prefix) return true;
+    const previous = prefix.at(-1);
+    if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
+    return /\b(?:return|case|throw|yield|await)$/.test(prefix);
+}
+
+function metadataDeclarations(script: string): RegExpExecArray[] {
+    const declarations: RegExpExecArray[] = [];
+    const declarationPattern = /\bexport\s+const\s+meta\s*=/y;
+    let depth = 0;
+    for (let index = 0; index < script.length; index++) {
+        const character = script[index];
+        const next = script[index + 1];
+        if (character === "/" && next === "/") {
+            index = script.indexOf("\n", index + 2);
+            if (index === -1) break;
+        } else if (character === "/" && next === "*") {
+            const end = script.indexOf("*/", index + 2);
+            if (end === -1) break;
+            index = end + 1;
+        } else if (character === '"' || character === "'" || character === "`") {
+            const quote = character;
+            for (index++; index < script.length; index++) {
+                if (script[index] === "\\") index++;
+                else if (script[index] === quote) break;
+            }
+        } else if (character === "/" && regexLiteralStartsAt(script, index)) {
+            let characterClass = false;
+            for (index++; index < script.length; index++) {
+                if (script[index] === "\\") index++;
+                else if (script[index] === "[") characterClass = true;
+                else if (script[index] === "]") characterClass = false;
+                else if (script[index] === "/" && !characterClass) break;
+            }
+        } else if (character === "{" || character === "(" || character === "[") depth++;
+        else if (character === "}" || character === ")" || character === "]") depth = Math.max(0, depth - 1);
+        else if (depth === 0) {
+            declarationPattern.lastIndex = index;
+            const declaration = declarationPattern.exec(script);
+            if (declaration) {
+                declarations.push(declaration);
+                index = declarationPattern.lastIndex - 1;
+            }
+        }
+    }
+    return declarations;
+}
+
+export function hasWorkflowMetadata(script: string): boolean {
+    return metadataDeclarations(script).length > 0;
+}
+
 /** Parse static metadata without importing or evaluating workflow code. */
 export function parseWorkflowMetadata(script: string, source = "workflow"): WorkflowMetadata {
-    const declarations = [...script.matchAll(/\bexport\s+const\s+meta\s*=/g)];
+    const declarations = metadataDeclarations(script);
     if (declarations.length !== 1)
         throw new Error(`${source}: expected exactly one static export const meta declaration.`);
     const declaration = declarations[0];
@@ -62,14 +122,9 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
         throw new Error(
             `${source}: meta must be a static { name: "...", description: "..." } object using JSON string literals.`,
         );
-    let name: string, description: string;
-    try {
-        if (!expression[1] || !expression[2]) throw new Error("Missing metadata strings.");
-        name = parseStaticString(expression[1], source);
-        description = parseStaticString(expression[2], source);
-    } catch {
-        throw new Error(`${source}: meta contains an invalid escaped string literal.`);
-    }
+    if (!expression[1] || !expression[2]) throw new Error(`${source}: meta is missing metadata strings.`);
+    const name = parseStaticString(expression[1], source);
+    const description = parseStaticString(expression[2], source);
     validateWorkflowName(name);
     if (!description.trim() || description.length > 512)
         throw new Error(`${source}: meta.description must contain 1-512 characters.`);
@@ -77,7 +132,7 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
 }
 
 export function executableWorkflowScript(script: string): string {
-    if (!/\bexport\s+const\s+meta\s*=/.test(script)) return script;
+    if (!hasWorkflowMetadata(script)) return script;
     const meta = parseWorkflowMetadata(script);
     return script.slice(0, meta.declarationStart) + script.slice(meta.declarationEnd);
 }
@@ -119,25 +174,48 @@ function filenameName(file: string): string {
 export async function readWorkflowFile(cwd: string, requestedPath: string): Promise<WorkflowFileSource> {
     if (!requestedPath) throw new Error("Workflow path must not be empty.");
     const resolved = path.isAbsolute(requestedPath) ? requestedPath : path.resolve(cwd, requestedPath);
-    const canonicalPath = await fs.promises.realpath(resolved);
-    const handle = await fs.promises.open(canonicalPath, "r");
+    let handle: fs.promises.FileHandle | undefined;
+    let canonicalPath = resolved;
+    let stat: fs.Stats | undefined;
+    // Opening first, then matching device/inode closes the realpath-to-open race while still following symlinks.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        handle = await fs.promises.open(resolved, "r");
+        try {
+            stat = await handle.stat();
+            canonicalPath = await fs.promises.realpath(resolved);
+            const pathStat = await fs.promises.stat(canonicalPath);
+            if (stat.dev === pathStat.dev && stat.ino === pathStat.ino) break;
+        } catch (error) {
+            await handle.close();
+            handle = undefined;
+            if (attempt === 2) throw error;
+            continue;
+        }
+        await handle.close();
+        handle = undefined;
+    }
+    if (!handle || !stat) throw new Error(`Workflow path changed while opening: ${resolved}`);
     try {
-        const stat = await handle.stat();
         if (!stat.isFile()) throw new Error(`Workflow path is not a regular file: ${canonicalPath}`);
         if (stat.size > MAX_WORKFLOW_SOURCE_BYTES)
             throw new Error(`${canonicalPath}: workflow exceeds the 64 KiB limit.`);
-        const bytes = await handle.readFile();
-        if (bytes.byteLength > MAX_WORKFLOW_SOURCE_BYTES)
+        const buffer = Buffer.allocUnsafe(MAX_WORKFLOW_SOURCE_BYTES + 1);
+        let byteLength = 0;
+        while (byteLength < buffer.byteLength) {
+            const { bytesRead } = await handle.read(buffer, byteLength, buffer.byteLength - byteLength, null);
+            if (bytesRead === 0) break;
+            byteLength += bytesRead;
+        }
+        if (byteLength > MAX_WORKFLOW_SOURCE_BYTES)
             throw new Error(`${canonicalPath}: workflow exceeds the 64 KiB limit.`);
+        const bytes = buffer.subarray(0, byteLength);
         let script: string;
         try {
             script = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
         } catch {
             throw new Error(`${canonicalPath}: workflow source must be valid UTF-8.`);
         }
-        const meta = /\bexport\s+const\s+meta\s*=/.test(script)
-            ? parseWorkflowMetadata(script, canonicalPath)
-            : undefined;
+        const meta = hasWorkflowMetadata(script) ? parseWorkflowMetadata(script, canonicalPath) : undefined;
         return {
             path: canonicalPath,
             script,
