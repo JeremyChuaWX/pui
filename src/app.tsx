@@ -132,7 +132,13 @@ export function App(props: { controller: PuiController }) {
 
     createEffect(() => {
         const request = snapshot.extensionDialog;
-        if (!request || dialog()) return;
+        const owner = extensionDialogOwner(dialog());
+        if (dialog() && owner === undefined) return;
+        if (!request) {
+            if (owner !== undefined) setDialog(undefined);
+            return;
+        }
+        if (owner === request.id) return;
         if (request.kind === "confirm") {
             setDialog({
                 kind: "confirm",
@@ -634,7 +640,10 @@ export function App(props: { controller: PuiController }) {
                                     title: "Overwrite workflow?",
                                     message: text,
                                     confirmLabel: "Overwrite",
-                                    action: () => void save(scope, true),
+                                    action: () => {
+                                        setDialog(undefined);
+                                        void save(scope, true);
+                                    },
                                 });
                             } else props.controller.notify(text, "error");
                         }

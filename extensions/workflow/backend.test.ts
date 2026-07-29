@@ -47,13 +47,17 @@ describe("workflow backend", () => {
     });
     test("reports missing and old external Node actionably", async () => {
         const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-node-"));
-        const old = path.join(dir, "node");
-        await fs.promises.writeFile(old, "#!/bin/sh\necho v20.0.0\n", { mode: 0o755 });
+        const old = path.join(dir, process.platform === "win32" ? "node.cmd" : "node");
+        await fs.promises.writeFile(
+            old,
+            process.platform === "win32" ? "@echo off\r\necho v20.0.0\r\n" : "#!/bin/sh\necho v20.0.0\n",
+            { mode: 0o755 },
+        );
         try {
             await expect(
                 resolveWorkflowNode({
                     environment: { PUI_WORKFLOW_NODE: old, PATH: "" },
-                    configuredPath: "/missing-node",
+                    configuredPath: process.platform === "win32" ? "C:\\missing-node.exe" : "/missing-node",
                 }),
             ).rejects.toThrow(/Node >=22\.19.*found v20/);
         } finally {

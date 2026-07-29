@@ -340,19 +340,34 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     let shuttingDown = false;
     const now = options.now ?? Date.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
+    const emit = (copy: WorkflowRunSummaryV1) => {
+        options.eventSink?.(copy);
+        for (const listener of listeners) listener(copy);
+    };
     const publish = (a: ActiveRun) => {
         // Shutdown owns the final recoverable snapshot; late RPC cleanup must not replace it.
         if (a.interrupted) return;
         a.summary.updatedAt = now();
         const copy = structuredClone(a.summary);
-        options.eventSink?.(copy);
-        for (const listener of listeners) listener(copy);
+        emit(copy);
         const directory = a.directory;
         const storage = options.storage;
         if (directory && storage && !TERMINAL.has(copy.status))
             void persist(a, () => storage.snapshot(directory, copy)).catch((error) =>
                 console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
+    };
+    const publishTerminal = (a: ActiveRun, result: unknown) => {
+        if (a.interrupted) return;
+        a.summary.updatedAt = now();
+        const copy = structuredClone(a.summary),
+            directory = a.directory,
+            storage = options.storage;
+        if (directory && storage)
+            void persist(a, () => storage.terminal(directory, result, copy)).catch((error) =>
+                console.error(`Workflow terminal persistence failed: ${errorMessage(error)}`),
+            );
+        emit(copy);
     };
     const waitWhilePaused = async (active: ActiveRun) => {
         while (active.paused)
@@ -379,23 +394,22 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             stderr = "";
         const finish = (status: "succeeded" | "failed" | "cancelled", error?: string, json?: string) => {
             if (terminal || active.interrupted) return;
+            let result: unknown = null;
+            if (json !== undefined)
+                try {
+                    result = JSON.parse(json);
+                } catch {
+                    status = "failed";
+                    error = "Malformed workflow result.";
+                    json = undefined;
+                }
             terminal = true;
             active.summary.status = status;
             active.summary.endedAt = now();
             if (error) active.summary.error = error.slice(0, 2000);
             if (json !== undefined) active.result = json;
             finishPhase(active, status, error);
-            publish(active);
-            const activeDirectory = active.directory;
-            const storage = options.storage;
-            if (activeDirectory && storage)
-                void persist(active, () =>
-                    storage.terminal(
-                        activeDirectory,
-                        json === undefined ? null : JSON.parse(json),
-                        structuredClone(active.summary),
-                    ),
-                ).catch((e) => console.error(`Workflow terminal persistence failed: ${errorMessage(e)}`));
+            publishTerminal(active, result);
         };
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
@@ -464,6 +478,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     return;
                 }
                 if (frame.t === "terminal") {
+                    if (pending > 0)
+                        throw new Error("Workflow worker sent a terminal frame with pending RPC requests.");
                     if (
                         !ready ||
                         (frame.ok === true
@@ -924,17 +940,12 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             runs.set(id, active);
             publish(active);
             active.settlement = execute(active, input, node).catch(async (e) => {
-                if (!TERMINAL.has(active.summary.status)) {
+                if (!active.interrupted && !TERMINAL.has(active.summary.status)) {
                     active.summary.status = "failed";
                     active.summary.endedAt = now();
                     active.summary.error = errorMessage(e);
-                    publish(active);
-                    const activeDirectory = active.directory;
-                    const storage = options.storage;
-                    if (activeDirectory && storage)
-                        await persist(active, () =>
-                            storage.terminal(activeDirectory, null, structuredClone(active.summary)),
-                        );
+                    publishTerminal(active, null);
+                    await active.persistence;
                 }
             });
             return { runId: id };
@@ -1032,11 +1043,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (!run.child) {
                     run.summary.status = "cancelled";
                     run.summary.endedAt = now();
-                    publish(run);
-                    const runDirectory = run.directory;
-                    const storage = options.storage;
-                    if (runDirectory && storage)
-                        await persist(run, () => storage.terminal(runDirectory, null, structuredClone(run.summary)));
+                    publishTerminal(run, null);
+                    await run.persistence;
                 }
             } else if (action === "pause") {
                 if (run.summary.status !== "running") throw new Error("Only a running workflow can be paused.");

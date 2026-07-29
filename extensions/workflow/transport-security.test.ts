@@ -60,6 +60,36 @@ describe("workflow hostile transport and watchdog", () => {
         expect(result.status).toBe("succeeded");
     });
 
+    test("rejects a terminal frame while an agent RPC is pending and aborts the executor", async () => {
+        let aborted = false;
+        const result = await run(
+            `${ready}process.stdin.once("data",()=>{send({v:1,t:"rpc",id:"1",method:"agent",value:{prompt:"hang",options:{}},identity:"site#1"});send({v:1,t:"terminal",ok:true,json:"null"})});setInterval(()=>send({v:1,t:"heartbeat"}),25)`,
+            {
+                cooperativeExecutor: true,
+                agentExecutor: ({ signal }) =>
+                    new Promise((_resolve, reject) =>
+                        signal.addEventListener(
+                            "abort",
+                            () => {
+                                aborted = true;
+                                reject(new Error("aborted"));
+                            },
+                            { once: true },
+                        ),
+                    ),
+            },
+        );
+        expect(result.status).toBe("failed");
+        expect(result.error).toContain("pending RPC");
+        expect(aborted).toBe(true);
+    });
+
+    test("rejects invalid terminal JSON", async () => {
+        const result = await run(`${ready}process.stdin.once("data",()=>send({v:1,t:"terminal",ok:true,json:"{"}))`);
+        expect(result.status).toBe("failed");
+        expect(result.error).toContain("Malformed workflow result");
+    });
+
     test("caps concurrent pending RPC requests with a hanging executor", async () => {
         const requests = Array.from({ length: 17 }, (_, index) =>
             JSON.stringify({

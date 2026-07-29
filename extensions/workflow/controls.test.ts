@@ -15,6 +15,7 @@ async function waitFor(predicate: () => boolean, timeout = 5_000) {
 
 class BarrierStorage extends WorkflowRunStorage {
     entered?: Promise<void>;
+    claims = 0;
     private enter?: () => void;
     private release?: () => void;
 
@@ -31,6 +32,11 @@ class BarrierStorage extends WorkflowRunStorage {
         await super.terminal(...args);
     }
 
+    override async claimDelivery(...args: Parameters<WorkflowRunStorage["claimDelivery"]>) {
+        this.claims++;
+        return super.claimDelivery(...args);
+    }
+
     unblock() {
         this.release?.();
         this.release = undefined;
@@ -42,7 +48,23 @@ test("discovery sees the last nonterminal snapshot while terminal artifacts are 
     const cwd = path.join(temp, "project");
     await fs.promises.mkdir(cwd);
     const storage = new BarrierStorage(path.join(temp, "runs"));
-    const backend = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: "done" }) });
+    let backend: ReturnType<typeof createWorkflowBackend>,
+        claimStarted = false,
+        claimResolved = false,
+        claimed = false;
+    backend = createWorkflowBackend({
+        storage,
+        agentExecutor: async () => ({ value: "done" }),
+        eventSink: (run) => {
+            if (run.status === "succeeded") {
+                claimStarted = true;
+                void backend.claimTerminalDelivery!(run.id).then((value) => {
+                    claimed = value;
+                    claimResolved = true;
+                });
+            }
+        },
+    });
     storage.armTerminalBarrier();
     try {
         const { runId } = await backend.launch({
@@ -53,13 +75,18 @@ test("discovery sees the last nonterminal snapshot while terminal artifacts are 
         });
         await storage.entered;
         expect(backend.inspect(runId).run.status).toBe("succeeded");
+        expect(claimStarted).toBe(true);
+        expect(claimResolved).toBe(false);
+        expect(storage.claims).toBe(0);
 
         const stored = (await storage.discover(cwd)).find(({ id }) => id === runId);
         expect(stored?.corrupt).toBeUndefined();
         expect(stored?.snapshot.status).not.toBe("succeeded");
 
         storage.unblock();
-        expect(await backend.claimTerminalDelivery!(runId)).toBe(true);
+        await waitFor(() => claimResolved);
+        expect(storage.claims).toBe(1);
+        expect(claimed).toBe(true);
         const durable = (await storage.discover(cwd)).find(({ id }) => id === runId);
         expect(durable?.snapshot.status).toBe("succeeded");
         expect(durable?.result).toBe('"done"');
