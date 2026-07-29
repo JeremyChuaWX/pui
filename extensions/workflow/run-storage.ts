@@ -9,7 +9,9 @@ import type { OwnedWorktree } from "./worktree.js";
 
 const MAX_ARTIFACT = 16 * 1024 * 1024;
 const MAX_TERMINAL_ARTIFACT = MAX_ARTIFACT * 2 + 1_024;
+const DELIVERY_RECOVERY_LOCK_STALE_MS = 30_000;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
+const RECOVERY_LOCK_OWNER = /^owner-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface ImmutableRunLaunch {
     name?: string;
     sessionId?: string;
@@ -41,6 +43,12 @@ interface TerminalState {
     version: 1;
     result: unknown;
     summary: WorkflowRunSummaryV1;
+}
+interface DeliveryRecoveryLockOwner {
+    token: string;
+    pid: number;
+    host: string;
+    startedAt: number;
 }
 export interface StoredRun {
     id: string;
@@ -185,6 +193,23 @@ async function hasDeliveryRelease(directory: string, owner: string | undefined):
         throw error;
     }
 }
+async function readDeliveryRecoveryLockOwner(ownerDirectory: string): Promise<DeliveryRecoveryLockOwner | undefined> {
+    const file = path.join(ownerDirectory, "owner.json");
+    let owner: Partial<DeliveryRecoveryLockOwner>;
+    try {
+        owner = await boundedJson<Partial<DeliveryRecoveryLockOwner>>(file, 4_096);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+    }
+    return typeof owner.token === "string" &&
+        Number.isInteger(owner.pid) &&
+        (owner.pid ?? 0) > 0 &&
+        typeof owner.host === "string" &&
+        Number.isFinite(owner.startedAt)
+        ? (owner as DeliveryRecoveryLockOwner)
+        : undefined;
+}
 
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
 export class WorkflowRunStorage {
@@ -321,10 +346,101 @@ export class WorkflowRunStorage {
         await atomic(path.join(directory, "result.json"), state.result);
         await atomic(summaryFile, state.summary);
     }
+    private async acquireDeliveryRecoveryLock(directory: string): Promise<(() => Promise<void>) | undefined> {
+        const lock = path.join(directory, "delivery.recovery.lock");
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const token = crypto.randomUUID(),
+                ownerName = `owner-${token}`,
+                candidate = path.join(directory, `.delivery.recovery.lock.candidate-${token}`),
+                ownerDirectory = path.join(candidate, ownerName);
+            try {
+                await fs.promises.mkdir(ownerDirectory, { recursive: true, mode: 0o700 });
+                const owner = await fs.promises.open(path.join(ownerDirectory, "owner.json"), "wx", 0o600);
+                try {
+                    await owner.writeFile(
+                        json({ token, pid: process.pid, host: os.hostname(), startedAt: Date.now() }, 4_096),
+                    );
+                    await owner.sync();
+                } finally {
+                    await owner.close();
+                }
+                try {
+                    await fs.promises.rename(candidate, lock);
+                } catch (error) {
+                    const stat = await fs.promises.lstat(lock).catch((statError: NodeJS.ErrnoException) => {
+                        if (statError.code === "ENOENT") return undefined;
+                        throw statError;
+                    });
+                    if (!stat) {
+                        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+                        throw error;
+                    }
+                    if (stat.isSymbolicLink() || !stat.isDirectory())
+                        throw new Error(`Unsafe workflow delivery recovery lock: ${lock}`);
+                    const entries = await fs.promises.readdir(lock, { withFileTypes: true }),
+                        entry = entries.length === 1 && entries[0]?.isDirectory() ? entries[0] : undefined,
+                        current =
+                            entry && RECOVERY_LOCK_OWNER.test(entry.name)
+                                ? await readDeliveryRecoveryLockOwner(path.join(lock, entry.name))
+                                : undefined,
+                        startedAt = current ? Math.max(stat.mtimeMs, current.startedAt) : stat.mtimeMs,
+                        abandoned =
+                            Date.now() - startedAt >= DELIVERY_RECOVERY_LOCK_STALE_MS ||
+                            (current?.host === os.hostname() && !isProcessAlive(current.pid));
+                    if (!abandoned) return undefined;
+                    const stale = path.join(directory, `.delivery.recovery.lock.stale-${crypto.randomUUID()}`);
+                    try {
+                        await fs.promises.rename(lock, stale);
+                    } catch (renameError) {
+                        if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
+                        throw renameError;
+                    }
+                    await fs.promises.rm(stale, { recursive: true, force: true });
+                    await syncDirectory(directory);
+                    continue;
+                }
+                await syncDirectory(directory);
+                let released = false;
+                return async () => {
+                    if (released) return;
+                    released = true;
+                    const ownedDirectory = path.join(lock, ownerName),
+                        current = await readDeliveryRecoveryLockOwner(ownedDirectory);
+                    if (current?.token !== token) return;
+                    await fs.promises.rm(ownedDirectory, { recursive: true, force: true });
+                    try {
+                        await fs.promises.rmdir(lock);
+                    } catch (error) {
+                        if (
+                            ["ENOENT", "ENOTEMPTY", "EEXIST", "EPERM", "EACCES"].includes(
+                                (error as NodeJS.ErrnoException).code ?? "",
+                            )
+                        )
+                            return;
+                        throw error;
+                    }
+                    await syncDirectory(directory);
+                };
+            } finally {
+                await fs.promises.rm(candidate, { recursive: true, force: true });
+            }
+        }
+        return undefined;
+    }
     async claimDelivery(directory: string): Promise<boolean> {
         directory = await this.assertDirectory(directory);
         const marker = path.join(directory, "delivery.json"),
+            recovery = path.join(directory, "delivery.recovery.json"),
+            transition = await fs.promises.lstat(recovery).catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return undefined;
+                throw error;
+            }),
             temp = path.join(directory, `.delivery.${this.instanceToken}.${crypto.randomUUID()}.tmp`);
+        if (transition) {
+            if (transition.isSymbolicLink() || !transition.isFile() || transition.size > MAX_ARTIFACT)
+                throw new Error(`Unsafe or oversized workflow artifact: ${recovery}`);
+            return false;
+        }
         try {
             const handle = await fs.promises.open(temp, "wx", 0o600);
             try {
@@ -377,16 +493,16 @@ export class WorkflowRunStorage {
                 durableReplacement = true;
                 return false;
             }
-            const claimed = await this.claimDelivery(directory);
-            if (claimed) {
-                durableReplacement = true;
-                return true;
-            }
-            durableReplacement = await fs.promises
-                .lstat(marker)
-                .then((value) => value.isFile() && !value.isSymbolicLink())
-                .catch(() => false);
-            return false;
+            await atomic(marker, {
+                version: 1,
+                claimed: true,
+                claimedAt: Date.now(),
+                owner: this.instanceToken,
+                pid: process.pid,
+                host: os.hostname(),
+            });
+            durableReplacement = true;
+            return true;
         } finally {
             if (durableReplacement) {
                 await fs.promises.rm(recovery, { force: true });
@@ -396,9 +512,7 @@ export class WorkflowRunStorage {
             }
         }
     }
-    /** Explicitly recover a stale or interrupted claim; normal claims never steal ownership. */
-    async recoverDeliveryClaim(directory: string, staleAfterMs = 30_000): Promise<boolean> {
-        directory = await this.assertDirectory(directory);
+    private async recoverDeliveryClaimLocked(directory: string, staleAfterMs: number): Promise<boolean> {
         const marker = path.join(directory, "delivery.json"),
             recovery = path.join(directory, "delivery.recovery.json");
         let initial: fs.Stats;
@@ -431,12 +545,28 @@ export class WorkflowRunStorage {
         if (!released && blocksDeliveryRecovery(initialState, initial.mtimeMs, staleAfterMs, this.instanceToken))
             return false;
         try {
-            await fs.promises.rename(marker, recovery);
+            // A hard link reserves this exact claim for recovery without ever making the
+            // canonical path available to ordinary exclusive claim acquisition.
+            await fs.promises.link(marker, recovery);
             await syncDirectory(directory);
         } catch (error) {
-            if (!["ENOENT", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+            if ((error as NodeJS.ErrnoException).code === "ENOENT")
+                return this.finishDeliveryRecovery(directory, recovery, staleAfterMs);
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+            throw error;
         }
         return this.finishDeliveryRecovery(directory, recovery, staleAfterMs);
+    }
+    /** Explicitly recover a stale or interrupted claim; normal claims never steal ownership. */
+    async recoverDeliveryClaim(directory: string, staleAfterMs = 30_000): Promise<boolean> {
+        directory = await this.assertDirectory(directory);
+        const release = await this.acquireDeliveryRecoveryLock(directory);
+        if (!release) return false;
+        try {
+            return await this.recoverDeliveryClaimLocked(directory, staleAfterMs);
+        } finally {
+            await release();
+        }
     }
     async markDelivered(directory: string) {
         const marker = path.join(await this.assertDirectory(directory), "delivery.json"),

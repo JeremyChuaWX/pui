@@ -115,6 +115,59 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
     }
 });
 
+test("keeps the canonical claim occupied throughout recovery", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-claim-race-")),
+        project = path.join(temp, "project"),
+        root = path.join(temp, "runs");
+    await fs.promises.mkdir(project);
+    const recovering = new WorkflowRunStorage(root),
+        contender = new WorkflowRunStorage(root),
+        originalLink = fs.promises.link;
+    let concurrentClaim: boolean | undefined;
+    let concurrentRecovery: boolean | undefined;
+    try {
+        const directory = await recovering.create(
+            project,
+            "run-1",
+            { script: "", policy: {}, roles: [], models: [], limits: {} },
+            makeSummary(project),
+        );
+        expect(await recovering.claimDelivery(directory)).toBe(true);
+        await recovering.releaseClaim(directory);
+        const recovery = path.join(directory, "delivery.recovery.json");
+        fs.promises.link = async (existingPath, newPath) => {
+            await originalLink(existingPath, newPath);
+            if (newPath === recovery) {
+                concurrentClaim = await contender.claimDelivery(directory);
+                concurrentRecovery = await recovering.recoverDeliveryClaim(directory);
+            }
+        };
+
+        expect(await contender.recoverDeliveryClaim(directory)).toBe(true);
+        expect(concurrentClaim).toBe(false);
+        expect(concurrentRecovery).toBe(false);
+
+        await contender.releaseClaim(directory);
+        const token = crypto.randomUUID(),
+            lock = path.join(directory, "delivery.recovery.lock"),
+            lockOwner = path.join(lock, `owner-${token}`),
+            expired = Date.now() - 60_000;
+        await fs.promises.mkdir(lockOwner, { recursive: true });
+        await fs.promises.writeFile(
+            path.join(lockOwner, "owner.json"),
+            JSON.stringify({ token, pid: process.pid, host: "interrupted-host", startedAt: expired }),
+        );
+        await fs.promises.utimes(lock, new Date(expired), new Date(expired));
+        await originalLink(path.join(directory, "delivery.json"), recovery);
+        expect(await recovering.recoverDeliveryClaim(directory)).toBe(true);
+        await expect(fs.promises.lstat(recovery)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.promises.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+        fs.promises.link = originalLink;
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("publishes exactly one matching terminal result and summary under concurrency", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-terminal-")),
         project = path.join(temp, "project"),
