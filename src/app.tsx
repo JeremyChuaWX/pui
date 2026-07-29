@@ -4,7 +4,7 @@ import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, o
 import { createStore, reconcile } from "solid-js/store";
 import { type PuiController, WorkflowSaveError } from "./controller.js";
 import { extensionDialogOwner } from "./dialog-owner.js";
-import { extensionConfirmKeyIntent } from "./extension-confirm-key.js";
+import { extensionConfirmKeyHint, extensionConfirmKeyIntent } from "./extension-confirm-key.js";
 import { editPromptInNvim } from "./external-editor.js";
 import { trapFocus } from "./focus-trap.js";
 import { formatCount, formatWorkflowSummary, workflowStatusPresentation, workflowStatusTone } from "./format.js";
@@ -107,6 +107,7 @@ export function App(props: { controller: PuiController }) {
     let promptAnchor: BoxRenderable | undefined;
     let transcript: ScrollBoxRenderable | undefined;
     let dialogRequest = 0;
+    let resolvedExtensionConfirmId: number | undefined;
     let completionRequest = 0;
     let completionAbort: AbortController | undefined;
     let externalEditorOpen = false;
@@ -117,13 +118,20 @@ export function App(props: { controller: PuiController }) {
         const request = snapshot.extensionDialog;
         return !dialog() && request?.kind === "confirm" ? request : undefined;
     });
+    const extensionConfirmActive = createMemo(() => extensionConfirm() !== undefined);
+
+    function resolveExtensionConfirm(id: number, approved: boolean): void {
+        if (resolvedExtensionConfirmId === id) return;
+        resolvedExtensionConfirmId = id;
+        props.controller.resolveExtensionDialog(id, approved);
+    }
 
     function setPromptRef(value: TextareaRenderable): void {
         releasePromptFocusTrap?.();
         prompt = value;
         releasePromptFocusTrap = trapFocus(
             value,
-            () => !dialog() && !extensionConfirm() && !externalEditorOpen && !renderer.isDestroyed,
+            () => !dialog() && !extensionConfirmActive() && !externalEditorOpen && !renderer.isDestroyed,
         );
     }
 
@@ -209,7 +217,7 @@ export function App(props: { controller: PuiController }) {
     }
 
     createEffect(() => {
-        if (extensionConfirm()) closePromptCompletions();
+        if (extensionConfirmActive()) closePromptCompletions();
     });
 
     async function updatePromptCompletions(text: string, cursorOffset: number): Promise<void> {
@@ -764,8 +772,8 @@ export function App(props: { controller: PuiController }) {
             key.preventDefault();
             key.stopPropagation();
             const intent = extensionConfirmKeyIntent(key);
-            if (intent === "approve") props.controller.resolveExtensionDialog(confirmation.id, true);
-            else if (intent === "deny") props.controller.resolveExtensionDialog(confirmation.id, false);
+            if (intent === "approve") resolveExtensionConfirm(confirmation.id, true);
+            else if (intent === "deny") resolveExtensionConfirm(confirmation.id, false);
             else if (intent === "page-up" && transcript) transcript.scrollBy(-Math.max(4, transcript.height - 4));
             else if (intent === "page-down" && transcript) transcript.scrollBy(Math.max(4, transcript.height - 4));
             return;
@@ -906,7 +914,7 @@ export function App(props: { controller: PuiController }) {
             <box flexDirection="row" flexGrow={1} minHeight={0}>
                 <box flexGrow={1} minWidth={0} paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
                     <Show
-                        when={snapshot.display.length > 0 || extensionConfirm()}
+                        when={snapshot.display.length > 0 || extensionConfirmActive()}
                         fallback={<Welcome cwd={snapshot.compactCwd} />}
                     >
                         <scrollbox
@@ -958,7 +966,7 @@ export function App(props: { controller: PuiController }) {
                     </Show>
                     <Prompt
                         snapshot={snapshot}
-                        focused={!dialog() && !extensionConfirm()}
+                        focused={!dialog() && !extensionConfirmActive()}
                         setAnchorRef={(value) => (promptAnchor = value)}
                         setRef={setPromptRef}
                         onChange={handlePromptChange}
@@ -1879,7 +1887,7 @@ function ExtensionConfirmation(props: { title: string; message: string }) {
                 <strong>{props.title}</strong>
             </text>
             <text fg={theme.text}>{props.message}</text>
-            <text fg={theme.warning}>Enter/Y approve · Esc/N deny · PageUp/PageDown scroll</text>
+            <text fg={theme.warning}>{extensionConfirmKeyHint}</text>
         </box>
     );
 }

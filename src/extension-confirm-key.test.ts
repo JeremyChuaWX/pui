@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extensionConfirmKeyIntent } from "./extension-confirm-key.js";
+import { extensionConfirmKeyHint, extensionConfirmKeyIntent } from "./extension-confirm-key.js";
 
 describe("extension confirm keyboard intent", () => {
     test.each(["return", "enter", "linefeed", "y"])("approves with bare %s", (name) => {
@@ -22,6 +22,10 @@ describe("extension confirm keyboard intent", () => {
     test("preserves bare transcript paging", () => {
         expect(extensionConfirmKeyIntent({ name: "pageup" })).toBe("page-up");
         expect(extensionConfirmKeyIntent({ name: "pagedown" })).toBe("page-down");
+    });
+
+    test("derives the displayed hint from the supported shortcuts", () => {
+        expect(extensionConfirmKeyHint).toBe("Enter/Y approve · Esc/N/Ctrl+C deny · PageUp/PageDown scroll");
     });
 
     test.each([

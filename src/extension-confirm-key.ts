@@ -8,14 +8,64 @@ export interface ExtensionConfirmKey {
     option?: boolean;
 }
 
-export function extensionConfirmKeyIntent(key: ExtensionConfirmKey): ExtensionConfirmKeyIntent {
-    if (key.ctrl && !key.shift && !key.meta && !key.option && key.name === "c") return "deny";
+type ActiveExtensionConfirmKeyIntent = Exclude<ExtensionConfirmKeyIntent, "suppress">;
 
-    const unmodified = !key.ctrl && !key.meta && !key.option;
-    if (unmodified && (key.name === "y" || key.name === "n")) return key.name === "y" ? "approve" : "deny";
-    if (unmodified && !key.shift && key.name === "escape") return "deny";
-    if (unmodified && !key.shift && ["return", "enter", "linefeed"].includes(key.name)) return "approve";
-    if (unmodified && !key.shift && key.name === "pageup") return "page-up";
-    if (unmodified && !key.shift && key.name === "pagedown") return "page-down";
+interface ExtensionConfirmShortcut {
+    name: string;
+    intent: ActiveExtensionConfirmKeyIntent;
+    label?: string;
+    ctrl?: boolean;
+    allowShift?: boolean;
+}
+
+const extensionConfirmShortcutGroups: readonly {
+    action: string;
+    shortcuts: readonly ExtensionConfirmShortcut[];
+}[] = [
+    {
+        action: "approve",
+        shortcuts: [
+            { name: "return", intent: "approve", label: "Enter" },
+            { name: "enter", intent: "approve" },
+            { name: "linefeed", intent: "approve" },
+            { name: "y", intent: "approve", label: "Y", allowShift: true },
+        ],
+    },
+    {
+        action: "deny",
+        shortcuts: [
+            { name: "escape", intent: "deny", label: "Esc" },
+            { name: "n", intent: "deny", label: "N", allowShift: true },
+            { name: "c", intent: "deny", label: "Ctrl+C", ctrl: true },
+        ],
+    },
+    {
+        action: "scroll",
+        shortcuts: [
+            { name: "pageup", intent: "page-up", label: "PageUp" },
+            { name: "pagedown", intent: "page-down", label: "PageDown" },
+        ],
+    },
+];
+
+export const extensionConfirmKeyHint = extensionConfirmShortcutGroups
+    .map(
+        ({ action, shortcuts }) =>
+            `${shortcuts.flatMap((shortcut) => (shortcut.label ? [shortcut.label] : [])).join("/")} ${action}`,
+    )
+    .join(" · ");
+
+export function extensionConfirmKeyIntent(key: ExtensionConfirmKey): ExtensionConfirmKeyIntent {
+    if (key.meta || key.option) return "suppress";
+    for (const { shortcuts } of extensionConfirmShortcutGroups) {
+        for (const shortcut of shortcuts) {
+            if (
+                shortcut.name === key.name &&
+                Boolean(shortcut.ctrl) === Boolean(key.ctrl) &&
+                (shortcut.allowShift || !key.shift)
+            )
+                return shortcut.intent;
+        }
+    }
     return "suppress";
 }
