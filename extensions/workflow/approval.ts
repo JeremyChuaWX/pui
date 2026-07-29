@@ -96,13 +96,18 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
         try {
             await fs.promises.rename(moved, lock);
         } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? ""))
+                throw error;
         }
     }
     private async acquireLock(): Promise<() => Promise<void>> {
         await this.safeParents(true);
         const lock = `${this.file}.lock`;
         const deadline = Date.now() + LOCK_WAIT_MS;
+        const retry = async () => {
+            if (Date.now() >= deadline) throw new Error(`Timed out waiting for workflow approval lock: ${lock}`);
+            await sleep(10 + Math.floor(Math.random() * 20));
+        };
         for (;;) {
             const token = crypto.randomUUID(),
                 candidate = `${lock}.candidate-${token}`;
@@ -143,7 +148,10 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
                     if (statError.code === "ENOENT") return undefined;
                     throw statError;
                 });
-                if (!stat) continue;
+                if (!stat) {
+                    await retry();
+                    continue;
+                }
                 if (stat.isSymbolicLink() || !stat.isDirectory())
                     throw new Error(`Unsafe workflow approval lock: ${lock}`);
                 const owner = await this.readLockOwner(lock),
@@ -154,7 +162,10 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
                     try {
                         await fs.promises.rename(lock, stale);
                     } catch (renameError: unknown) {
-                        if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
+                        if ((renameError as NodeJS.ErrnoException).code === "ENOENT") {
+                            await retry();
+                            continue;
+                        }
                         throw renameError;
                     }
                     const movedStat = await fs.promises.lstat(stale),
@@ -164,10 +175,10 @@ export class FileWorkflowApprovalStore implements WorkflowApprovalStore {
                     if (Date.now() - movedStat.mtimeMs <= LOCK_STALE_MS || !movedAbandoned)
                         await this.restoreMovedLock(stale, lock);
                     else await fs.promises.rm(stale, { recursive: true });
+                    await retry();
                     continue;
                 }
-                if (Date.now() >= deadline) throw new Error(`Timed out waiting for workflow approval lock: ${lock}`);
-                await sleep(10 + Math.floor(Math.random() * 20));
+                await retry();
             }
         }
     }

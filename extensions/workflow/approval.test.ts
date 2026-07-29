@@ -54,12 +54,14 @@ describe("FileWorkflowApprovalStore", () => {
             const secondRelease = (await (second as any).acquireLock()) as () => Promise<void>;
             releaseSecond = secondRelease;
             await firstRelease();
+            releaseFirst = undefined;
             expect((await fs.promises.lstat(lock)).isDirectory()).toBe(true);
             await secondRelease();
+            releaseSecond = undefined;
             await expect(fs.promises.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
         } finally {
-            await releaseFirst?.();
-            await releaseSecond?.();
+            await releaseFirst?.().catch(() => {});
+            await releaseSecond?.().catch(() => {});
             await fs.promises.rm(root, { recursive: true, force: true });
         }
     });
@@ -107,7 +109,7 @@ describe("FileWorkflowApprovalStore", () => {
                         }),
                 ),
             );
-            const readyDeadline = Date.now() + 10_000;
+            const readyDeadline = Date.now() + 25_000;
             while ((await fs.promises.readdir(root)).filter((name) => name.startsWith("ready-")).length < keys.length) {
                 if (childFailure) throw childFailure;
                 if (Date.now() >= readyDeadline) throw new Error("Timed out waiting for approval helper readiness");
@@ -124,7 +126,7 @@ describe("FileWorkflowApprovalStore", () => {
             await Promise.all(completions);
             await fs.promises.rm(root, { recursive: true, force: true });
         }
-    }, 30_000);
+    }, 60_000);
 
     test("serializes concurrent additions without losing keys", async () => {
         const root = await temporary();

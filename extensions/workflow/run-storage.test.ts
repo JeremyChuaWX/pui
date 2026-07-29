@@ -96,6 +96,13 @@ test("does not steal a competing live claim and explicitly recovers an interrupt
         await fs.promises.rename(marker, recovery);
         expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
         await expect(fs.promises.lstat(recovery)).rejects.toMatchObject({ code: "ENOENT" });
+
+        await second.releaseClaim(directory);
+        await fs.promises.writeFile(marker, "{");
+        await fs.promises.writeFile(recovery, JSON.stringify({ version: 1, claimed: true, owner: "stale" }));
+        await fs.promises.utimes(marker, old, old);
+        expect(await second.recoverDeliveryClaim(directory, 1_000)).toBe(true);
+        await expect(fs.promises.lstat(recovery)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }

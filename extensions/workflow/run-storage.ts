@@ -402,9 +402,10 @@ export class WorkflowRunStorage {
         if (leftover) {
             if (leftover.isSymbolicLink() || !leftover.isFile() || leftover.size > MAX_ARTIFACT)
                 throw new Error(`Unsafe or oversized workflow artifact: ${recovery}`);
-            const canonical = await boundedJson<DeliveryState>(marker);
-            if (!canonical.claimed && !canonical.delivered) throw new Error("Invalid workflow delivery state.");
-            await fs.promises.rm(recovery);
+            const canonical = await boundedJson<DeliveryState>(marker).catch(() => undefined);
+            if (canonical && !canonical.claimed && !canonical.delivered)
+                throw new Error("Invalid workflow delivery state.");
+            await fs.promises.rm(recovery, { force: true });
             await syncDirectory(directory);
         }
 
