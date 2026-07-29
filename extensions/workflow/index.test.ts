@@ -233,8 +233,10 @@ describe("workflow extension", () => {
 
     test("aborts a launch when the session changes while approval is pending", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-approval-session-"));
-        let resolveApproval: (approved: boolean) => void = () => {};
-        const approval = new Promise<boolean>((resolve) => (resolveApproval = resolve));
+        let resolveApproval: (approved: boolean) => void = () => {},
+            markConfirmationPending: () => void = () => {};
+        const approval = new Promise<boolean>((resolve) => (resolveApproval = resolve)),
+            confirmationPending = new Promise<void>((resolve) => (markConfirmationPending = resolve));
         try {
             await fs.promises.writeFile(path.join(root, "pending.js"), "return 1");
             const f = fixture({ approvalStore: { has: async () => false, add: async () => {} } });
@@ -244,8 +246,14 @@ describe("workflow extension", () => {
             );
             const launch = f.tool.execute("id", { path: "pending.js" }, undefined, undefined, {
                 cwd: root,
-                ui: { confirm: () => approval },
+                ui: {
+                    confirm: () => {
+                        markConfirmationPending();
+                        return approval;
+                    },
+                },
             });
+            await confirmationPending;
             await f.handlers.get("session_start")!(
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-2" } },

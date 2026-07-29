@@ -45,6 +45,40 @@ describe("workflow backend", () => {
         expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
     });
+    test("shutdown cancels and waits for a launch still resolving its repository", async () => {
+        let releaseRepository: () => void = () => {},
+            markRepositoryStarted: () => void = () => {};
+        const repositoryStarted = new Promise<void>((resolve) => (markRepositoryStarted = resolve)),
+            repositoryRelease = new Promise<void>((resolve) => (releaseRepository = resolve)),
+            backend = createWorkflowBackend({
+                agentExecutor: async () => ({ value: null }),
+                worktreeManager: {
+                    async repository(cwd: string) {
+                        markRepositoryStarted();
+                        await repositoryRelease;
+                        return cwd;
+                    },
+                } as never,
+            }),
+            launch = backend.launch({
+                name: "pending",
+                script: "return 1",
+                sessionId: "session",
+                cwd: process.cwd(),
+            });
+        await repositoryStarted;
+        let shutdownFinished = false;
+        const shutdown = backend.shutdown().then(() => (shutdownFinished = true));
+        await Bun.sleep(0);
+        expect(shutdownFinished).toBe(false);
+        releaseRepository();
+        await expect(launch).rejects.toThrow("shutting down");
+        await shutdown;
+        expect(backend.list()).toEqual([]);
+        await expect(
+            backend.launch({ name: "late", script: "return 1", sessionId: "session", cwd: process.cwd() }),
+        ).rejects.toThrow("shutting down");
+    });
     test("reports missing and old external Node actionably", async () => {
         const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-node-"));
         const old = path.join(dir, process.platform === "win32" ? "node.cmd" : "node");
