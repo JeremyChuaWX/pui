@@ -956,11 +956,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         await options.storage.complete(active.directory, operation, value, now());
                         checkCancelled();
                     }
-                if (shuttingDown) {
-                    if (active.directory) await fs.promises.rm(active.directory, { recursive: true, force: true });
-                    throw new Error("Workflow backend is shutting down.");
-                }
+                if (shuttingDown) throw new Error("Workflow backend is shutting down.");
                 runs.set(id, active);
+                durableDirectory = undefined;
                 publish(active);
                 active.settlement = execute(active, input, node).catch(async (e) => {
                     if (!active.interrupted && !TERMINAL.has(active.summary.status)) {
@@ -973,8 +971,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 });
                 return { runId: id };
             } catch (error) {
-                if (durableDirectory && signal?.aborted)
-                    await fs.promises.rm(durableDirectory, { recursive: true, force: true });
+                if (durableDirectory)
+                    await fs.promises.rm(durableDirectory, { recursive: true, force: true }).catch(() => {});
                 throw error;
             } finally {
                 pendingLaunches--;
@@ -1128,7 +1126,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         async shutdown() {
             if (shuttingDown) return;
             shuttingDown = true;
-            if (pendingLaunches > 0) await new Promise<void>((resolve) => (pendingLaunchWaiter = resolve));
+            if (pendingLaunches > 0) {
+                let timer: NodeJS.Timeout | undefined;
+                await Promise.race([
+                    new Promise<void>((resolve) => (pendingLaunchWaiter = resolve)),
+                    new Promise<void>((resolve) => {
+                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                    }),
+                ]);
+                if (timer) clearTimeout(timer);
+            }
             const interrupted = [...runs.values()].filter((run) => !TERMINAL.has(run.summary.status) && !run.stopping);
             for (const run of interrupted) {
                 run.interrupted = true;

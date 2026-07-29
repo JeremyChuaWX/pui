@@ -58,9 +58,11 @@ function regexLiteralStartsAt(
     previousWord: string | undefined,
     followsStatement: boolean,
 ): boolean {
-    const prefix = script.slice(0, index).trimEnd();
+    const rawPrefix = script.slice(0, index);
+    const prefix = rawPrefix.trimEnd();
     if (!prefix || followsStatement) return true;
     const previous = prefix.at(-1);
+    if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
     if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
     return (
         previousWord !== undefined &&
@@ -72,9 +74,12 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
     const declarations: RegExpExecArray[] = [];
     const declarationPattern = /\bexport\s+const\s+meta\s*=/y;
     const controlParens: boolean[] = [];
+    const declarationParens: boolean[] = [];
     const blockBraces: boolean[] = [];
     let depth = 0;
     let previousWord: string | undefined;
+    let functionDeclarationPending = false;
+    let followsDeclarationParameters = false;
     let followsControlCondition = false;
     for (let index = 0; index < script.length; index++) {
         const character = script[index];
@@ -119,19 +124,27 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
         } else if (/[A-Za-z_$]/.test(character)) {
             const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
             previousWord = script.slice(index, index + end + 1);
+            if (previousWord === "function") {
+                const prefix = script.slice(0, index).trimEnd();
+                functionDeclarationPending = /(?:^|[{};])\s*(?:export(?:\s+default)?|async)?$/.test(prefix);
+            }
             followsControlCondition = false;
             index += end;
         } else if (character === "(") {
             controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
+            declarationParens.push(functionDeclarationPending);
+            functionDeclarationPending = false;
             depth++;
             previousWord = undefined;
             followsControlCondition = false;
         } else if (character === "{") {
             blockBraces.push(
-                followsControlCondition ||
+                followsDeclarationParameters ||
+                    followsControlCondition ||
                     /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
                     !script.slice(0, index).trim(),
             );
+            followsDeclarationParameters = false;
             depth++;
             previousWord = undefined;
             followsControlCondition = false;
@@ -142,6 +155,7 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
         } else if (character === ")") {
             depth = Math.max(0, depth - 1);
             followsControlCondition = controlParens.pop() ?? false;
+            followsDeclarationParameters = declarationParens.pop() ?? false;
             previousWord = undefined;
         } else if (character === "}") {
             depth = Math.max(0, depth - 1);

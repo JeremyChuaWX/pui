@@ -87,6 +87,21 @@ describe("workflow file source", () => {
         expect(() => parseWorkflowMetadata(regexStatements)).toThrow("exactly one");
     });
 
+    test("keeps regex statements after function declaration bodies inert", () => {
+        const regexStatements = [
+            `function f() {}\n/export const meta =/.test("x")`,
+            `async function f() {}\n/export const meta =/.test("x")`,
+            `function* f() {}\n/export const meta =/.test("x")`,
+            `class Example {}\n/export const meta =/.test("x")`,
+        ];
+        for (const script of regexStatements) {
+            expect(() => parseWorkflowMetadata(script)).toThrow("exactly one");
+            expect(
+                parseWorkflowMetadata(`${script}\nexport const meta={name:"demo",description:"Demo"}`),
+            ).toMatchObject({ name: "demo" });
+        }
+    });
+
     test("keeps division after object expressions distinct from regex statements", () => {
         const script = `const ratio = {} / export / constValue;\nexport const meta={name:"demo",description:"Demo"}`;
         expect(parseWorkflowMetadata(script)).toMatchObject({ name: "demo" });
