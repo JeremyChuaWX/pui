@@ -68,4 +68,19 @@ describe("workflow file source", () => {
         });
         expect(() => parseWorkflowMetadata(inert)).toThrow("exactly one");
     });
+
+    test("ignores metadata-like text in regex statements after control flow", () => {
+        const regexStatements = [
+            `if (ok) /export const meta =/.test(text)`,
+            `while (ok) /export const meta =/.test(text)`,
+            `for (; ok; ) /export const meta =/.test(text)`,
+            `if (ok) run(); else /export const meta =/.test(text)`,
+            `do /export const meta =/.test(text); while (ok)`,
+            `return /export const meta =/.test(text)`,
+        ].join("\n");
+        const metadata = `export const meta={name:"demo",description:"Demo"}`;
+
+        expect(parseWorkflowMetadata(`${regexStatements}\n${metadata}`)).toMatchObject({ name: "demo" });
+        expect(() => parseWorkflowMetadata(regexStatements)).toThrow("exactly one");
+    });
 });

@@ -52,21 +52,43 @@ function parseStaticString(literal: string, source: string): string {
     return result;
 }
 
-function regexLiteralStartsAt(script: string, index: number): boolean {
+function regexLiteralStartsAt(
+    script: string,
+    index: number,
+    previousWord: string | undefined,
+    followsControlCondition: boolean,
+): boolean {
     const prefix = script.slice(0, index).trimEnd();
-    if (!prefix) return true;
+    if (!prefix || followsControlCondition) return true;
     const previous = prefix.at(-1);
     if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
-    return /\b(?:return|case|throw|yield|await)$/.test(prefix);
+    return (
+        previousWord !== undefined &&
+        /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord)
+    );
 }
 
 function metadataDeclarations(script: string): RegExpExecArray[] {
     const declarations: RegExpExecArray[] = [];
     const declarationPattern = /\bexport\s+const\s+meta\s*=/y;
+    const controlParens: boolean[] = [];
     let depth = 0;
+    let previousWord: string | undefined;
+    let followsControlCondition = false;
     for (let index = 0; index < script.length; index++) {
         const character = script[index];
         const next = script[index + 1];
+        if (depth === 0) {
+            declarationPattern.lastIndex = index;
+            const declaration = declarationPattern.exec(script);
+            if (declaration) {
+                declarations.push(declaration);
+                index = declarationPattern.lastIndex - 1;
+                previousWord = undefined;
+                followsControlCondition = false;
+                continue;
+            }
+        }
         if (character === "/" && next === "/") {
             index = script.indexOf("\n", index + 2);
             if (index === -1) break;
@@ -80,7 +102,9 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
                 if (script[index] === "\\") index++;
                 else if (script[index] === quote) break;
             }
-        } else if (character === "/" && regexLiteralStartsAt(script, index)) {
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "/" && regexLiteralStartsAt(script, index, previousWord, followsControlCondition)) {
             let characterClass = false;
             for (index++; index < script.length; index++) {
                 if (script[index] === "\\") index++;
@@ -88,15 +112,34 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
                 else if (script[index] === "]") characterClass = false;
                 else if (script[index] === "/" && !characterClass) break;
             }
-        } else if (character === "{" || character === "(" || character === "[") depth++;
-        else if (character === "}" || character === ")" || character === "]") depth = Math.max(0, depth - 1);
-        else if (depth === 0) {
-            declarationPattern.lastIndex = index;
-            const declaration = declarationPattern.exec(script);
-            if (declaration) {
-                declarations.push(declaration);
-                index = declarationPattern.lastIndex - 1;
-            }
+            while (/[a-z]/i.test(script[index + 1] ?? "")) index++;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (/[A-Za-z_$]/.test(character)) {
+            const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
+            previousWord = script.slice(index, index + end + 1);
+            followsControlCondition = false;
+            index += end;
+        } else if (character === "(") {
+            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
+            depth++;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "{" || character === "[") {
+            depth++;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === ")") {
+            depth = Math.max(0, depth - 1);
+            followsControlCondition = controlParens.pop() ?? false;
+            previousWord = undefined;
+        } else if (character === "}" || character === "]") {
+            depth = Math.max(0, depth - 1);
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (!/\s/.test(character)) {
+            previousWord = undefined;
+            followsControlCondition = false;
         }
     }
     return declarations;
