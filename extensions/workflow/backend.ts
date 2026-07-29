@@ -90,7 +90,7 @@ export interface WorkflowBackendOptions {
     afterDurableCompletion?: (operationId: string) => Promise<void> | void;
 }
 export interface WorkflowBackend {
-    launch(input: WorkflowLaunch): Promise<{ runId: string }>;
+    launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }>;
     initialize?(cwd: string): Promise<WorkflowRunSummaryV1[]>;
     recover?(id: string): Promise<void>;
     list(): WorkflowRunSummaryV1[];
@@ -841,10 +841,15 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         }
     };
     return {
-        async launch(input) {
+        async launch(input, signal) {
             if (shuttingDown) throw new Error("Workflow backend is shutting down.");
+            const checkCancelled = () => {
+                if (signal?.aborted) throw new Error("Workflow launch was cancelled.");
+            };
+            let durableDirectory: string | undefined;
             pendingLaunches++;
             try {
+                checkCancelled();
                 if (
                     typeof input.name !== "string" ||
                     !input.name ||
@@ -859,11 +864,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     throw new Error("Invalid workflow launch metadata.");
                 preflightWorkflow(input.script);
                 input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
+                checkCancelled();
                 if (shuttingDown) throw new Error("Workflow backend is shutting down.");
                 const node = await resolveWorkflowNode({
                     environment: options.environment,
                     configuredPath: options.nodePath,
                 });
+                checkCancelled();
                 if (shuttingDown) throw new Error("Workflow backend is shutting down.");
                 const id = crypto.randomUUID(),
                     timestamp = now(),
@@ -922,14 +929,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     semaphore: new AbortableSemaphore(limits.maxConcurrency),
                     activeSharedWriters: 0,
                 };
-                if (options.storage)
-                    active.directory = await options.storage.create(
+                if (options.storage) {
+                    const durableCwd = await realpath(input.cwd);
+                    checkCancelled();
+                    active.directory = durableDirectory = await options.storage.create(
                         input.cwd,
                         id,
                         {
                             name: input.name,
                             sessionId: input.sessionId,
-                            cwd: await realpath(input.cwd),
+                            cwd: durableCwd,
                             script: input.script,
                             args: input.args,
                             policy: options.policy ?? {},
@@ -940,9 +949,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         },
                         summary,
                     );
+                    checkCancelled();
+                }
                 if (active.directory && options.storage)
-                    for (const [operation, value] of active.completions)
+                    for (const [operation, value] of active.completions) {
                         await options.storage.complete(active.directory, operation, value, now());
+                        checkCancelled();
+                    }
                 if (shuttingDown) {
                     if (active.directory) await fs.promises.rm(active.directory, { recursive: true, force: true });
                     throw new Error("Workflow backend is shutting down.");
@@ -959,6 +972,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     }
                 });
                 return { runId: id };
+            } catch (error) {
+                if (durableDirectory && signal?.aborted)
+                    await fs.promises.rm(durableDirectory, { recursive: true, force: true });
+                throw error;
             } finally {
                 pendingLaunches--;
                 if (pendingLaunches === 0) pendingLaunchWaiter?.();

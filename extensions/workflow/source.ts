@@ -56,10 +56,10 @@ function regexLiteralStartsAt(
     script: string,
     index: number,
     previousWord: string | undefined,
-    followsControlCondition: boolean,
+    followsStatement: boolean,
 ): boolean {
     const prefix = script.slice(0, index).trimEnd();
-    if (!prefix || followsControlCondition) return true;
+    if (!prefix || followsStatement) return true;
     const previous = prefix.at(-1);
     if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
     return (
@@ -72,6 +72,7 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
     const declarations: RegExpExecArray[] = [];
     const declarationPattern = /\bexport\s+const\s+meta\s*=/y;
     const controlParens: boolean[] = [];
+    const blockBraces: boolean[] = [];
     let depth = 0;
     let previousWord: string | undefined;
     let followsControlCondition = false;
@@ -125,7 +126,16 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
             depth++;
             previousWord = undefined;
             followsControlCondition = false;
-        } else if (character === "{" || character === "[") {
+        } else if (character === "{") {
+            blockBraces.push(
+                followsControlCondition ||
+                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
+                    !script.slice(0, index).trim(),
+            );
+            depth++;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "[") {
             depth++;
             previousWord = undefined;
             followsControlCondition = false;
@@ -133,7 +143,11 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
             depth = Math.max(0, depth - 1);
             followsControlCondition = controlParens.pop() ?? false;
             previousWord = undefined;
-        } else if (character === "}" || character === "]") {
+        } else if (character === "}") {
+            depth = Math.max(0, depth - 1);
+            previousWord = undefined;
+            followsControlCondition = blockBraces.pop() ?? false;
+        } else if (character === "]") {
             depth = Math.max(0, depth - 1);
             previousWord = undefined;
             followsControlCondition = false;

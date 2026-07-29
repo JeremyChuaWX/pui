@@ -72,6 +72,9 @@ describe("workflow file source", () => {
     test("ignores metadata-like text in regex statements after control flow", () => {
         const regexStatements = [
             `if (ok) /export const meta =/.test(text)`,
+            `if (true) {}\n/export const meta =/.test("x");`,
+            `while (ok) {}\n/export const meta =/.test(text)`,
+            `if (ok) { run() } else {}\n/export const meta =/.test(text)`,
             `while (ok) /export const meta =/.test(text)`,
             `for (; ok; ) /export const meta =/.test(text)`,
             `if (ok) run(); else /export const meta =/.test(text)`,
@@ -82,5 +85,10 @@ describe("workflow file source", () => {
 
         expect(parseWorkflowMetadata(`${regexStatements}\n${metadata}`)).toMatchObject({ name: "demo" });
         expect(() => parseWorkflowMetadata(regexStatements)).toThrow("exactly one");
+    });
+
+    test("keeps division after object expressions distinct from regex statements", () => {
+        const script = `const ratio = {} / export / constValue;\nexport const meta={name:"demo",description:"Demo"}`;
+        expect(parseWorkflowMetadata(script)).toMatchObject({ name: "demo" });
     });
 });

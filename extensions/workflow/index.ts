@@ -254,6 +254,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     const launchFile = async (requestedPath: string, args: unknown, ctx: ExtensionContext) => {
         const launchGeneration = lifecycleGeneration;
         const launchSessionId = sessionId;
+        const launchSignal = recoveryAbort?.signal;
         const canonical = await fs.promises.realpath(ctx.cwd);
         const source = await readWorkflowFile(canonical, requestedPath);
         const repositoryRoot = await findRepositoryRoot(canonical);
@@ -271,13 +272,16 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         );
         if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
             throw new Error("Workflow launch was cancelled because the active session changed during approval.");
-        return manager.launch({
-            name: source.name,
-            script: source.script,
-            args,
-            sessionId: launchSessionId,
-            cwd: canonical,
-        });
+        return manager.launch(
+            {
+                name: source.name,
+                script: source.script,
+                args,
+                sessionId: launchSessionId,
+                cwd: canonical,
+            },
+            launchSignal,
+        );
     };
     pi.registerCommand("workflow", {
         description: "Run a workflow file",
@@ -322,6 +326,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             const ui = ctx.ui;
             const launchGeneration = lifecycleGeneration;
             const launchSessionId = sessionId;
+            const launchSignal = recoveryAbort?.signal;
             const canonical = await fs.promises.realpath(ctx.cwd);
             const project = (await findRepositoryRoot(canonical)) ?? canonical;
             let inlineName = "Inline workflow";
@@ -334,13 +339,16 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             );
             if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
                 throw new Error("Workflow launch was cancelled because the active session changed during approval.");
-            const launched = await manager.launch({
-                name: inlineName,
-                script,
-                args: params.args,
-                sessionId: launchSessionId,
-                cwd: canonical,
-            });
+            const launched = await manager.launch(
+                {
+                    name: inlineName,
+                    script,
+                    args: params.args,
+                    sessionId: launchSessionId,
+                    cwd: canonical,
+                },
+                launchSignal,
+            );
             return {
                 content: [
                     {

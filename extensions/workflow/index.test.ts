@@ -267,6 +267,38 @@ describe("workflow extension", () => {
         }
     });
 
+    test("aborts an inline launch when the session changes during backend setup", async () => {
+        let setupStarted: () => void = () => {};
+        let releaseSetup: () => void = () => {};
+        const started = new Promise<void>((resolve) => (setupStarted = resolve));
+        const release = new Promise<void>((resolve) => (releaseSetup = resolve));
+        const f = fixture({
+            backend: {
+                async launch(_input, signal) {
+                    setupStarted();
+                    await release;
+                    if (signal?.aborted) throw new Error("Workflow launch was cancelled.");
+                    return { runId: "stale" };
+                },
+            },
+        });
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
+        );
+        const launch = f.tool.execute("id", { script: "return 1" }, undefined, undefined, {
+            cwd: process.cwd(),
+            ui: { confirm: () => true },
+        });
+        await started;
+        await f.handlers.get("session_start")!(
+            {},
+            { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-2" } },
+        );
+        releaseSetup();
+        await expect(launch).rejects.toThrow("cancelled");
+    });
+
     test("launches an explicit file outside a repository without project trust", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-file-"));
         try {

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { WorkflowBackendOptions } from "./backend.js";
 import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
 import { parseWorkflowRunV1 } from "./protocol.js";
+import { WorkflowRunStorage } from "./run-storage.js";
 
 // Legacy backend fixtures intentionally exercise the unsafe shared-checkout mode.
 const createWorkflowBackend = (options: WorkflowBackendOptions) =>
@@ -78,6 +79,39 @@ describe("workflow backend", () => {
         await expect(
             backend.launch({ name: "late", script: "return 1", sessionId: "session", cwd: process.cwd() }),
         ).rejects.toThrow("shutting down");
+    });
+    test("cancellation during durable setup removes the unregistered run", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-cancel-"));
+        const project = path.join(temp, "project");
+        await fs.promises.mkdir(project);
+        const storage = new WorkflowRunStorage(path.join(temp, "runs"));
+        const create = storage.create.bind(storage);
+        let releaseCreate: () => void = () => {};
+        let createdDirectory = "";
+        const createRelease = new Promise<void>((resolve) => (releaseCreate = resolve));
+        storage.create = async (...args) => {
+            createdDirectory = await create(...args);
+            await createRelease;
+            return createdDirectory;
+        };
+        const backend = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: null }) });
+        const controller = new AbortController();
+        try {
+            const launch = backend.launch(
+                { name: "cancelled", script: "return 1", sessionId: "session", cwd: project },
+                controller.signal,
+            );
+            await waitFor(() => Boolean(createdDirectory));
+            controller.abort();
+            releaseCreate();
+            await expect(launch).rejects.toThrow("cancelled");
+            expect(backend.list()).toEqual([]);
+            await expect(fs.promises.stat(createdDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+            releaseCreate();
+            await backend.shutdown();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
     });
     test("reports missing and old external Node actionably", async () => {
         const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-node-"));
