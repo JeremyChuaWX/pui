@@ -1,9 +1,15 @@
 {
     "name": "pui",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "private": true,
     "description": "An OpenCode-inspired OpenTUI client for Pi",
     "type": "module",
+    "exports": {
+        "./workflow": {
+            "types": "./extensions/workflow/api.ts",
+            "default": "./extensions/workflow/api.ts"
+        }
+    },
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/index.tsx",

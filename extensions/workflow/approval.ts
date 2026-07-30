@@ -8,6 +8,8 @@ export interface WorkflowApprovalStore {
     add(key: string): Promise<void>;
 }
 const approvalWrites = new Map<string, Promise<void>>();
+// Change this namespace whenever approved source gains a new host capability.
+const APPROVAL_CAPABILITY_VERSION = "pui-workflow-shell-v1";
 const LOCK_STALE_MS = 60_000;
 const LOCK_WAIT_MS = 30_000;
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -25,7 +27,11 @@ function isProcessAlive(pid: number): boolean {
     }
 }
 export function workflowApprovalKey(project: string, sourceIdentity: string, script: string): string {
-    const hash = createHash("sha256").update(Buffer.from(script)).digest("hex");
+    const hash = createHash("sha256")
+        .update(APPROVAL_CAPABILITY_VERSION)
+        .update("\0")
+        .update(Buffer.from(script))
+        .digest("hex");
     return `${project}\0${sourceIdentity}\0${hash}`;
 }
 export class FileWorkflowApprovalStore implements WorkflowApprovalStore {

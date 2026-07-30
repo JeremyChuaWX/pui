@@ -31,10 +31,16 @@ import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWor
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
-        Type.String({ description: "Exact inline JavaScript orchestration script to approve and run." }),
+        Type.String({
+            description:
+                "Exact inline TypeScript orchestration script to approve and run (JavaScript is valid TypeScript).",
+        }),
     ),
     path: Type.Optional(
-        Type.String({ description: "Explicit workflow file path. Exactly one of script or path is required." }),
+        Type.String({
+            description:
+                "Explicit .ts workflow file exporting a default function. Exactly one of script or path is required.",
+        }),
     ),
     args: Type.Optional(Type.Unknown()),
 });
@@ -263,11 +269,11 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         const insideProject = relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
         if (repositoryRoot && insideProject && !ctx.isProjectTrusted?.())
             throw new Error(`Project workflow "${source.name}" is not trusted. Trust the project before running it.`);
-        const preview = preflightWorkflow(source.script);
+        const preview = preflightWorkflow(source.script, "function");
         await authorize(
             workflowApprovalKey(project, source.path, source.script),
             `Approve workflow file: ${source.name}`,
-            `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${source.script}`,
+            `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${source.script}`,
             ctx.ui,
         );
         if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
@@ -276,6 +282,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             {
                 name: source.name,
                 script: source.script,
+                entrypoint: "function",
                 args,
                 sessionId: launchSessionId,
                 cwd: canonical,
@@ -307,7 +314,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         name: "workflow",
         label: "Workflow",
         description:
-            "Approve and launch either an inline script or an explicit workflow file path with structured arguments (exactly one).",
+            "Approve and launch either an inline TypeScript script or an explicit .ts file exporting a workflow function (exactly one). Workflows can orchestrate agents and run CLI commands with shell().",
         parameters: WorkflowParams,
         async execute(_id, params, _signal, _update, ctx) {
             const hasScript = params.script !== undefined;
@@ -334,7 +341,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             await authorize(
                 workflowApprovalKey(project, inlineName, script),
                 "Run inline workflow",
-                `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${script}`,
+                `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${script}`,
                 ui,
             );
             if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)

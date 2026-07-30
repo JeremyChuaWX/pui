@@ -25,6 +25,7 @@ reviews:
     - "**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs,sh}"
     - "!dist/**"
     - "!node_modules/**"
+    - "!.pui/**"
 
   path_instructions:
     - path: "extensions/file-search/**"

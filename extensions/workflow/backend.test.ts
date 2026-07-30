@@ -34,9 +34,12 @@ describe("workflow backend", () => {
             "fetch('https://x')",
         ])
             expect(() => preflightWorkflow(script)).toThrow("forbidden");
-        expect(preflightWorkflow("phase('one'); for(let i=0;i<2;i++) await agent(String(i))")).toEqual({
+        expect(
+            preflightWorkflow("phase('one'); for(let i=0;i<2;i++) await agent(String(i)); await shell('true')"),
+        ).toEqual({
             phases: ["one"],
             agents: 1,
+            shells: 1,
         });
     });
     test("preflight ignores inert capability words but scans template expressions", () => {
@@ -44,7 +47,25 @@ describe("workflow backend", () => {
         expect(preflightWorkflow(script).agents).toBe(0);
         expect(() => preflightWorkflow("log(`ordinary $" + "{globalThis['pro'+'cess']}`)")).not.toThrow();
         expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
+        expect(() => preflightWorkflow("log(/process|import|fetch|[{}]/.source)")).not.toThrow();
+        expect(() =>
+            preflightWorkflow(
+                `const words = /process|import|export|[{}]/; export default async function workflow() { return words.source }`,
+                "function",
+            ),
+        ).not.toThrow();
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
+        expect(() => preflightWorkflow("let value = 1; value++ / fetch('https://x')")).toThrow("forbidden");
+        expect(() => preflightWorkflow("let value = 1; value -- / process.pid")).toThrow("forbidden");
+    });
+    test("preflight ignores forbidden names in erasable type declarations", () => {
+        const script = `interface RuntimeShape { fetch: unknown; process: unknown; }
+type Loader = { require: unknown; child_process: unknown };
+const value: RuntimeShape | Loader | null = null;
+return value;`;
+        expect(() => preflightWorkflow(script)).not.toThrow();
+        expect(() => preflightWorkflow(`${script}\nfetch("https://example.com")`)).toThrow("forbidden");
+        expect(() => preflightWorkflow("const type = fetch();")).toThrow("forbidden");
     });
     test("shutdown cancels and waits for a launch still resolving its repository", async () => {
         let releaseRepository: () => void = () => {},
@@ -232,12 +253,222 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
-    test("executes documented multiline metadata source and retains exact source bytes", async () => {
+    test("runs host shell commands directly and returns nonzero exits", async () => {
+        const node = await resolveWorkflowNode();
+        const executable = process.platform === "win32" ? `"${node}"` : JSON.stringify(node);
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "shell",
+            script: `return await shell(${JSON.stringify(
+                `${executable} -e "process.stdout.write('out');process.stderr.write('err');process.exitCode=3"`,
+            )})`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ exitCode: 3, stdout: "out", stderr: "err" });
+        expect(backend.inspect(runId).run.agents).toEqual([]);
+        expect(backend.inspect(runId).run.recentActivity.at(-1)?.title).toContain("process.stdout.write");
+        await backend.shutdown();
+    });
+    test("limits concurrent shell commands", async () => {
+        let active = 0;
+        let peak = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async () => {
+                active++;
+                peak = Math.max(peak, active);
+                await Bun.sleep(20);
+                active--;
+                return { exitCode: 0, stdout: "", stderr: "" };
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "bounded shells",
+            script: `return await parallel([shell("a"), shell("b"), shell("c"), shell("d")])`,
+            sessionId: "s",
+            cwd: process.cwd(),
+            limits: { maxConcurrency: 2 },
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(peak).toBe(2);
+        await backend.shutdown();
+    });
+    test("caps shell invocations", async () => {
+        let executions = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async () => {
+                executions++;
+                return { exitCode: 0, stdout: "", stderr: "" };
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "capped shells",
+            script: `for (let i = 0; i < 1001; i++) await shell(String(i))`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "failed", 15_000);
+        expect(executions).toBe(1_000);
+        expect(backend.inspect(runId).run.error).toContain("shell cap exceeded");
+        await backend.shutdown();
+    });
+    test.skipIf(process.platform === "win32")("times out shell commands and reaps their process groups", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-shell-timeout-"));
+        const pidFile = path.join(temp, "descendant.pid");
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        try {
+            const { runId } = await backend.launch({
+                name: "shell timeout",
+                script: `await shell(${JSON.stringify(
+                    `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`,
+                )}, { timeoutMs: 500 })`,
+                sessionId: "s",
+                cwd: process.cwd(),
+            });
+            await waitFor(() => backend.inspect(runId).run.status === "failed");
+            expect(backend.inspect(runId).run.error).toContain("timed out");
+            const pid = Number(await fs.promises.readFile(pidFile, "utf8"));
+            let running = true;
+            for (let attempt = 0; attempt < 50 && running; attempt++) {
+                try {
+                    process.kill(pid, 0);
+                    await Bun.sleep(20);
+                } catch {
+                    running = false;
+                }
+            }
+            expect(running).toBe(false);
+        } finally {
+            await backend.shutdown();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+    test("journals shell results and validates options before execution", async () => {
+        let calls = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async ({ command, cwd, env, timeoutMs }) => {
+                calls++;
+                expect({ command, cwd, env, timeoutMs }).toEqual({
+                    command: "verify",
+                    cwd: process.cwd(),
+                    env: { MODE: "test" },
+                    timeoutMs: 250,
+                });
+                return { exitCode: 7, stdout: "checked", stderr: "warning" };
+            },
+        });
+        const launched = await backend.launch({
+            name: "shell replay",
+            script: `return await shell("verify", { timeoutMs: 250, env: { MODE: "test" } })`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(launched.runId).run.status === "succeeded");
+        const retried = await backend.control(launched.runId, "retry");
+        await waitFor(() => Boolean(retried?.runId && backend.inspect(retried.runId).run.status === "succeeded"));
+        expect(calls).toBe(1);
+
+        const invalid = await backend.launch({
+            name: "invalid shell",
+            script: `await shell("verify", { env: { BAD: 1 } })`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(invalid.runId).run.status === "failed");
+        expect(backend.inspect(invalid.runId).run.error).toContain("environment");
+        expect(calls).toBe(1);
+        await backend.shutdown();
+    });
+    test("executes an exported workflow function with explicit frozen context and args", async () => {
+        const source = `import type { WorkflowContext } from "pui/workflow";
+export const meta = { name: "function-workflow", description: "Function workflow" };
+type Args = { topic: string };
+export default async function workflow(context: WorkflowContext, args: Args) {
+    const ambient = [typeof agent, typeof shell, typeof phase, typeof pipeline, typeof parallel, typeof log, typeof globalThis.args];
+    const result = await context.agent(\`Review \${args.topic}\`, { role: "explore" });
+    const command = await context.shell("check", { timeoutMs: 123, env: { TOPIC: args.topic } });
+    return { result, command, frozen: Object.isFrozen(context), ambient };
+}`;
+        const backend = createWorkflowBackend({
+            agentExecutor: async ({ prompt }) => ({ value: prompt.toUpperCase() }),
+            shellExecutor: async ({ command, timeoutMs, env }) => ({
+                exitCode: 0,
+                stdout: `${command}:${timeoutMs}:${env?.TOPIC}`,
+                stderr: "",
+            }),
+        });
+        const { runId } = await backend.launch({
+            name: "function-workflow",
+            script: source,
+            entrypoint: "function",
+            args: { topic: "api" },
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({
+            result: "REVIEW API",
+            command: { exitCode: 0, stdout: "check:123:api", stderr: "" },
+            frozen: true,
+            ambient: ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
+        });
+        expect(backend.inspect(runId).script).toBe(source);
+        await backend.shutdown();
+    });
+    test("executes erasable TypeScript syntax in strip-only mode", async () => {
+        const source = `interface Item { value: number }
+type Result<T> = { item: T };
+const identity = <T,>(value: T): T => value;
+const item: Item = { value: identity<number>(3) };
+const result = { item } satisfies Result<Item>;
+return result;`;
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "typescript",
+            script: source,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ item: { value: 3 } });
+        expect(backend.inspect(runId).script).toBe(source);
+        await backend.shutdown();
+    });
+    test("accepts type-only namespaces in strip-only mode", () => {
+        const body = `namespace TypeOnly { export type A = string; }\nconst value: TypeOnly.A = "ok";\nreturn value;`;
+        expect(() => preflightWorkflow(body)).not.toThrow();
+        expect(() =>
+            preflightWorkflow(`export default async function workflow() { ${body} }`, "function"),
+        ).not.toThrow();
+    });
+    test("rejects unsupported TypeScript during preflight", async () => {
+        const scripts = [
+                `enum Direction { fetch, Right }\nreturn Direction.fetch;`,
+                `class Item { constructor(public value: number) {} }\nreturn new Item(1);`,
+                `namespace Items { export const value = 1 }\nreturn Items.value;`,
+                `@sealed class Item {}\nreturn new Item();`,
+                `class Service { constructor(@Inject private value: Value) {} }`,
+            ],
+            backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        for (const script of scripts) expect(() => preflightWorkflow(script)).toThrow("unsupported in strip-only mode");
+        await expect(
+            backend.launch({ name: "unsupported typescript", script: scripts[1]!, sessionId: "s", cwd: process.cwd() }),
+        ).rejects.toThrow("unsupported in strip-only mode");
+        await backend.shutdown();
+    });
+    test("accepts unsupported TypeScript keywords inside regex literals", () => {
+        expect(() => preflightWorkflow(`return /enum Direction/.test("enum Direction");`)).not.toThrow();
+    });
+    test("executes JavaScript metadata source unchanged and retains exact source bytes", async () => {
         const source = `export const meta = {
     name: "review",
     description: "Review changed files",
 };
-phase("Review");
+await phase("Review");
 return { ok: true, args };\n`;
         const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
         const { runId } = await backend.launch({
@@ -252,11 +483,11 @@ return { ok: true, args };\n`;
         expect(backend.inspect(runId).script).toBe(source);
         await backend.shutdown();
     });
-    test("keeps VM constructors and RPC results in-realm without ambient authority", async () => {
+    test("keeps typed VM values, constructors, and RPC results in-realm without ambient authority", async () => {
         const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: { safe: true } }) });
         const { runId } = await backend.launch({
             name: "adversarial",
-            script: `const result=await agent("safe"); const probes=[agent,phase,log,pipeline,parallel,result,args]; const escaped=[]; for(const value of probes){try{escaped.push(value.constructor("return pro"+"cess")())}catch(e){escaped.push(null)}} let dynamic=false; try{({}).constructor.constructor("return pro"+"cess")()}catch(e){dynamic=true} return {escaped:escaped.every(x=>x===null),dynamic,globals:[globalThis["pro"+"cess"],globalThis["req"+"uire"],globalThis["fet"+"ch"],globalThis["Web"+"Socket"]].every(x=>x===undefined),builtin:typeof globalThis["pro"+"cess"]?.getBuiltinModule,kill:typeof globalThis["pro"+"cess"]?.kill};`,
+            script: `interface Safe { safe: boolean } type Probe = unknown; const result: Safe=await agent("safe"); const probes: Probe[]=[agent,phase,log,pipeline,parallel,result,args]; const escaped: unknown[]=[]; for(const value of probes){try{escaped.push((value as any).constructor("return pro"+"cess")())}catch(e){escaped.push(null)}} let dynamic: boolean=false; try{({}).constructor.constructor("return pro"+"cess")()}catch(e){dynamic=true} return {escaped:escaped.every(x=>x===null),dynamic,globals:[globalThis["pro"+"cess"],globalThis["req"+"uire"],globalThis["fet"+"ch"],globalThis["Web"+"Socket"]].every(x=>x===undefined),builtin:typeof globalThis["pro"+"cess"]?.getBuiltinModule,kill:typeof globalThis["pro"+"cess"]?.kill};`,
             args: {},
             sessionId: "s",
             cwd: process.cwd(),

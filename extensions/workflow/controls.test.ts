@@ -111,12 +111,26 @@ test("retry and agent restart create linked runs with durable replay", async () 
             return { value: `${prompt}-result` };
         },
     });
-    const script = `const results=await parallel([agent("one",{role:"explore"}),agent("two",{role:"explore"})]); return {args,results}`;
+    const script = `export default async function workflow(context, args) {
+    const results = await context.parallel([
+        context.agent("one", { role: "explore" }),
+        context.agent("two", { role: "explore" }),
+    ]);
+    return { args, results };
+}`;
     const args = { nested: [1, "exact"], enabled: true };
     const limits = { maxConcurrency: 4, maxAgents: 1_000, timeoutMs: 12_345, maxTokens: 0, maxCost: 0 } as const;
 
     try {
-        const old = await backend.launch({ name: "linked", script, args, limits, sessionId: "session", cwd });
+        const old = await backend.launch({
+            name: "linked",
+            script,
+            entrypoint: "function",
+            args,
+            limits,
+            sessionId: "session",
+            cwd,
+        });
         await waitFor(() => backend.inspect(old.runId).run.status === "succeeded");
         expect(executions).toBe(2);
         const oldRun = backend.inspect(old.runId).run;
@@ -133,6 +147,7 @@ test("retry and agent restart create linked runs with durable replay", async () 
             args,
             limits,
             script,
+            entrypoint: "function",
             parentRunId: old.runId,
         });
         expect(retryStored?.launch.args).toEqual(args);
