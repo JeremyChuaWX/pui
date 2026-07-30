@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.pui/
 *.tsbuildinfo
 .DS_Store
 *.log

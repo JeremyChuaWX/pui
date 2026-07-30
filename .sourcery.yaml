@@ -4,6 +4,7 @@ ignore:
   - .git/
   - dist/
   - node_modules/
+  - .pui/
   - '*.json'
   - '*.lock'
   - '*.md'
