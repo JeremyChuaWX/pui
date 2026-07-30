@@ -207,8 +207,9 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
     // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
-    if (forbidden.test(executableCode(executable)))
-        throw new Error("Workflow script uses a forbidden runtime capability.");
+    // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
+    const code = executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${executable}\n})()`));
+    if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
         phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
             .map((m) => m[2] ?? "")

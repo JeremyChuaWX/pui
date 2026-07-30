@@ -35,8 +35,8 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
             { script: source, args: { x: 1 }, policy: {}, roles: [], models: [], limits: summary.limits },
             summary,
         );
-        expect(await fs.promises.readFile(path.join(directory, "workflow.ts"), "utf8")).toBe(source);
-        await expect(fs.promises.lstat(path.join(directory, "workflow.js"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8")).toBe(source);
+        await expect(fs.promises.lstat(path.join(directory, "workflow.ts"))).rejects.toMatchObject({ code: "ENOENT" });
         await storage.complete(directory, "agent-1", { ok: true });
         await expect(storage.complete(directory, "agent/2", null)).rejects.toThrow("Invalid workflow operation");
         await expect(storage.complete(directory, `a${"x".repeat(256)}`, null)).rejects.toThrow(
@@ -54,8 +54,8 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
-test("discovers legacy workflow.js sources", async () => {
-    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-legacy-source-")),
+test("discovers workflow.ts sources written by prior versions", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-typescript-source-")),
         project = path.join(temp, "project"),
         storage = new WorkflowRunStorage(path.join(temp, "runs"));
     await fs.promises.mkdir(project);
@@ -67,7 +67,7 @@ test("discovers legacy workflow.js sources", async () => {
                 { script: source, policy: {}, roles: [], models: [], limits: {} },
                 makeSummary(project),
             );
-        await fs.promises.rename(path.join(directory, "workflow.ts"), path.join(directory, "workflow.js"));
+        await fs.promises.rename(path.join(directory, "workflow.js"), path.join(directory, "workflow.ts"));
 
         const [stored] = await storage.discover(project);
         expect(stored?.corrupt).toBeUndefined();
@@ -89,7 +89,7 @@ test("fails closed when both workflow source filenames exist", async () => {
             { script: "return 'typescript';", policy: {}, roles: [], models: [], limits: {} },
             makeSummary(project),
         );
-        await fs.promises.writeFile(path.join(directory, "workflow.js"), "return 'legacy';");
+        await fs.promises.writeFile(path.join(directory, "workflow.ts"), "return 'typescript';");
 
         const [stored] = await storage.discover(project);
         expect(stored?.corrupt).toBe(true);

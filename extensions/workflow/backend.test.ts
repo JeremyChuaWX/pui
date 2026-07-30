@@ -46,6 +46,15 @@ describe("workflow backend", () => {
         expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
     });
+    test("preflight ignores forbidden names in erasable type declarations", () => {
+        const script = `interface RuntimeShape { fetch: unknown; process: unknown; }
+type Loader = { require: unknown; child_process: unknown };
+const value: RuntimeShape | Loader | null = null;
+return value;`;
+        expect(() => preflightWorkflow(script)).not.toThrow();
+        expect(() => preflightWorkflow(`${script}\nfetch("https://example.com")`)).toThrow("forbidden");
+        expect(() => preflightWorkflow("const type = fetch();")).toThrow("forbidden");
+    });
     test("shutdown cancels and waits for a launch still resolving its repository", async () => {
         let releaseRepository: () => void = () => {},
             markRepositoryStarted: () => void = () => {};

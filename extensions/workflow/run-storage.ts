@@ -248,7 +248,7 @@ export class WorkflowRunStorage {
         await fs.promises.mkdir(directory, { mode: 0o700 });
         await fs.promises.chmod(directory, 0o700);
         const files: [string, unknown][] = [
-            ["workflow.ts", launch.script],
+            ["workflow.js", launch.script],
             ["args.json", launch.args ?? null],
             [
                 "launch.json",
@@ -268,7 +268,7 @@ export class WorkflowRunStorage {
         for (const [name, value] of files) {
             const handle = await fs.promises.open(path.join(directory, name), "wx", 0o600);
             try {
-                await handle.writeFile(name === "workflow.ts" ? String(value) : json(value));
+                await handle.writeFile(name === "workflow.js" ? String(value) : json(value));
                 await handle.sync();
             } finally {
                 await handle.close();

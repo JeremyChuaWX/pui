@@ -46,7 +46,7 @@ test("explicit stop is terminal and is not resumable after restart", async () =>
         await waitFor(() => backendA.inspect(runId).run.status === "cancelled");
         await backendA.shutdown();
         const [durable] = await storage.discover(project);
-        expect(await fs.promises.readFile(path.join(durable!.directory, "workflow.ts"), "utf8")).toBe(
+        expect(await fs.promises.readFile(path.join(durable!.directory, "workflow.js"), "utf8")).toBe(
             `return await agent("blocked")`,
         );
 
@@ -125,8 +125,8 @@ test("recovers from a durable completion without executing it twice", async () =
         ).toBeUndefined();
         releaseHook();
         await fs.promises.rename(
-            path.join(interruptedStored!.directory, "workflow.ts"),
             path.join(interruptedStored!.directory, "workflow.js"),
+            path.join(interruptedStored!.directory, "workflow.ts"),
         );
         [interruptedStored] = await storage.discover(project);
         expect(interruptedStored?.corrupt).toBeUndefined();
