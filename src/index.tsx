@@ -6,6 +6,7 @@ import { createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { App } from "./app.js";
 import { type ControllerOptions, PuiController } from "./controller.js";
+import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./headless-workflow.js";
 import { syntaxStyle, theme } from "./theme.js";
 import { runCompiledWorkflowSmoke } from "./workflow-smoke.js";
 
@@ -23,6 +24,7 @@ function usage(): string {
 
 Usage:
   pui [options] [prompt]
+  pui workflow [--cwd <path>] <file.ts> [JSON args]
 
 Options:
   -c, --continue       Continue the most recent session
@@ -73,6 +75,11 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 async function main(): Promise<void> {
+    if (process.argv[2] === "workflow") {
+        const result = await runHeadlessWorkflow(parseHeadlessWorkflowArgs(process.argv.slice(3)));
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+        return;
+    }
     if (process.argv[2] === "--workflow-smoke") {
         await runCompiledWorkflowSmoke();
         return;
