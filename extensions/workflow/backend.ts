@@ -9,6 +9,7 @@ import {
     MAX_WORKFLOW_ID,
     type WorkflowActivityV1,
     type WorkflowAgentSummaryV1,
+    type WorkflowLimitsV1,
     type WorkflowRunSummaryV1,
     type WorkflowUsageV1,
 } from "./protocol.js";
@@ -31,6 +32,7 @@ const MAX_SCRIPT_BYTES = 64 * 1024,
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
     LARGE_RUN_WARNING_AGENTS = 25,
+    MAX_SHELL_INVOCATIONS = 1_000,
     MAX_SHELL_OUTPUT_BYTES = 128 * 1024;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const INTERRUPTION_WARNING = "Workflow interrupted by host shutdown; resume after restart.";
@@ -72,7 +74,7 @@ export interface WorkflowLaunch {
     args?: unknown;
     sessionId: string;
     cwd: string;
-    limits?: Partial<typeof DEFAULT_WORKFLOW_LIMITS>;
+    limits?: Partial<WorkflowLimitsV1>;
     parentRunId?: string;
     /** Internal replay seed, journaled before the new run executes. */
     seedCompletions?: ReadonlyMap<string, unknown>;
@@ -653,6 +655,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             let buffer = "",
                 pending = 0,
                 agents = 0,
+                shells = 0,
                 phaseId: string | undefined,
                 ready = false,
                 lastBeat = now();
@@ -757,6 +760,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         active.summary.recentActivity = active.summary.recentActivity.slice(-20);
                         publish(active);
                     } else if (frame.method === "shell") {
+                        if (++shells > MAX_SHELL_INVOCATIONS) throw new Error("Workflow shell cap exceeded.");
                         if (
                             typeof frame.identity !== "string" ||
                             frame.identity.length > 1024 ||
@@ -832,6 +836,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         const controller = new AbortController(),
                             signal = AbortSignal.any([active.controller.signal, controller.signal]);
                         let timer: NodeJS.Timeout | undefined;
+                        const release = await active.semaphore.acquire(active.controller.signal);
                         try {
                             const timeout = new Promise<never>((_, reject) => {
                                     timer = setTimeout(() => {
@@ -869,6 +874,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             throw error;
                         } finally {
                             if (timer) clearTimeout(timer);
+                            release();
                             publish(active);
                         }
                     } else if (frame.method === "agent") {

@@ -269,6 +269,50 @@ return value;`;
         expect(backend.inspect(runId).run.recentActivity.at(-1)?.title).toContain("process.stdout.write");
         await backend.shutdown();
     });
+    test("limits concurrent shell commands", async () => {
+        let active = 0;
+        let peak = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async () => {
+                active++;
+                peak = Math.max(peak, active);
+                await Bun.sleep(20);
+                active--;
+                return { exitCode: 0, stdout: "", stderr: "" };
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "bounded shells",
+            script: `return await parallel([shell("a"), shell("b"), shell("c"), shell("d")])`,
+            sessionId: "s",
+            cwd: process.cwd(),
+            limits: { maxConcurrency: 2 },
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(peak).toBe(2);
+        await backend.shutdown();
+    });
+    test("caps shell invocations", async () => {
+        let executions = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async () => {
+                executions++;
+                return { exitCode: 0, stdout: "", stderr: "" };
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "capped shells",
+            script: `for (let i = 0; i < 1001; i++) await shell(String(i))`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "failed");
+        expect(executions).toBe(1_000);
+        expect(backend.inspect(runId).run.error).toContain("shell cap exceeded");
+        await backend.shutdown();
+    });
     test.skipIf(process.platform === "win32")("times out shell commands and reaps their process groups", async () => {
         const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-shell-timeout-"));
         const pidFile = path.join(temp, "descendant.pid");
@@ -278,7 +322,7 @@ return value;`;
                 name: "shell timeout",
                 script: `await shell(${JSON.stringify(
                     `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`,
-                )}, { timeoutMs: 100 })`,
+                )}, { timeoutMs: 500 })`,
                 sessionId: "s",
                 cwd: process.cwd(),
             });
