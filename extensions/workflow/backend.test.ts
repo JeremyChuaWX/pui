@@ -310,6 +310,9 @@ return result;`;
         ).rejects.toThrow("unsupported in strip-only mode");
         await backend.shutdown();
     });
+    test("accepts unsupported TypeScript keywords inside regex literals", () => {
+        expect(() => preflightWorkflow(`return /enum Direction/.test("enum Direction");`)).not.toThrow();
+    });
     test("executes JavaScript metadata source unchanged and retains exact source bytes", async () => {
         const source = `export const meta = {
     name: "review",

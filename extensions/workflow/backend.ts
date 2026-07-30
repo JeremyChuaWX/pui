@@ -300,7 +300,7 @@ export function preflightWorkflow(
     if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
     const executable = executableWorkflowScript(script, entrypoint);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
-    const sourceCode = executableCode(executable);
+    const sourceCode = maskRegexLiterals(executableCode(executable));
     if (
         /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
         /\b(?:namespace|module)\s+[A-Za-z_$]/.test(sourceCode) ||
