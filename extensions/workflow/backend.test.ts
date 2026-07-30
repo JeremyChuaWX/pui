@@ -55,6 +55,8 @@ describe("workflow backend", () => {
             ),
         ).not.toThrow();
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
+        expect(() => preflightWorkflow("let value = 1; value++ / fetch('https://x')")).toThrow("forbidden");
+        expect(() => preflightWorkflow("let value = 1; value -- / process.pid")).toThrow("forbidden");
     });
     test("preflight ignores forbidden names in erasable type declarations", () => {
         const script = `interface RuntimeShape { fetch: unknown; process: unknown; }
@@ -449,6 +451,7 @@ return result;`;
                 `class Item { constructor(public value: number) {} }\nreturn new Item(1);`,
                 `namespace Items { export const value = 1 }\nreturn Items.value;`,
                 `@sealed class Item {}\nreturn new Item();`,
+                `class Service { constructor(@Inject private value: Value) {} }`,
             ],
             backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
         for (const script of scripts) expect(() => preflightWorkflow(script)).toThrow("unsupported in strip-only mode");

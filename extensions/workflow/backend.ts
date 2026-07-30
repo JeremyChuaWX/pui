@@ -183,6 +183,7 @@ function regexLiteralStartsAt(
     const rawPrefix = script.slice(0, index),
         prefix = rawPrefix.trimEnd();
     if (!prefix || followsStatement) return true;
+    if (/(?:\+\+|--)\s*$/.test(prefix)) return false;
     const previous = prefix.at(-1);
     if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
     if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
@@ -345,7 +346,7 @@ export function preflightWorkflow(
     if (
         /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
         /\bmodule\s+[A-Za-z_$]/.test(sourceCode) ||
-        /(^|[\s;{}])@[A-Za-z_$]/m.test(sourceCode) ||
+        /@[A-Za-z_$]/.test(sourceCode) ||
         /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[#A-Za-z_$]/.test(sourceCode)
     )
         throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
