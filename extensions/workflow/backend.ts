@@ -47,9 +47,13 @@ export interface AgentResult {
     usage?: Partial<WorkflowUsageV1>;
 }
 export type AgentExecutor = (request: AgentRequest) => Promise<AgentResult>;
+export type WorkflowEntrypoint = "script" | "function";
+
 export interface WorkflowLaunch {
     name: string;
     script: string;
+    /** Script bodies are the compatibility default; workflow files use an exported function. */
+    entrypoint?: WorkflowEntrypoint;
     args?: unknown;
     sessionId: string;
     cwd: string;
@@ -151,6 +155,24 @@ const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {})
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
+function regexLiteralStartsAt(
+    script: string,
+    index: number,
+    previousWord: string | undefined,
+    followsStatement: boolean,
+): boolean {
+    const rawPrefix = script.slice(0, index),
+        prefix = rawPrefix.trimEnd();
+    if (!prefix || followsStatement) return true;
+    const previous = prefix.at(-1);
+    if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
+    if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
+    return (
+        previousWord !== undefined &&
+        /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord)
+    );
+}
+
 function executableCode(source: string): string {
     const output = [...source];
     let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code",
@@ -199,10 +221,84 @@ function executableCode(source: string): string {
     return output.join("");
 }
 
-export function preflightWorkflow(script: string): { phases: string[]; agents: number } {
+/** Mask regex literals after comments, strings, and static template text have already been removed. */
+function maskRegexLiterals(source: string): string {
+    const output = [...source],
+        controlParens: boolean[] = [],
+        declarationParens: boolean[] = [],
+        blockBraces: boolean[] = [];
+    let previousWord: string | undefined;
+    let functionDeclarationPending = false;
+    let declarationBlockPending = false;
+    let followsControlCondition = false;
+    for (let index = 0; index < source.length; index++) {
+        const character = source[index];
+        if (character === "/" && regexLiteralStartsAt(source, index, previousWord, followsControlCondition)) {
+            const start = index;
+            let characterClass = false;
+            for (index++; index < source.length; index++) {
+                if (source[index] === "\\") index++;
+                else if (source[index] === "[") characterClass = true;
+                else if (source[index] === "]") characterClass = false;
+                else if (source[index] === "/" && !characterClass) break;
+            }
+            while (/[a-z]/i.test(source[index + 1] ?? "")) index++;
+            for (let masked = start; masked <= index && masked < output.length; masked++)
+                if (output[masked] !== "\n" && output[masked] !== "\r") output[masked] = " ";
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (/[A-Za-z_$]/.test(character)) {
+            const end = /^[\w$]*/.exec(source.slice(index + 1))?.[0].length ?? 0;
+            previousWord = source.slice(index, index + end + 1);
+            if (previousWord === "function" || previousWord === "class") {
+                const prefix = source.slice(0, index).trimEnd(),
+                    declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
+                if (previousWord === "function")
+                    functionDeclarationPending =
+                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
+                else declarationBlockPending = declarationPrefix.test(prefix);
+            }
+            followsControlCondition = false;
+            index += end;
+        } else if (character === "(") {
+            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
+            declarationParens.push(functionDeclarationPending);
+            functionDeclarationPending = false;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "{") {
+            blockBraces.push(
+                declarationBlockPending ||
+                    followsControlCondition ||
+                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
+                    !source.slice(0, index).trim(),
+            );
+            declarationBlockPending = false;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === ")") {
+            followsControlCondition = controlParens.pop() ?? false;
+            declarationBlockPending ||= declarationParens.pop() ?? false;
+            previousWord = undefined;
+        } else if (character === "}") {
+            previousWord = undefined;
+            followsControlCondition = blockBraces.pop() ?? false;
+        } else if (!/\s/.test(character)) {
+            previousWord = undefined;
+            followsControlCondition = false;
+        }
+    }
+    return output.join("");
+}
+
+export function preflightWorkflow(
+    script: string,
+    entrypoint: WorkflowEntrypoint = "script",
+): { phases: string[]; agents: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
-    const executable = executableWorkflowScript(script);
+    if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
+    const executable = executableWorkflowScript(script, entrypoint);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
     if (/\benum\s+[A-Za-z_$]/.test(executableCode(executable)))
         throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
@@ -211,7 +307,9 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
     // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
-    const code = executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${executable}\n})()`));
+    const code = maskRegexLiterals(
+        executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${executable}\n})()`)),
+    );
     if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
         phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
@@ -318,12 +416,12 @@ function schemaValid(value: unknown, schema: unknown): boolean {
 
 // The only cross-realm value retained by VM code is this closure's bridge. Its callable wrappers
 // and every value visible to workflow code are created by the context itself.
-const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,occ=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse);globalThis.phase=n=>call("phase",{name:n});globalThis.log=x=>call("log",{message:String(x)});globalThis.agent=(prompt,options={})=>{const site=String(new Error().stack||"").split("\\n")[2]?.trim().slice(0,512)||"unknown",n=(occ.get(site)||0)+1;occ.set(site,n);return call("agent",{prompt,options},site+"#"+n)};globalThis.parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries);globalThis.pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out};globalThis.args=parse(__args);delete globalThis.__bridge;delete globalThis.__args})()`;
+const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,occ=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse),phase=n=>call("phase",{name:n}),log=x=>call("log",{message:String(x)}),agent=(prompt,options={})=>{const site=String(new Error().stack||"").split("\\n")[2]?.trim().slice(0,512)||"unknown",n=(occ.get(site)||0)+1;occ.set(site,n);return call("agent",{prompt,options},site+"#"+n)},parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries),pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out},workflowArgs=parse(__args),workflowContext=Object.freeze({phase,log,agent,parallel,pipeline});Object.assign(globalThis,{phase,log,agent,parallel,pipeline,args:workflowArgs,__puiWorkflowContext:workflowContext,__puiWorkflowArgs:workflowArgs});delete globalThis.__bridge;delete globalThis.__args})()`;
 const WORKER_SOURCE = String.raw`import vm from "node:vm";import {stripTypeScriptTypes} from "node:module";
 const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map();
 process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(String(m.error).slice(0,2000))}}}});
 const host=json=>new Promise((resolve,reject)=>{let request;try{request=JSON.parse(json)}catch(e){reject(e);return}const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,...request})});
-async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{const wrapped='(async()=>{'+m.script+'\n})()';const source=stripTypeScriptTypes(wrapped,{mode:"strip"});const result=await new vm.Script(source,{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e).slice(0,2000)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
+async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{if(m.entrypoint!=="script"&&m.entrypoint!=="function")throw new Error("Invalid workflow entrypoint.");const wrapped=m.entrypoint==="function"?'(async(__puiWorkflowContext,__puiWorkflowArgs)=>{for(const key of ["phase","log","agent","parallel","pipeline","args","__puiWorkflowContext","__puiWorkflowArgs"])delete globalThis[key];'+m.script+'\n})(globalThis.__puiWorkflowContext,globalThis.__puiWorkflowArgs)':'(async()=>{'+m.script+'\n})()';const source=stripTypeScriptTypes(wrapped,{mode:"strip"});const result=await new vm.Script(source,{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e).slice(0,2000)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const home = fs.realpathSync(os.homedir()),
@@ -475,7 +573,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     if (ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow ready frame.");
                     ready = true;
                     lastBeat = now();
-                    send({ v: 1, t: "start", script: executableWorkflowScript(input.script), args: input.args });
+                    send({
+                        v: 1,
+                        t: "start",
+                        script: executableWorkflowScript(input.script, input.entrypoint ?? "script"),
+                        args: input.args,
+                        entrypoint: input.entrypoint ?? "script",
+                    });
                     return;
                 }
                 if (frame.t === "heartbeat") {
@@ -866,7 +970,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     input.cwd.length > 4_000
                 )
                     throw new Error("Invalid workflow launch metadata.");
-                preflightWorkflow(input.script);
+                preflightWorkflow(input.script, input.entrypoint);
                 input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
                 checkCancelled();
                 if (shuttingDown) throw new Error("Workflow backend is shutting down.");
@@ -944,6 +1048,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             sessionId: input.sessionId,
                             cwd: durableCwd,
                             script: input.script,
+                            entrypoint: input.entrypoint ?? "script",
                             args: input.args,
                             policy: options.policy ?? {},
                             roles: options.policy?.roles ?? [],
@@ -1024,6 +1129,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     input: {
                         name: stored.launch.name,
                         script: stored.launch.script,
+                        entrypoint: stored.launch.entrypoint,
                         args: stored.launch.args,
                         sessionId: stored.launch.sessionId,
                         cwd: stored.launch.cwd,

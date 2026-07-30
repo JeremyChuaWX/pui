@@ -191,7 +191,7 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
     const start = declaration.index,
         tail = script.slice(start);
     const expression = new RegExp(
-        String.raw`^export\s+const\s+meta\s*=\s*\{\s*name\s*:\s*${JS_STRING}\s*,\s*description\s*:\s*${JS_STRING}\s*,?\s*\}\s*;?`,
+        String.raw`^export\s+const\s+meta\s*=\s*\{\s*name\s*:\s*${JS_STRING}\s*,\s*description\s*:\s*${JS_STRING}\s*,?\s*\}(?:\s+satisfies\s+WorkflowMetadata)?\s*;?`,
     ).exec(tail);
     if (!expression)
         throw new Error(
@@ -206,10 +206,172 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
     return { name, description, declarationStart: start, declarationEnd: start + expression[0].length };
 }
 
-export function executableWorkflowScript(script: string): string {
-    if (!hasWorkflowMetadata(script)) return script;
-    const meta = parseWorkflowMetadata(script);
-    return script.slice(0, meta.declarationStart) + script.slice(meta.declarationEnd);
+export interface WorkflowEntrypoint {
+    name: string;
+    declarationStart: number;
+    exportEnd: number;
+    typeImports: { start: number; end: number }[];
+}
+
+function topLevel(code: string, offset: number): boolean {
+    let depth = 0;
+    for (let index = 0; index < offset; index++) {
+        if (code[index] === "{" || code[index] === "(" || code[index] === "[") depth++;
+        else if (code[index] === "}" || code[index] === ")" || code[index] === "]") depth--;
+    }
+    return depth === 0;
+}
+
+function workflowTypeImports(script: string, code: string): { start: number; end: number }[] {
+    const imports: { start: number; end: number }[] = [];
+    const pattern = /\bimport\s+type\s*\{[^{}]*\}\s+from\s*(["'])pui\/workflow\1\s*;?/g;
+    for (const match of script.matchAll(pattern))
+        if (match.index !== undefined && code.slice(match.index).startsWith("import") && topLevel(code, match.index))
+            imports.push({ start: match.index, end: match.index + match[0].length });
+    return imports;
+}
+
+/** Find and validate the sole default-exported workflow function without evaluating the file. */
+export function parseWorkflowEntrypoint(script: string, source = "workflow"): WorkflowEntrypoint {
+    const code = executableCode(script);
+    const exports = [...code.matchAll(/\bexport\b/g)].filter((match) => topLevel(code, match.index ?? 0));
+    const entries = [...code.matchAll(/\bexport\s+default\s+async\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g)].filter(
+        (match) => exports.some((candidate) => candidate.index === match.index),
+    );
+    if (entries.length !== 1)
+        throw new Error(`${source}: expected exactly one default-exported async function entrypoint.`);
+    const entry = entries[0];
+    if (!entry || entry.index === undefined || !entry[1]) throw new Error(`${source}: invalid workflow entrypoint.`);
+    const allowedMeta = metadataDeclarations(script);
+    if (exports.some((item) => item.index !== entry.index && !allowedMeta.some((meta) => meta.index === item.index)))
+        throw new Error(
+            `${source}: only the default async workflow function and optional export const meta may be exported.`,
+        );
+    const typeImports = workflowTypeImports(script, code);
+    if (
+        [...code.matchAll(/\bimport\b/g)].some(
+            (item) => item.index === undefined || !typeImports.some(({ start }) => start === item.index),
+        )
+    )
+        throw new Error(`${source}: only import type { ... } from "pui/workflow" is allowed.`);
+    const exportText = /export\s+default\s+/.exec(code.slice(entry.index));
+    if (!exportText) throw new Error(`${source}: invalid workflow entrypoint export.`);
+    return {
+        name: entry[1],
+        declarationStart: entry.index,
+        exportEnd: entry.index + exportText[0].length,
+        typeImports,
+    };
+}
+
+/** Mask comments, literals, and regexes while retaining source offsets. */
+function executableCode(script: string): string {
+    const output = [...script];
+    const mask = (start: number, end: number) => {
+        for (let index = start; index <= end && index < output.length; index++)
+            if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+    };
+    const controlParens: boolean[] = [];
+    const declarationParens: boolean[] = [];
+    const blockBraces: boolean[] = [];
+    let previousWord: string | undefined;
+    let functionDeclarationPending = false;
+    let declarationBlockPending = false;
+    let followsControlCondition = false;
+    for (let index = 0; index < script.length; index++) {
+        const start = index,
+            character = script[index],
+            next = script[index + 1];
+        if (character === "/" && next === "/") {
+            const newline = script.indexOf("\n", index + 2);
+            index = newline === -1 ? script.length - 1 : newline - 1;
+            mask(start, index);
+        } else if (character === "/" && next === "*") {
+            const end = script.indexOf("*/", index + 2);
+            index = end === -1 ? script.length - 1 : end + 1;
+            mask(start, index);
+        } else if (character === '"' || character === "'" || character === "`") {
+            const quote = character;
+            for (index++; index < script.length; index++) {
+                if (script[index] === "\\") index++;
+                else if (script[index] === quote) break;
+            }
+            mask(start, index);
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "/" && regexLiteralStartsAt(script, index, previousWord, followsControlCondition)) {
+            let characterClass = false;
+            for (index++; index < script.length; index++) {
+                if (script[index] === "\\") index++;
+                else if (script[index] === "[") characterClass = true;
+                else if (script[index] === "]") characterClass = false;
+                else if (script[index] === "/" && !characterClass) break;
+            }
+            while (/[a-z]/i.test(script[index + 1] ?? "")) index++;
+            mask(start, index);
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (/[A-Za-z_$]/.test(character)) {
+            const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
+            previousWord = script.slice(index, index + end + 1);
+            if (previousWord === "function" || previousWord === "class") {
+                const prefix = script.slice(0, index).trimEnd();
+                const declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
+                if (previousWord === "function")
+                    functionDeclarationPending =
+                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
+                else declarationBlockPending = declarationPrefix.test(prefix);
+            }
+            followsControlCondition = false;
+            index += end;
+        } else if (character === "(") {
+            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
+            declarationParens.push(functionDeclarationPending);
+            functionDeclarationPending = false;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === "{") {
+            blockBraces.push(
+                declarationBlockPending ||
+                    followsControlCondition ||
+                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
+                    !script.slice(0, index).trim(),
+            );
+            declarationBlockPending = false;
+            previousWord = undefined;
+            followsControlCondition = false;
+        } else if (character === ")") {
+            followsControlCondition = controlParens.pop() ?? false;
+            declarationBlockPending ||= declarationParens.pop() ?? false;
+            previousWord = undefined;
+        } else if (character === "}") {
+            previousWord = undefined;
+            followsControlCondition = blockBraces.pop() ?? false;
+        } else if (!/\s/.test(character)) {
+            previousWord = undefined;
+            followsControlCondition = false;
+        }
+    }
+    return output.join("");
+}
+
+/** Convert approved file source to an invocation, or leave a legacy inline body executable. */
+export function executableWorkflowScript(script: string, kind: "script" | "function" = "script"): string {
+    if (kind === "script") {
+        if (!hasWorkflowMetadata(script)) return script;
+        const meta = parseWorkflowMetadata(script);
+        return script.slice(0, meta.declarationStart) + script.slice(meta.declarationEnd);
+    }
+    const entry = parseWorkflowEntrypoint(script);
+    const meta = hasWorkflowMetadata(script) ? parseWorkflowMetadata(script) : undefined;
+    const removals = [
+        [entry.declarationStart, entry.exportEnd],
+        ...entry.typeImports.map(({ start, end }) => [start, end]),
+        ...(meta ? [[meta.declarationStart, meta.declarationEnd]] : []),
+    ].sort((a, b) => b[0] - a[0]);
+    let executable = script;
+    for (const [start, end] of removals) executable = executable.slice(0, start) + executable.slice(end);
+    return `${executable}\nreturn await ${entry.name}(__puiWorkflowContext, __puiWorkflowArgs);`;
 }
 
 export async function findRepositoryRoot(cwd: string): Promise<string | undefined> {
@@ -292,6 +454,7 @@ export async function readWorkflowFile(cwd: string, requestedPath: string): Prom
         } catch {
             throw new Error(`${canonicalPath}: workflow source must be valid UTF-8.`);
         }
+        parseWorkflowEntrypoint(script, canonicalPath);
         const meta = hasWorkflowMetadata(script) ? parseWorkflowMetadata(script, canonicalPath) : undefined;
         return {
             path: canonicalPath,

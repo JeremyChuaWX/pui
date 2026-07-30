@@ -44,6 +44,13 @@ describe("workflow backend", () => {
         expect(preflightWorkflow(script).agents).toBe(0);
         expect(() => preflightWorkflow("log(`ordinary $" + "{globalThis['pro'+'cess']}`)")).not.toThrow();
         expect(() => preflightWorkflow("log(`ordinary $" + "{process.env}`)")).toThrow("forbidden");
+        expect(() => preflightWorkflow("log(/process|import|fetch|[{}]/.source)")).not.toThrow();
+        expect(() =>
+            preflightWorkflow(
+                `const words = /process|import|export|[{}]/; export default async function workflow() { return words.source }`,
+                "function",
+            ),
+        ).not.toThrow();
         expect(() => preflightWorkflow("/* Function */ import('fs')")).toThrow("forbidden");
     });
     test("preflight ignores forbidden names in erasable type declarations", () => {
@@ -241,6 +248,35 @@ return value;`;
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
+    test("executes an exported workflow function with explicit frozen context and args", async () => {
+        const source = `import type { WorkflowContext } from "pui/workflow";
+export const meta = { name: "function-workflow", description: "Function workflow" };
+type Args = { topic: string };
+export default async function workflow(context: WorkflowContext, args: Args) {
+    const ambient = [typeof agent, typeof phase, typeof pipeline, typeof parallel, typeof log, typeof globalThis.args];
+    const result = await context.agent(\`Review \${args.topic}\`, { role: "explore" });
+    return { result, frozen: Object.isFrozen(context), ambient };
+}`;
+        const backend = createWorkflowBackend({
+            agentExecutor: async ({ prompt }) => ({ value: prompt.toUpperCase() }),
+        });
+        const { runId } = await backend.launch({
+            name: "function-workflow",
+            script: source,
+            entrypoint: "function",
+            args: { topic: "api" },
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({
+            result: "REVIEW API",
+            frozen: true,
+            ambient: ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
+        });
+        expect(backend.inspect(runId).script).toBe(source);
+        await backend.shutdown();
+    });
     test("executes erasable TypeScript syntax in strip-only mode", async () => {
         const source = `interface Item { value: number }
 type Result<T> = { item: T };
@@ -274,7 +310,7 @@ return result;`;
     name: "review",
     description: "Review changed files",
 };
-phase("Review");
+await phase("Review");
 return { ok: true, args };\n`;
         const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
         const { runId } = await backend.launch({

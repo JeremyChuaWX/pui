@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { WorkflowEntrypoint } from "./backend.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 import { findRepositoryRoot } from "./source.js";
@@ -17,6 +18,7 @@ export interface ImmutableRunLaunch {
     sessionId?: string;
     cwd?: string;
     script: string;
+    entrypoint?: WorkflowEntrypoint;
     args?: unknown;
     policy: unknown;
     roles: readonly string[];
@@ -247,8 +249,9 @@ export class WorkflowRunStorage {
             directory = path.join(project, id);
         await fs.promises.mkdir(directory, { mode: 0o700 });
         await fs.promises.chmod(directory, 0o700);
+        const sourceName = launch.entrypoint === "function" ? "workflow.ts" : "workflow.js";
         const files: [string, unknown][] = [
-            ["workflow.js", launch.script],
+            [sourceName, launch.script],
             ["args.json", launch.args ?? null],
             [
                 "launch.json",
@@ -257,6 +260,7 @@ export class WorkflowRunStorage {
                     name: launch.name,
                     sessionId: launch.sessionId,
                     cwd: launch.cwd,
+                    entrypoint: launch.entrypoint ?? "script",
                     policy: launch.policy,
                     roles: launch.roles,
                     models: launch.models,
@@ -268,7 +272,7 @@ export class WorkflowRunStorage {
         for (const [name, value] of files) {
             const handle = await fs.promises.open(path.join(directory, name), "wx", 0o600);
             try {
-                await handle.writeFile(name === "workflow.js" ? String(value) : json(value));
+                await handle.writeFile(name === sourceName ? String(value) : json(value));
                 await handle.sync();
             } finally {
                 await handle.close();
@@ -719,6 +723,14 @@ export class WorkflowRunStorage {
                         sessionId: meta.sessionId ?? snapshot.sessionId,
                         cwd: meta.cwd ?? snapshot.cwd,
                         script,
+                        entrypoint:
+                            meta.entrypoint === undefined || meta.entrypoint === "script"
+                                ? "script"
+                                : meta.entrypoint === "function"
+                                  ? "function"
+                                  : (() => {
+                                        throw new Error(`Invalid workflow entrypoint in ${entry.name}.`);
+                                    })(),
                         args,
                         policy: meta.policy,
                         roles: meta.roles ?? [],

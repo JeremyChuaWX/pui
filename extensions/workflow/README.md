@@ -2,14 +2,24 @@
 
 pui registers the bundled `workflow` tool by default. The tool accepts exactly one source: inline TypeScript (or its JavaScript subset) in `script`, or an explicit canonical `.ts` workflow file in `path`. `/workflow <path> [JSON args]` launches a `.ts` file directly, resolving relative paths from the current working directory; wrap paths containing spaces in single or double quotes. pui does not discover or save named definitions in fixed project or personal directories.
 
-Workflow TypeScript uses Node's built-in strip-only execution. It is not typechecked, does not read `tsconfig`, and does not support imports, TSX, enums, runtime namespaces, decorators, or any other syntax that requires transformation rather than type stripping.
+Workflow files are TypeScript modules with exactly one named, default-exported async function. pui invokes it as `workflow(context, args)`. The frozen context explicitly provides `agent`, `pipeline`, `parallel`, `phase`, and `log`; those capabilities are not ambient globals in file workflows. Inline scripts retain the existing globals and top-level `args` convenience.
 
 ```ts
+import type { WorkflowContext, WorkflowMetadata } from "pui/workflow";
+
 type ReviewArgs = { topic: string };
-export const meta = { name: "review-topic", description: "Review one topic" };
-const topic: string = (args as ReviewArgs).topic;
-return await agent(`Review ${topic}`, { role: "explore" });
+
+export const meta = {
+    name: "review-topic",
+    description: "Review one topic",
+} satisfies WorkflowMetadata;
+
+export default async function reviewTopic(context: WorkflowContext, args: ReviewArgs) {
+    return context.agent(`Review ${args.topic}`, { role: "explore" });
+}
 ```
+
+Workflow TypeScript uses Node's built-in strip-only execution. It is not typechecked and does not read `tsconfig`. The optional `import type { ... } from "pui/workflow"` declaration is removed before execution; runtime imports and all other imports are forbidden. TSX, enums, runtime namespaces, decorators, and other syntax requiring transformation rather than type stripping are unsupported.
 
 A file may optionally declare static `export const meta = { name: "...", description: "..." }` metadata; otherwise its display name falls back to the file's basename. Inline metadata is also optional and otherwise uses the inline-workflow fallback name. Exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts, then choose **Run once** or **Trust unchanged script in this project**. Approval applies to the canonical path and exact source bytes, so moving or changing a file requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. Scripts never run when confirmation is unavailable or denied.
 

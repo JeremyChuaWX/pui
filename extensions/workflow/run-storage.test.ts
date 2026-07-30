@@ -28,15 +28,23 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
     const storage = new WorkflowRunStorage(path.join(temp, "runs")),
         summary = makeSummary(project);
     try {
-        const source = "// approved source\nreturn { value: 'π' };\n";
+        const source = "// approved source\nexport default async function workflow() { return { value: 'π' }; }\n";
         const directory = await storage.create(
             project,
             "run-1",
-            { script: source, args: { x: 1 }, policy: {}, roles: [], models: [], limits: summary.limits },
+            {
+                script: source,
+                entrypoint: "function",
+                args: { x: 1 },
+                policy: {},
+                roles: [],
+                models: [],
+                limits: summary.limits,
+            },
             summary,
         );
-        expect(await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8")).toBe(source);
-        await expect(fs.promises.lstat(path.join(directory, "workflow.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await fs.promises.readFile(path.join(directory, "workflow.ts"), "utf8")).toBe(source);
+        await expect(fs.promises.lstat(path.join(directory, "workflow.js"))).rejects.toMatchObject({ code: "ENOENT" });
         await storage.complete(directory, "agent-1", { ok: true });
         await expect(storage.complete(directory, "agent/2", null)).rejects.toThrow("Invalid workflow operation");
         await expect(storage.complete(directory, `a${"x".repeat(256)}`, null)).rejects.toThrow(
@@ -44,6 +52,7 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         );
         const [run] = await storage.discover(project);
         expect(run?.launch.script).toBe(source);
+        expect(run?.launch.entrypoint).toBe("function");
         expect(run?.completions.get("agent-1")).toEqual({ ok: true });
         expect(await storage.claimDelivery(directory)).toBe(true);
         expect(await storage.claimDelivery(directory)).toBe(false);
@@ -72,6 +81,7 @@ test("discovers workflow.ts sources written by prior versions", async () => {
         const [stored] = await storage.discover(project);
         expect(stored?.corrupt).toBeUndefined();
         expect(stored?.launch.script).toBe(source);
+        expect(stored?.launch.entrypoint).toBe("script");
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }

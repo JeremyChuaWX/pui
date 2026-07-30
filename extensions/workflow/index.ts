@@ -37,7 +37,10 @@ const WorkflowParams = Type.Object({
         }),
     ),
     path: Type.Optional(
-        Type.String({ description: "Explicit workflow file path. Exactly one of script or path is required." }),
+        Type.String({
+            description:
+                "Explicit .ts workflow file exporting a default function. Exactly one of script or path is required.",
+        }),
     ),
     args: Type.Optional(Type.Unknown()),
 });
@@ -266,7 +269,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         const insideProject = relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
         if (repositoryRoot && insideProject && !ctx.isProjectTrusted?.())
             throw new Error(`Project workflow "${source.name}" is not trusted. Trust the project before running it.`);
-        const preview = preflightWorkflow(source.script);
+        const preview = preflightWorkflow(source.script, "function");
         await authorize(
             workflowApprovalKey(project, source.path, source.script),
             `Approve workflow file: ${source.name}`,
@@ -279,6 +282,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             {
                 name: source.name,
                 script: source.script,
+                entrypoint: "function",
                 args,
                 sessionId: launchSessionId,
                 cwd: canonical,
@@ -310,7 +314,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         name: "workflow",
         label: "Workflow",
         description:
-            "Approve and launch either an inline TypeScript script or an explicit .ts workflow file path with structured arguments (exactly one).",
+            "Approve and launch either an inline TypeScript script or an explicit .ts file exporting a workflow function (exactly one).",
         parameters: WorkflowParams,
         async execute(_id, params, _signal, _update, ctx) {
             const hasScript = params.script !== undefined;

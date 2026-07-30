@@ -86,7 +86,7 @@ Inline workflows accept TypeScript (and its JavaScript subset) using `agent`, `p
 
 ```ts
 type ReviewRequest = { user: string };
-phase("review");
+await phase("review");
 const reports: unknown[] = await parallel([
     agent("Review API", { role: "explore" }),
     agent("Review UI", { role: "explore" }),
@@ -96,7 +96,29 @@ return { reports, requestedBy: (args as ReviewRequest).user };
 
 The `workflow` tool accepts exactly one source: inline TypeScript in `script`, or an explicit canonical `.ts` workflow file in `path`. `/workflow <path> [JSON args]` launches a `.ts` file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
 
-File metadata is optional. A static `export const meta = { name: "review-pair", description: "Run two independent reviews" }` supplies the display name and description; without it, the name falls back to the file's basename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name. Workflow TypeScript runs through Node's built-in strip-only support: there is no typechecking or `tsconfig` processing, and imports, TSX, enums, runtime namespaces, decorators, and other transform-required syntax are unsupported.
+Workflow files default-export a named async function. pui calls it with a frozen explicit context and the supplied JSON arguments:
+
+```ts
+import type { WorkflowContext, WorkflowMetadata } from "pui/workflow";
+
+type ReviewRequest = { user: string };
+
+export const meta = {
+    name: "review-pair",
+    description: "Run two independent reviews",
+} satisfies WorkflowMetadata;
+
+export default async function reviewPair(context: WorkflowContext, args: ReviewRequest) {
+    await context.phase("review");
+    const reports = await context.parallel([
+        context.agent("Review API", { role: "explore" }),
+        context.agent("Review UI", { role: "explore" }),
+    ]);
+    return { reports, requestedBy: args.user };
+}
+```
+
+The context provides `agent`, `pipeline`, `parallel`, `phase`, and `log`; unlike inline scripts, file workflows do not receive those as ambient globals. File metadata is optional; without it, the display name falls back to the filename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name. Workflow TypeScript runs through Node's built-in strip-only support: there is no typechecking or `tsconfig` processing. The optional `pui/workflow` type-only import is erased before execution; runtime imports, other import sources, TSX, enums, runtime namespaces, decorators, and other transform-required syntax are unsupported.
 
 Every exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Then choose **Run once** or **Trust unchanged script in this project**. Approval is tied to the canonical file path and exact source, so moving or changing a file requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. File paths are explicit inputs, not implicit trust: the host reads the file and approval covers the bytes that will launch.
 
@@ -104,7 +126,7 @@ Use `/workflows` (or the command palette) to inspect runs and pause, resume, sto
 
 Private run artifacts are stored under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/` (exact source/arguments, snapshots, journal, result, and summary). On startup pui discovers interrupted runs and asks whether to resume, inspect, stop, or defer. Completed structural operations replay from the journal; an operation interrupted before durable completion runs again. Model, tool, and filesystem side effects are therefore **at least once**, not exactly once. Terminal result delivery uses a durable claim to suppress duplicates during ordinary recovery, but a crash between the external message send and recording delivery has an unavoidable duplicate-versus-loss window; it does not promise strict exactly-once delivery across that send.
 
-Defaults are 4 concurrent agents (configurable ceiling 16), a warning at 25 scheduled agents, 1,000 agents maximum, a 10-minute run/agent timeout, 128 MiB worker old-space, 64 KiB scripts, and 256 KiB worker protocol frames. Direct workflow shell, filesystem, environment, network, imports, child processes, and signals are unavailable. Scripts run in a separate permission-restricted Node process with a stripped VM realm, static preflight, bounded NDJSON, heartbeat supervision, and host-side RPC validation. This is a layered sandbox boundary—not a claim that `node:vm` or agent tool allowlists alone are OS sandboxes. Host agents remain trusted code with capabilities selected by role and policy.
+Defaults are 4 concurrent agents (configurable ceiling 16), a warning at 25 scheduled agents, 1,000 agents maximum, a 10-minute run/agent timeout, 128 MiB worker old-space, 64 KiB scripts, and 256 KiB worker protocol frames. Direct workflow shell, filesystem, environment, network, runtime imports, child processes, and signals are unavailable. Scripts run in a separate permission-restricted Node process with a stripped VM realm, static preflight, bounded NDJSON, heartbeat supervision, and host-side RPC validation. This is a layered sandbox boundary—not a claim that `node:vm` or agent tool allowlists alone are OS sandboxes. Host agents remain trusted code with capabilities selected by role and policy.
 
 Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is missing or the wrong version is found; ensure that path reports >=22.19 with `node --version`. If a run is interrupted, reopen `/workflows` and inspect its recovery artifact before resuming. Permission errors should be fixed by selecting a canonical external Node path, not by weakening Node permission flags.
 
