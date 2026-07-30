@@ -300,7 +300,13 @@ export function preflightWorkflow(
     if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
     const executable = executableWorkflowScript(script, entrypoint);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
-    if (/\benum\s+[A-Za-z_$]/.test(executableCode(executable)))
+    const sourceCode = executableCode(executable);
+    if (
+        /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
+        /\b(?:namespace|module)\s+[A-Za-z_$]/.test(sourceCode) ||
+        /(^|[\s;{}])@[A-Za-z_$]/m.test(sourceCode) ||
+        /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[#A-Za-z_$]/.test(sourceCode)
+    )
         throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
     // Defense in depth only: process isolation, Node permissions, a stripped realm, and host validation
     // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.

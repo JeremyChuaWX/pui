@@ -297,11 +297,16 @@ return result;`;
         await backend.shutdown();
     });
     test("rejects unsupported TypeScript during preflight", async () => {
-        const script = `enum Direction { fetch, Right }\nreturn Direction.fetch;`,
+        const scripts = [
+                `enum Direction { fetch, Right }\nreturn Direction.fetch;`,
+                `class Item { constructor(public value: number) {} }\nreturn new Item(1);`,
+                `namespace Items { export const value = 1 }\nreturn Items.value;`,
+                `@sealed class Item {}\nreturn new Item();`,
+            ],
             backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
-        expect(() => preflightWorkflow(script)).toThrow("unsupported in strip-only mode");
+        for (const script of scripts) expect(() => preflightWorkflow(script)).toThrow("unsupported in strip-only mode");
         await expect(
-            backend.launch({ name: "unsupported typescript", script, sessionId: "s", cwd: process.cwd() }),
+            backend.launch({ name: "unsupported typescript", script: scripts[1]!, sessionId: "s", cwd: process.cwd() }),
         ).rejects.toThrow("unsupported in strip-only mode");
         await backend.shutdown();
     });
