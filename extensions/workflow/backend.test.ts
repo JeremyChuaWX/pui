@@ -232,7 +232,40 @@ describe("workflow backend", () => {
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
-    test("executes documented multiline metadata source and retains exact source bytes", async () => {
+    test("executes erasable TypeScript syntax in strip-only mode", async () => {
+        const source = `interface Item { value: number }
+type Result<T> = { item: T };
+const identity = <T,>(value: T): T => value;
+const item: Item = { value: identity<number>(3) };
+const result = { item } satisfies Result<Item>;
+return result;`;
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "typescript",
+            script: source,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ item: { value: 3 } });
+        expect(backend.inspect(runId).script).toBe(source);
+        await backend.shutdown();
+    });
+    test("reports unsupported TypeScript as a bounded terminal diagnostic", async () => {
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "unsupported typescript",
+            script: `enum Direction { Left, Right }\nreturn Direction.Left;`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "failed");
+        const run = backend.inspect(runId).run;
+        expect(run.error).toMatch(/enum|TypeScript|strip/i);
+        expect(run.error!.length).toBeLessThanOrEqual(2_000);
+        await backend.shutdown();
+    });
+    test("executes JavaScript metadata source unchanged and retains exact source bytes", async () => {
         const source = `export const meta = {
     name: "review",
     description: "Review changed files",
@@ -252,11 +285,11 @@ return { ok: true, args };\n`;
         expect(backend.inspect(runId).script).toBe(source);
         await backend.shutdown();
     });
-    test("keeps VM constructors and RPC results in-realm without ambient authority", async () => {
+    test("keeps typed VM values, constructors, and RPC results in-realm without ambient authority", async () => {
         const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: { safe: true } }) });
         const { runId } = await backend.launch({
             name: "adversarial",
-            script: `const result=await agent("safe"); const probes=[agent,phase,log,pipeline,parallel,result,args]; const escaped=[]; for(const value of probes){try{escaped.push(value.constructor("return pro"+"cess")())}catch(e){escaped.push(null)}} let dynamic=false; try{({}).constructor.constructor("return pro"+"cess")()}catch(e){dynamic=true} return {escaped:escaped.every(x=>x===null),dynamic,globals:[globalThis["pro"+"cess"],globalThis["req"+"uire"],globalThis["fet"+"ch"],globalThis["Web"+"Socket"]].every(x=>x===undefined),builtin:typeof globalThis["pro"+"cess"]?.getBuiltinModule,kill:typeof globalThis["pro"+"cess"]?.kill};`,
+            script: `interface Safe { safe: boolean } type Probe = unknown; const result: Safe=await agent("safe"); const probes: Probe[]=[agent,phase,log,pipeline,parallel,result,args]; const escaped: unknown[]=[]; for(const value of probes){try{escaped.push((value as any).constructor("return pro"+"cess")())}catch(e){escaped.push(null)}} let dynamic: boolean=false; try{({}).constructor.constructor("return pro"+"cess")()}catch(e){dynamic=true} return {escaped:escaped.every(x=>x===null),dynamic,globals:[globalThis["pro"+"cess"],globalThis["req"+"uire"],globalThis["fet"+"ch"],globalThis["Web"+"Socket"]].every(x=>x===undefined),builtin:typeof globalThis["pro"+"cess"]?.getBuiltinModule,kill:typeof globalThis["pro"+"cess"]?.kill};`,
             args: {},
             sessionId: "s",
             cwd: process.cwd(),

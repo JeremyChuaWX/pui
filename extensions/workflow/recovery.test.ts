@@ -45,6 +45,10 @@ test("explicit stop is terminal and is not resumable after restart", async () =>
         await backendA.control(runId, "stop");
         await waitFor(() => backendA.inspect(runId).run.status === "cancelled");
         await backendA.shutdown();
+        const [durable] = await storage.discover(project);
+        expect(await fs.promises.readFile(path.join(durable!.directory, "workflow.ts"), "utf8")).toBe(
+            `return await agent("blocked")`,
+        );
 
         backendB = createWorkflowBackend({ storage, agentExecutor: async () => ({ value: "unexpected" }) });
         const initialized = await backendB.initialize!(project);
@@ -109,7 +113,7 @@ test("recovers from a durable completion without executing it twice", async () =
                 throw new Error("backend shutdown did not cooperatively stop");
             }),
         ]);
-        const [interruptedStored] = await storage.discover(project);
+        let [interruptedStored] = await storage.discover(project);
         expect(interruptedStored?.snapshot.status).toBe("paused");
         expect(interruptedStored?.snapshot.warning).toContain("resume after restart");
         expect(interruptedStored?.snapshot.endedAt).toBeUndefined();
@@ -120,6 +124,12 @@ test("recovers from a durable completion without executing it twice", async () =
             await fs.promises.stat(path.join(interruptedStored!.directory, "result.json")).catch(() => undefined),
         ).toBeUndefined();
         releaseHook();
+        await fs.promises.rename(
+            path.join(interruptedStored!.directory, "workflow.ts"),
+            path.join(interruptedStored!.directory, "workflow.js"),
+        );
+        [interruptedStored] = await storage.discover(project);
+        expect(interruptedStored?.corrupt).toBeUndefined();
 
         backendB = createWorkflowBackend({
             storage,

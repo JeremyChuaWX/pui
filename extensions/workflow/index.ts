@@ -31,7 +31,10 @@ import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWor
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
-        Type.String({ description: "Exact inline JavaScript orchestration script to approve and run." }),
+        Type.String({
+            description:
+                "Exact inline TypeScript orchestration script to approve and run (JavaScript is valid TypeScript).",
+        }),
     ),
     path: Type.Optional(
         Type.String({ description: "Explicit workflow file path. Exactly one of script or path is required." }),
@@ -307,7 +310,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         name: "workflow",
         label: "Workflow",
         description:
-            "Approve and launch either an inline script or an explicit workflow file path with structured arguments (exactly one).",
+            "Approve and launch either an inline TypeScript script or an explicit .ts workflow file path with structured arguments (exactly one).",
         parameters: WorkflowParams,
         async execute(_id, params, _signal, _update, ctx) {
             const hasScript = params.script !== undefined;

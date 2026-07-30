@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { workflowApprovalKey } from "./approval.js";
 import type { WorkflowBackend } from "./backend.js";
 import { registerWorkflowExtension } from "./index.js";
 
@@ -106,6 +107,7 @@ describe("workflow extension", () => {
     test("registration, confirmation, launch, events, deduplication, and shutdown", async () => {
         const f = fixture();
         expect(f.tool.name).toBe("workflow");
+        expect(f.tool.parameters.properties.script.description).toContain("TypeScript");
         await f.handlers.get("session_start")!(
             {},
             { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
@@ -205,9 +207,9 @@ describe("workflow extension", () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-command-"));
         try {
             await Promise.all([
-                fs.promises.writeFile(path.join(root, "single quoted.js"), "return args"),
-                fs.promises.writeFile(path.join(root, "double quoted.js"), "return args"),
-                fs.promises.writeFile(path.join(root, "plain.js"), "return args"),
+                fs.promises.writeFile(path.join(root, "single quoted.ts"), "return args"),
+                fs.promises.writeFile(path.join(root, "double quoted.ts"), "return args"),
+                fs.promises.writeFile(path.join(root, "plain.ts"), "return args"),
             ]);
             const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
             await f.handlers.get("session_start")!(
@@ -218,9 +220,9 @@ describe("workflow extension", () => {
             const context = { cwd: root, ui: { notify: (message: string) => notifications.push(message) } };
             await f.command.handler("   ", context);
             expect(notifications).toEqual(["Usage: /workflow <path> [JSON args]"]);
-            await f.command.handler(`'single quoted.js' {"quote":"single"}`, context);
-            await f.command.handler(`"double quoted.js" {"quote":"double"}`, context);
-            await f.command.handler(`plain.js {"quote":"none"}`, context);
+            await f.command.handler(`'single quoted.ts' {"quote":"single"}`, context);
+            await f.command.handler(`"double quoted.ts" {"quote":"double"}`, context);
+            await f.command.handler(`plain.ts {"quote":"none"}`, context);
             expect(f.launches.map(({ name, args }) => ({ name, args }))).toEqual([
                 { name: "single-quoted", args: { quote: "single" } },
                 { name: "double-quoted", args: { quote: "double" } },
@@ -238,13 +240,13 @@ describe("workflow extension", () => {
         const approval = new Promise<boolean>((resolve) => (resolveApproval = resolve)),
             confirmationPending = new Promise<void>((resolve) => (markConfirmationPending = resolve));
         try {
-            await fs.promises.writeFile(path.join(root, "pending.js"), "return 1");
+            await fs.promises.writeFile(path.join(root, "pending.ts"), "return 1");
             const f = fixture({ approvalStore: { has: async () => false, add: async () => {} } });
             await f.handlers.get("session_start")!(
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
             );
-            const launch = f.tool.execute("id", { path: "pending.js" }, undefined, undefined, {
+            const launch = f.tool.execute("id", { path: "pending.ts" }, undefined, undefined, {
                 cwd: root,
                 ui: {
                     confirm: () => {
@@ -302,7 +304,7 @@ describe("workflow extension", () => {
     test("launches an explicit file outside a repository without project trust", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-file-"));
         try {
-            await fs.promises.writeFile(path.join(root, "plain workflow.js"), "return args");
+            await fs.promises.writeFile(path.join(root, "plain workflow.ts"), "return args");
             const f = fixture({
                 approvalStore: { has: async () => false, add: async () => {} },
             });
@@ -310,7 +312,7 @@ describe("workflow extension", () => {
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
             );
-            await f.tool.execute("id", { path: "plain workflow.js", args: { x: 1 } }, undefined, undefined, {
+            await f.tool.execute("id", { path: "plain workflow.ts", args: { x: 1 } }, undefined, undefined, {
                 cwd: root,
                 isProjectTrusted: () => false,
                 ui: { confirm: () => true },
@@ -371,8 +373,9 @@ describe("workflow extension", () => {
         };
         try {
             await fs.promises.mkdir(path.join(root, ".git"));
-            const file = path.join(root, "demo.js");
-            await fs.promises.writeFile(file, `export const meta={name:"demo",description:"Demo"}; return args`);
+            const file = path.join(root, "demo.ts");
+            const exactScript = `\uFEFFexport const meta={name:"demo",description:"Demo"};\r\nconst value: unknown = args;\r\nreturn value`;
+            await fs.promises.writeFile(file, Buffer.from(exactScript, "utf8"));
             const f = fixture({ approvalStore });
             await f.handlers.get("session_start")!(
                 {},
@@ -384,19 +387,18 @@ describe("workflow extension", () => {
                 ui: { confirm: () => true, select: () => "Trust unchanged script in this project", notify: () => {} },
             };
             await expect(
-                f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context),
+                f.tool.execute("id", { path: "demo.ts", args: { x: 1 } }, undefined, undefined, context),
             ).rejects.toThrow("not trusted");
             context.isProjectTrusted = () => true;
-            await f.tool.execute("id", { path: "demo.js", args: { x: 1 } }, undefined, undefined, context);
-            expect(f.launches.at(-1)).toMatchObject({
-                name: "demo",
-                args: { x: 1 },
-                script: expect.stringContaining("return args"),
-            });
+            await f.tool.execute("id", { path: "demo.ts", args: { x: 1 } }, undefined, undefined, context);
+            expect(f.launches.at(-1)).toMatchObject({ name: "demo", args: { x: 1 }, script: exactScript });
+            expect(keys).toContain(
+                workflowApprovalKey(await fs.promises.realpath(root), await fs.promises.realpath(file), exactScript),
+            );
             const approved = keys.size;
-            await f.command.handler(`demo.js {"from":"command"}`, context);
+            await f.command.handler(`demo.ts {"from":"command"}`, context);
             expect(keys.size).toBe(approved);
-            const moved = path.join(root, "moved.js");
+            const moved = path.join(root, "moved.ts");
             await fs.promises.copyFile(file, moved);
             await f.tool.execute("id", { path: moved }, undefined, undefined, context);
             expect(keys.size).toBe(approved + 1);

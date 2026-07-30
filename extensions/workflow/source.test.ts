@@ -8,14 +8,14 @@ describe("workflow file source", () => {
     test("resolves and canonicalizes paths, reads metadata, and derives a filename name", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-source-"));
         try {
-            const plain = path.join(root, "My workflow.js");
+            const plain = path.join(root, "My workflow.ts");
             await fs.promises.writeFile(plain, "return args");
-            expect(await readWorkflowFile(root, "My workflow.js")).toMatchObject({
+            expect(await readWorkflowFile(root, "My workflow.ts")).toMatchObject({
                 path: await fs.promises.realpath(plain),
                 name: "my-workflow",
                 script: "return args",
             });
-            const metadata = path.join(root, "other.js");
+            const metadata = path.join(root, "other.ts");
             await fs.promises.writeFile(metadata, `export const meta={name:"demo",description:"Demo"}; return 1`);
             expect(await readWorkflowFile("/", metadata)).toMatchObject({ name: "demo", description: "Demo" });
             const symlink = path.join(root, "linked.js");
@@ -26,17 +26,47 @@ describe("workflow file source", () => {
         }
     });
 
+    test("requires the canonical target to have exactly a .ts extension", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-source-"));
+        try {
+            for (const extension of [".js", ".tsx", ".mts", ".cts"]) {
+                const file = path.join(root, `workflow${extension}`);
+                await fs.promises.writeFile(file, "return 1");
+                await expect(readWorkflowFile(root, file)).rejects.toThrow("must use the .ts extension");
+            }
+            const target = path.join(root, "target.js");
+            const alias = path.join(root, "alias.ts");
+            await fs.promises.writeFile(target, "return 1");
+            await fs.promises.symlink(target, alias);
+            await expect(readWorkflowFile(root, alias)).rejects.toThrow(target);
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    test("preserves exact valid UTF-8 source, including a BOM", async () => {
+        const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-source-"));
+        try {
+            const file = path.join(root, "exact.ts");
+            const script = `\uFEFFconst greeting: string = "héllo";\r\nreturn greeting`;
+            await fs.promises.writeFile(file, Buffer.from(script, "utf8"));
+            expect((await readWorkflowFile(root, file)).script).toBe(script);
+        } finally {
+            await fs.promises.rm(root, { recursive: true, force: true });
+        }
+    });
+
     test("requires a regular file and enforces the exact byte limit", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-wf-source-"));
         try {
             await expect(readWorkflowFile(root, ".")).rejects.toThrow("regular file");
-            await expect(readWorkflowFile(root, "missing.js")).rejects.toThrow();
-            const file = path.join(root, "large.js");
+            await expect(readWorkflowFile(root, "missing.ts")).rejects.toThrow();
+            const file = path.join(root, "large.ts");
             await fs.promises.writeFile(file, "é".repeat(MAX_WORKFLOW_SOURCE_BYTES / 2));
             expect((await readWorkflowFile(root, file)).script).toHaveLength(MAX_WORKFLOW_SOURCE_BYTES / 2);
             await fs.promises.appendFile(file, "x");
             await expect(readWorkflowFile(root, file)).rejects.toThrow("64 KiB");
-            const invalid = path.join(root, "invalid.js");
+            const invalid = path.join(root, "invalid.ts");
             await fs.promises.writeFile(invalid, Buffer.from([0xff]));
             await expect(readWorkflowFile(root, invalid)).rejects.toThrow("valid UTF-8");
         } finally {
@@ -50,8 +80,8 @@ describe("workflow file source", () => {
         ).toMatchObject({ name: "demo" });
         expect(() => parseWorkflowMetadata("return 1")).toThrow("exactly one");
         expect(() =>
-            parseWorkflowMetadata(`export const meta={name:'demo',description:'bad\\q'}`, "example.js"),
-        ).toThrow("example.js: meta contains an unsupported string escape \\q");
+            parseWorkflowMetadata(`export const meta={name:'demo',description:'bad\\q'}`, "example.ts"),
+        ).toThrow("example.ts: meta contains an unsupported string escape \\q");
     });
 
     test("ignores metadata-like text outside a top-level declaration", () => {

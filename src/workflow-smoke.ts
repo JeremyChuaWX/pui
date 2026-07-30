@@ -36,7 +36,7 @@ export async function runCompiledWorkflowSmoke(): Promise<void> {
     try {
         const completed = await manager.launch({
             name: "compiled-smoke",
-            script: `return await parallel([agent("left",{role:"explore"}),agent("right",{role:"explore"})])`,
+            script: `const tasks: unknown[] = [agent("left",{role:"explore"}),agent("right",{role:"explore"})]; return await parallel(tasks)`,
             sessionId: "compiled-smoke",
             cwd: project,
         });
@@ -44,7 +44,7 @@ export async function runCompiledWorkflowSmoke(): Promise<void> {
         await waitFor(() => deliveries === 1);
         const stopped = await manager.launch({
             name: "compiled-stop",
-            script: `await agent("wait",{role:"explore"})`,
+            script: `const prompt: string = "wait"; await agent(prompt,{role:"explore"})`,
             sessionId: "compiled-smoke",
             cwd: project,
         });

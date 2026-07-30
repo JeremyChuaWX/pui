@@ -272,6 +272,8 @@ export async function readWorkflowFile(cwd: string, requestedPath: string): Prom
     if (!handle || !stat) throw new Error(`Workflow path changed while opening: ${resolved}`);
     try {
         if (!stat.isFile()) throw new Error(`Workflow path is not a regular file: ${canonicalPath}`);
+        if (path.extname(canonicalPath) !== ".ts")
+            throw new Error(`${canonicalPath}: workflow files must use the .ts extension (rename this file to .ts).`);
         if (stat.size > MAX_WORKFLOW_SOURCE_BYTES)
             throw new Error(`${canonicalPath}: workflow exceeds the 64 KiB limit.`);
         const buffer = Buffer.allocUnsafe(MAX_WORKFLOW_SOURCE_BYTES + 1);
@@ -286,7 +288,7 @@ export async function readWorkflowFile(cwd: string, requestedPath: string): Prom
         const bytes = buffer.subarray(0, byteLength);
         let script: string;
         try {
-            script = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            script = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
         } catch {
             throw new Error(`${canonicalPath}: workflow source must be valid UTF-8.`);
         }

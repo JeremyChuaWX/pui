@@ -82,17 +82,21 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 
 Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
 
-An inline workflow is JavaScript using `agent`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
+Inline workflows accept TypeScript (and its JavaScript subset) using `agent`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
 
-```js
+```ts
+type ReviewRequest = { user: string };
 phase("review");
-const reports = await parallel([agent("Review API", { role: "explore" }), agent("Review UI", { role: "explore" })]);
-return { reports, requestedBy: args.user };
+const reports: unknown[] = await parallel([
+    agent("Review API", { role: "explore" }),
+    agent("Review UI", { role: "explore" }),
+]);
+return { reports, requestedBy: (args as ReviewRequest).user };
 ```
 
-The `workflow` tool accepts exactly one source: inline JavaScript in `script`, or an explicit workflow file in `path`. `/workflow <path> [JSON args]` launches a file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
+The `workflow` tool accepts exactly one source: inline TypeScript in `script`, or an explicit canonical `.ts` workflow file in `path`. `/workflow <path> [JSON args]` launches a `.ts` file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
 
-File metadata is optional. A static `export const meta = { name: "review-pair", description: "Run two independent reviews" }` supplies the display name and description; without it, the name falls back to the file's basename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name.
+File metadata is optional. A static `export const meta = { name: "review-pair", description: "Run two independent reviews" }` supplies the display name and description; without it, the name falls back to the file's basename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name. Workflow TypeScript runs through Node's built-in strip-only support: there is no typechecking or `tsconfig` processing, and imports, TSX, enums, runtime namespaces, decorators, and other transform-required syntax are unsupported.
 
 Every exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Then choose **Run once** or **Trust unchanged script in this project**. Approval is tied to the canonical file path and exact source, so moving or changing a file requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. File paths are explicit inputs, not implicit trust: the host reads the file and approval covers the bytes that will launch.
 

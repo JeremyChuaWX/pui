@@ -28,19 +28,22 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
     const storage = new WorkflowRunStorage(path.join(temp, "runs")),
         summary = makeSummary(project);
     try {
+        const source = "// approved source\nreturn { value: 'π' };\n";
         const directory = await storage.create(
             project,
             "run-1",
-            { script: "return 1", args: { x: 1 }, policy: {}, roles: [], models: [], limits: summary.limits },
+            { script: source, args: { x: 1 }, policy: {}, roles: [], models: [], limits: summary.limits },
             summary,
         );
+        expect(await fs.promises.readFile(path.join(directory, "workflow.ts"), "utf8")).toBe(source);
+        await expect(fs.promises.lstat(path.join(directory, "workflow.js"))).rejects.toMatchObject({ code: "ENOENT" });
         await storage.complete(directory, "agent-1", { ok: true });
         await expect(storage.complete(directory, "agent/2", null)).rejects.toThrow("Invalid workflow operation");
         await expect(storage.complete(directory, `a${"x".repeat(256)}`, null)).rejects.toThrow(
             "Invalid workflow operation",
         );
         const [run] = await storage.discover(project);
-        expect(run?.launch.script).toBe("return 1");
+        expect(run?.launch.script).toBe(source);
         expect(run?.completions.get("agent-1")).toEqual({ ok: true });
         expect(await storage.claimDelivery(directory)).toBe(true);
         expect(await storage.claimDelivery(directory)).toBe(false);
@@ -51,6 +54,52 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
+test("discovers legacy workflow.js sources", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-legacy-source-")),
+        project = path.join(temp, "project"),
+        storage = new WorkflowRunStorage(path.join(temp, "runs"));
+    await fs.promises.mkdir(project);
+    try {
+        const source = "return 'legacy';\n",
+            directory = await storage.create(
+                project,
+                "run-1",
+                { script: source, policy: {}, roles: [], models: [], limits: {} },
+                makeSummary(project),
+            );
+        await fs.promises.rename(path.join(directory, "workflow.ts"), path.join(directory, "workflow.js"));
+
+        const [stored] = await storage.discover(project);
+        expect(stored?.corrupt).toBeUndefined();
+        expect(stored?.launch.script).toBe(source);
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
+test("fails closed when both workflow source filenames exist", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-ambiguous-source-")),
+        project = path.join(temp, "project"),
+        storage = new WorkflowRunStorage(path.join(temp, "runs"));
+    await fs.promises.mkdir(project);
+    try {
+        const directory = await storage.create(
+            project,
+            "run-1",
+            { script: "return 'typescript';", policy: {}, roles: [], models: [], limits: {} },
+            makeSummary(project),
+        );
+        await fs.promises.writeFile(path.join(directory, "workflow.js"), "return 'legacy';");
+
+        const [stored] = await storage.discover(project);
+        expect(stored?.corrupt).toBe(true);
+        expect(stored?.snapshot.error).toContain("Ambiguous");
+        expect(stored?.launch.script).toBe("");
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("does not steal a competing live claim and explicitly recovers an interrupted claim", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-claims-")),
         project = path.join(temp, "project"),

@@ -248,7 +248,7 @@ export class WorkflowRunStorage {
         await fs.promises.mkdir(directory, { mode: 0o700 });
         await fs.promises.chmod(directory, 0o700);
         const files: [string, unknown][] = [
-            ["workflow.js", launch.script],
+            ["workflow.ts", launch.script],
             ["args.json", launch.args ?? null],
             [
                 "launch.json",
@@ -268,7 +268,7 @@ export class WorkflowRunStorage {
         for (const [name, value] of files) {
             const handle = await fs.promises.open(path.join(directory, name), "wx", 0o600);
             try {
-                await handle.writeFile(name === "workflow.js" ? String(value) : json(value));
+                await handle.writeFile(name === "workflow.ts" ? String(value) : json(value));
                 await handle.sync();
             } finally {
                 await handle.close();
@@ -594,11 +594,24 @@ export class WorkflowRunStorage {
         for (const entry of entries) {
             if (!entry.isDirectory() || !RUN_ID.test(entry.name)) continue;
             try {
-                const directory = await this.assertDirectory(path.join(project, entry.name));
-                const scriptStat = await fs.promises.lstat(path.join(directory, "workflow.js"));
-                if (scriptStat.isSymbolicLink() || scriptStat.size > MAX_ARTIFACT)
+                const directory = await this.assertDirectory(path.join(project, entry.name)),
+                    sourceFiles = await Promise.all(
+                        ["workflow.ts", "workflow.js"].map(async (name) => {
+                            const file = path.join(directory, name);
+                            try {
+                                return { file, stat: await fs.promises.lstat(file) };
+                            } catch (error) {
+                                if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+                                throw error;
+                            }
+                        }),
+                    ),
+                    sources = sourceFiles.filter((source) => source !== undefined),
+                    source = sources.length === 1 ? sources[0] : undefined;
+                if (!source) throw new Error(`Ambiguous or missing workflow source in ${entry.name}.`);
+                if (source.stat.isSymbolicLink() || !source.stat.isFile() || source.stat.size > MAX_ARTIFACT)
                     throw new Error(`Unsafe workflow source in ${entry.name}.`);
-                const script = await fs.promises.readFile(path.join(directory, "workflow.js"), "utf8"),
+                const script = await fs.promises.readFile(source.file, "utf8"),
                     args = await boundedJson(path.join(directory, "args.json")),
                     meta = await boundedJson<
                         Partial<Omit<ImmutableRunLaunch, "script" | "args">> & {
