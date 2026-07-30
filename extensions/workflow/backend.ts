@@ -310,6 +310,27 @@ function maskRegexLiterals(source: string): string {
     return output.join("");
 }
 
+function eraseTypeOnlyNamespaces(source: string): string {
+    const code = maskRegexLiterals(executableCode(source)),
+        output = [...source];
+    for (const match of code.matchAll(/\bnamespace\s+[A-Za-z_$][\w$]*\s*\{/g)) {
+        const start = match.index,
+            open = start + match[0].lastIndexOf("{");
+        let depth = 1,
+            end = open + 1;
+        while (end < code.length && depth) {
+            if (code[end] === "{") depth++;
+            else if (code[end] === "}") depth--;
+            end++;
+        }
+        if (depth || new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end)).trim())
+            throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
+        for (let index = start; index < end; index++)
+            if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+    }
+    return output.join("");
+}
+
 export function preflightWorkflow(
     script: string,
     entrypoint: WorkflowEntrypoint = "script",
@@ -317,12 +338,13 @@ export function preflightWorkflow(
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
     if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
-    const executable = executableWorkflowScript(script, entrypoint);
+    const executable = executableWorkflowScript(script, entrypoint),
+        erasableExecutable = eraseTypeOnlyNamespaces(executable);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
     const sourceCode = maskRegexLiterals(executableCode(executable));
     if (
         /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
-        /\b(?:namespace|module)\s+[A-Za-z_$]/.test(sourceCode) ||
+        /\bmodule\s+[A-Za-z_$]/.test(sourceCode) ||
         /(^|[\s;{}])@[A-Za-z_$]/m.test(sourceCode) ||
         /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[#A-Za-z_$]/.test(sourceCode)
     )
@@ -333,7 +355,7 @@ export function preflightWorkflow(
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
     // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
     const code = maskRegexLiterals(
-        executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${executable}\n})()`)),
+        executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`)),
     );
     if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {

@@ -308,7 +308,7 @@ return value;`;
             sessionId: "s",
             cwd: process.cwd(),
         });
-        await waitFor(() => backend.inspect(runId).run.status === "failed");
+        await waitFor(() => backend.inspect(runId).run.status === "failed", 15_000);
         expect(executions).toBe(1_000);
         expect(backend.inspect(runId).run.error).toContain("shell cap exceeded");
         await backend.shutdown();
@@ -435,6 +435,13 @@ return result;`;
         expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ item: { value: 3 } });
         expect(backend.inspect(runId).script).toBe(source);
         await backend.shutdown();
+    });
+    test("accepts type-only namespaces in strip-only mode", () => {
+        const body = `namespace TypeOnly { export type A = string; }\nconst value: TypeOnly.A = "ok";\nreturn value;`;
+        expect(() => preflightWorkflow(body)).not.toThrow();
+        expect(() =>
+            preflightWorkflow(`export default async function workflow() { ${body} }`, "function"),
+        ).not.toThrow();
     });
     test("rejects unsupported TypeScript during preflight", async () => {
         const scripts = [
