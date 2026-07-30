@@ -203,6 +203,9 @@ export function preflightWorkflow(script: string): { phases: string[]; agents: n
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
     const executable = executableWorkflowScript(script);
+    // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
+    if (/\benum\s+[A-Za-z_$]/.test(executableCode(executable)))
+        throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
     // Defense in depth only: process isolation, Node permissions, a stripped realm, and host validation
     // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.
     const forbidden =

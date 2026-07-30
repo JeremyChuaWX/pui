@@ -94,9 +94,10 @@ test("recovers from a durable completion without executing it twice", async () =
     let backendB: ReturnType<typeof createWorkflowBackend> | undefined;
 
     try {
+        const blockingScript = `const first=await agent("first"); const second=await agent("second"); return {first,second}`;
         const { runId } = await backendA.launch({
             name: "recovery",
-            script: `const first=await agent("first"); const second=await agent("second"); return {first,second}`,
+            script: blockingScript,
             sessionId: "recovery-test",
             cwd: project,
         });
@@ -130,6 +131,7 @@ test("recovers from a durable completion without executing it twice", async () =
         );
         [interruptedStored] = await storage.discover(project);
         expect(interruptedStored?.corrupt).toBeUndefined();
+        expect(interruptedStored?.launch.script).toBe(blockingScript);
 
         backendB = createWorkflowBackend({
             storage,

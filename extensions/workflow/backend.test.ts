@@ -260,18 +260,13 @@ return result;`;
         expect(backend.inspect(runId).script).toBe(source);
         await backend.shutdown();
     });
-    test("reports unsupported TypeScript as a bounded terminal diagnostic", async () => {
-        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
-        const { runId } = await backend.launch({
-            name: "unsupported typescript",
-            script: `enum Direction { Left, Right }\nreturn Direction.Left;`,
-            sessionId: "s",
-            cwd: process.cwd(),
-        });
-        await waitFor(() => backend.inspect(runId).run.status === "failed");
-        const run = backend.inspect(runId).run;
-        expect(run.error).toMatch(/enum|TypeScript|strip/i);
-        expect(run.error!.length).toBeLessThanOrEqual(2_000);
+    test("rejects unsupported TypeScript during preflight", async () => {
+        const script = `enum Direction { fetch, Right }\nreturn Direction.fetch;`,
+            backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        expect(() => preflightWorkflow(script)).toThrow("unsupported in strip-only mode");
+        await expect(
+            backend.launch({ name: "unsupported typescript", script, sessionId: "s", cwd: process.cwd() }),
+        ).rejects.toThrow("unsupported in strip-only mode");
         await backend.shutdown();
     });
     test("executes JavaScript metadata source unchanged and retains exact source bytes", async () => {
