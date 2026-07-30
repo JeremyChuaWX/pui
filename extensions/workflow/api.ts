@@ -18,10 +18,23 @@ export interface WorkflowPipelineOptions {
     concurrency?: number;
 }
 
+export interface WorkflowShellOptions {
+    timeoutMs?: number;
+    env?: Record<string, string>;
+}
+
+export interface WorkflowShellResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+}
+
 export interface WorkflowContext {
     readonly phase: (name: string) => Promise<void>;
     readonly log: (message: unknown) => Promise<void>;
     readonly agent: <T = unknown>(prompt: string, options?: WorkflowAgentOptions) => Promise<T>;
+    /** Run a platform-shell command in the workflow cwd; nonzero exits are returned normally. */
+    readonly shell: (command: string, options?: WorkflowShellOptions) => Promise<WorkflowShellResult>;
     readonly parallel: {
         <T>(items: readonly (T | PromiseLike<T>)[]): Promise<T[]>;
         <T extends Record<string, unknown>>(items: { [K in keyof T]: T[K] | PromiseLike<T[K]> }): Promise<T>;

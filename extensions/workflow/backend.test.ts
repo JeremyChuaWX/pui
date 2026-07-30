@@ -34,9 +34,12 @@ describe("workflow backend", () => {
             "fetch('https://x')",
         ])
             expect(() => preflightWorkflow(script)).toThrow("forbidden");
-        expect(preflightWorkflow("phase('one'); for(let i=0;i<2;i++) await agent(String(i))")).toEqual({
+        expect(
+            preflightWorkflow("phase('one'); for(let i=0;i<2;i++) await agent(String(i)); await shell('true')"),
+        ).toEqual({
             phases: ["one"],
             agents: 1,
+            shells: 1,
         });
     });
     test("preflight ignores inert capability words but scans template expressions", () => {
@@ -248,17 +251,109 @@ return value;`;
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
+    test("runs host shell commands directly and returns nonzero exits", async () => {
+        const node = await resolveWorkflowNode();
+        const executable = process.platform === "win32" ? `"${node}"` : JSON.stringify(node);
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        const { runId } = await backend.launch({
+            name: "shell",
+            script: `return await shell(${JSON.stringify(
+                `${executable} -e "process.stdout.write('out');process.stderr.write('err');process.exitCode=3"`,
+            )})`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "succeeded");
+        expect(JSON.parse(backend.inspect(runId).result!)).toEqual({ exitCode: 3, stdout: "out", stderr: "err" });
+        expect(backend.inspect(runId).run.agents).toEqual([]);
+        expect(backend.inspect(runId).run.recentActivity.at(-1)?.title).toContain("process.stdout.write");
+        await backend.shutdown();
+    });
+    test.skipIf(process.platform === "win32")("times out shell commands and reaps their process groups", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "workflow-shell-timeout-"));
+        const pidFile = path.join(temp, "descendant.pid");
+        const backend = createWorkflowBackend({ agentExecutor: async () => ({ value: null }) });
+        try {
+            const { runId } = await backend.launch({
+                name: "shell timeout",
+                script: `await shell(${JSON.stringify(
+                    `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`,
+                )}, { timeoutMs: 100 })`,
+                sessionId: "s",
+                cwd: process.cwd(),
+            });
+            await waitFor(() => backend.inspect(runId).run.status === "failed");
+            expect(backend.inspect(runId).run.error).toContain("timed out");
+            const pid = Number(await fs.promises.readFile(pidFile, "utf8"));
+            let running = true;
+            for (let attempt = 0; attempt < 50 && running; attempt++) {
+                try {
+                    process.kill(pid, 0);
+                    await Bun.sleep(20);
+                } catch {
+                    running = false;
+                }
+            }
+            expect(running).toBe(false);
+        } finally {
+            await backend.shutdown();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+    test("journals shell results and validates options before execution", async () => {
+        let calls = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => ({ value: null }),
+            shellExecutor: async ({ command, cwd, env, timeoutMs }) => {
+                calls++;
+                expect({ command, cwd, env, timeoutMs }).toEqual({
+                    command: "verify",
+                    cwd: process.cwd(),
+                    env: { MODE: "test" },
+                    timeoutMs: 250,
+                });
+                return { exitCode: 7, stdout: "checked", stderr: "warning" };
+            },
+        });
+        const launched = await backend.launch({
+            name: "shell replay",
+            script: `return await shell("verify", { timeoutMs: 250, env: { MODE: "test" } })`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(launched.runId).run.status === "succeeded");
+        const retried = await backend.control(launched.runId, "retry");
+        await waitFor(() => Boolean(retried?.runId && backend.inspect(retried.runId).run.status === "succeeded"));
+        expect(calls).toBe(1);
+
+        const invalid = await backend.launch({
+            name: "invalid shell",
+            script: `await shell("verify", { env: { BAD: 1 } })`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(invalid.runId).run.status === "failed");
+        expect(backend.inspect(invalid.runId).run.error).toContain("environment");
+        expect(calls).toBe(1);
+        await backend.shutdown();
+    });
     test("executes an exported workflow function with explicit frozen context and args", async () => {
         const source = `import type { WorkflowContext } from "pui/workflow";
 export const meta = { name: "function-workflow", description: "Function workflow" };
 type Args = { topic: string };
 export default async function workflow(context: WorkflowContext, args: Args) {
-    const ambient = [typeof agent, typeof phase, typeof pipeline, typeof parallel, typeof log, typeof globalThis.args];
+    const ambient = [typeof agent, typeof shell, typeof phase, typeof pipeline, typeof parallel, typeof log, typeof globalThis.args];
     const result = await context.agent(\`Review \${args.topic}\`, { role: "explore" });
-    return { result, frozen: Object.isFrozen(context), ambient };
+    const command = await context.shell("check", { timeoutMs: 123, env: { TOPIC: args.topic } });
+    return { result, command, frozen: Object.isFrozen(context), ambient };
 }`;
         const backend = createWorkflowBackend({
             agentExecutor: async ({ prompt }) => ({ value: prompt.toUpperCase() }),
+            shellExecutor: async ({ command, timeoutMs, env }) => ({
+                exitCode: 0,
+                stdout: `${command}:${timeoutMs}:${env?.TOPIC}`,
+                stderr: "",
+            }),
         });
         const { runId } = await backend.launch({
             name: "function-workflow",
@@ -271,8 +366,9 @@ export default async function workflow(context: WorkflowContext, args: Args) {
         await waitFor(() => backend.inspect(runId).run.status === "succeeded");
         expect(JSON.parse(backend.inspect(runId).result!)).toEqual({
             result: "REVIEW API",
+            command: { exitCode: 0, stdout: "check:123:api", stderr: "" },
             frozen: true,
-            ambient: ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
+            ambient: ["undefined", "undefined", "undefined", "undefined", "undefined", "undefined", "undefined"],
         });
         expect(backend.inspect(runId).script).toBe(source);
         await backend.shutdown();

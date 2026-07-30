@@ -110,13 +110,14 @@ describe("workflow extension", () => {
     test("registration, confirmation, launch, events, deduplication, and shutdown", async () => {
         const f = fixture();
         expect(f.tool.name).toBe("workflow");
+        expect(f.tool.description).toContain("shell()");
         expect(f.tool.parameters.properties.script.description).toContain("TypeScript");
         await f.handlers.get("session_start")!(
             {},
             { cwd: process.cwd(), sessionManager: { getSessionId: () => "session-1" } },
         );
         expect(f.emitted.at(-1)?.[1].type).toBe("ready");
-        const script = "return await agent('exact')";
+        const script = "await agent('exact'); return await shell('check')";
         let confirmation = "";
         await expect(
             f.tool.execute("id", { script }, undefined, undefined, {
@@ -130,6 +131,8 @@ describe("workflow extension", () => {
             }),
         ).rejects.toThrow("denied");
         expect(confirmation).toContain(script);
+        expect(confirmation).toContain("Visible agent calls: 1");
+        expect(confirmation).toContain("Visible shell calls: 1");
         expect(f.launches).toHaveLength(0);
         await f.tool.execute("id", { script }, undefined, undefined, {
             cwd: process.cwd(),

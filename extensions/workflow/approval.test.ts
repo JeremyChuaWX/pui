@@ -1,13 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FileWorkflowApprovalStore } from "./approval.js";
+import { FileWorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 
 const temporary = () => fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-approvals-"));
 
 describe("FileWorkflowApprovalStore", () => {
+    test("versions approval keys when workflow host capabilities change", () => {
+        const script = "return 1";
+        const legacyHash = createHash("sha256").update(Buffer.from(script)).digest("hex");
+        const key = workflowApprovalKey("project", "source", script);
+        expect(key).not.toEndWith(legacyHash);
+        expect(key).toBe(workflowApprovalKey("project", "source", script));
+    });
+
     test("rejects parent and file symlinks", async () => {
         const root = await temporary();
         try {

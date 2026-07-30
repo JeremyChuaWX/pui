@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
 import {
     MAX_WORKFLOW_ID,
+    type WorkflowActivityV1,
     type WorkflowAgentSummaryV1,
     type WorkflowRunSummaryV1,
     type WorkflowUsageV1,
@@ -29,7 +30,8 @@ const MAX_SCRIPT_BYTES = 64 * 1024,
     STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
-    LARGE_RUN_WARNING_AGENTS = 25;
+    LARGE_RUN_WARNING_AGENTS = 25,
+    MAX_SHELL_OUTPUT_BYTES = 128 * 1024;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const INTERRUPTION_WARNING = "Workflow interrupted by host shutdown; resume after restart.";
 
@@ -47,6 +49,19 @@ export interface AgentResult {
     usage?: Partial<WorkflowUsageV1>;
 }
 export type AgentExecutor = (request: AgentRequest) => Promise<AgentResult>;
+export interface ShellRequest {
+    command: string;
+    cwd: string;
+    env?: Record<string, string>;
+    signal: AbortSignal;
+    timeoutMs: number;
+}
+export interface ShellResult {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+}
+export type ShellExecutor = (request: ShellRequest) => Promise<ShellResult>;
 export type WorkflowEntrypoint = "script" | "function";
 
 export interface WorkflowLaunch {
@@ -70,6 +85,8 @@ export interface WorkflowHostPolicy {
 }
 export interface WorkflowBackendOptions {
     agentExecutor: AgentExecutor;
+    /** Trusted host command runner. Defaults to the platform shell in the workflow cwd. */
+    shellExecutor?: ShellExecutor;
     nodePath?: string;
     environment?: NodeJS.ProcessEnv;
     eventSink?: (run: WorkflowRunSummaryV1) => void;
@@ -294,7 +311,7 @@ function maskRegexLiterals(source: string): string {
 export function preflightWorkflow(
     script: string,
     entrypoint: WorkflowEntrypoint = "script",
-): { phases: string[]; agents: number } {
+): { phases: string[]; agents: number; shells: number } {
     if (!script.trim()) throw new Error("Workflow script must not be empty.");
     if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
     if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
@@ -322,6 +339,7 @@ export function preflightWorkflow(
             .map((m) => m[2] ?? "")
             .slice(0, 100),
         agents: [...executable.matchAll(/\bagent\s*\(/g)].length,
+        shells: [...executable.matchAll(/\bshell\s*\(/g)].length,
     };
 }
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
@@ -388,6 +406,79 @@ export async function resolveWorkflowNode(
         `Workflows require an external Node >=22.19. Set PUI_WORKFLOW_NODE. Attempts: ${failures.join("; ") || "none"}`,
     );
 }
+
+function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
+    if (request.signal.aborted) return Promise.reject(new Error("Shell command was cancelled."));
+    return new Promise((resolve, reject) => {
+        const child = spawn(request.command, {
+            cwd: request.cwd,
+            env: { ...environment, ...request.env },
+            shell: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            detached: process.platform !== "win32",
+            windowsHide: true,
+        });
+        let stdout = "",
+            stderr = "",
+            settled = false,
+            closed = false,
+            terminationReason: "cancelled" | "timed_out" | "output" | undefined,
+            killTimer: NodeJS.Timeout | undefined,
+            spawnError: Error | undefined;
+        const sendSignal = (signal: NodeJS.Signals) => {
+            if (closed) return;
+            try {
+                process.platform !== "win32" && child.pid ? process.kill(-child.pid, signal) : child.kill(signal);
+            } catch {}
+        };
+        const terminate = (reason: NonNullable<typeof terminationReason>) => {
+            if (terminationReason || closed) return;
+            terminationReason = reason;
+            sendSignal("SIGTERM");
+            killTimer = setTimeout(() => sendSignal("SIGKILL"), 500);
+            killTimer.unref();
+        };
+        const finish = (error?: Error, result?: ShellResult) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (killTimer) clearTimeout(killTimer);
+            request.signal.removeEventListener("abort", abort);
+            if (error) reject(error);
+            else if (result) resolve(result);
+            else reject(new Error("Shell command returned no result."));
+        };
+        const abort = () => terminate("cancelled");
+        const append = (stream: "stdout" | "stderr", chunk: string) => {
+            if (terminationReason === "output") return;
+            if (stream === "stdout") stdout += chunk;
+            else stderr += chunk;
+            if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > MAX_SHELL_OUTPUT_BYTES) terminate("output");
+        };
+        const timer = setTimeout(() => terminate("timed_out"), request.timeoutMs);
+        request.signal.addEventListener("abort", abort, { once: true });
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => append("stdout", chunk));
+        child.stderr?.on("data", (chunk: string) => append("stderr", chunk));
+        child.once("error", (error) => {
+            spawnError = error;
+        });
+        child.once("close", (code) => {
+            // The platform shell can exit while one of its descendants ignores SIGTERM.
+            if (terminationReason) sendSignal("SIGKILL");
+            closed = true;
+            if (spawnError) finish(spawnError);
+            else if (terminationReason === "cancelled") finish(new Error("Shell command was cancelled."));
+            else if (terminationReason === "timed_out") finish(new Error("Shell command timed out."));
+            else if (terminationReason === "output")
+                finish(new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`));
+            else finish(undefined, { exitCode: code ?? 1, stdout, stderr });
+        });
+        if (request.signal.aborted) abort();
+    });
+}
+
 function validateSchema(schema: unknown, depth = 0, state = { nodes: 0, properties: 0 }): void {
     if (depth > 16 || ++state.nodes > 1_000) throw new Error("Agent schema exceeds complexity limits.");
     if (schema === null || typeof schema === "string" || typeof schema === "boolean" || typeof schema === "number")
@@ -422,12 +513,14 @@ function schemaValid(value: unknown, schema: unknown): boolean {
 
 // The only cross-realm value retained by VM code is this closure's bridge. Its callable wrappers
 // and every value visible to workflow code are created by the context itself.
-const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,occ=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse),phase=n=>call("phase",{name:n}),log=x=>call("log",{message:String(x)}),agent=(prompt,options={})=>{const site=String(new Error().stack||"").split("\\n")[2]?.trim().slice(0,512)||"unknown",n=(occ.get(site)||0)+1;occ.set(site,n);return call("agent",{prompt,options},site+"#"+n)},parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries),pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out},workflowArgs=parse(__args),workflowContext=Object.freeze({phase,log,agent,parallel,pipeline});Object.assign(globalThis,{phase,log,agent,parallel,pipeline,args:workflowArgs,__puiWorkflowContext:workflowContext,__puiWorkflowArgs:workflowArgs});delete globalThis.__bridge;delete globalThis.__args})()`;
+const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,agentOcc=new Map(),shellOcc=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse),site=()=>String(new Error().stack||"").split("\\n")[4]?.trim().slice(0,512)||"unknown",identity=occ=>{const s=site(),n=(occ.get(s)||0)+1;occ.set(s,n);return s+"#"+n},phase=n=>call("phase",{name:n}),log=x=>call("log",{message:String(x)}),agent=(prompt,options={})=>call("agent",{prompt,options},identity(agentOcc)),shell=(command,options={})=>call("shell",{command,options},identity(shellOcc)),parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries),pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out},workflowArgs=parse(__args),workflowContext=Object.freeze({phase,log,agent,shell,parallel,pipeline});Object.assign(globalThis,{phase,log,agent,shell,parallel,pipeline,args:workflowArgs,__puiWorkflowContext:workflowContext,__puiWorkflowArgs:workflowArgs});delete globalThis.__bridge;delete globalThis.__args})()`;
+// The function-entrypoint prefix keeps its historical byte length: stack columns feed durable agent identities.
+// Using `let` and `this` below exactly offsets the added `"shell",` entry.
 const WORKER_SOURCE = String.raw`import vm from "node:vm";import {stripTypeScriptTypes} from "node:module";
 const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map();
 process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(String(m.error).slice(0,2000))}}}});
 const host=json=>new Promise((resolve,reject)=>{let request;try{request=JSON.parse(json)}catch(e){reject(e);return}const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,...request})});
-async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{if(m.entrypoint!=="script"&&m.entrypoint!=="function")throw new Error("Invalid workflow entrypoint.");const wrapped=m.entrypoint==="function"?'(async(__puiWorkflowContext,__puiWorkflowArgs)=>{for(const key of ["phase","log","agent","parallel","pipeline","args","__puiWorkflowContext","__puiWorkflowArgs"])delete globalThis[key];'+m.script+'\n})(globalThis.__puiWorkflowContext,globalThis.__puiWorkflowArgs)':'(async()=>{'+m.script+'\n})()';const source=stripTypeScriptTypes(wrapped,{mode:"strip"});const result=await new vm.Script(source,{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e).slice(0,2000)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
+async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);try{if(m.entrypoint!=="script"&&m.entrypoint!=="function")throw new Error("Invalid workflow entrypoint.");const wrapped=m.entrypoint==="function"?'(async(__puiWorkflowContext,__puiWorkflowArgs)=>{for(let key of ["phase","log","agent","shell","parallel","pipeline","args","__puiWorkflowContext","__puiWorkflowArgs"])delete this[key];'+m.script+'\n})(globalThis.__puiWorkflowContext,globalThis.__puiWorkflowArgs)':'(async()=>{'+m.script+'\n})()';const source=stripTypeScriptTypes(wrapped,{mode:"strip"});const result=await new vm.Script(source,{timeout:1000}).runInContext(context,{timeout:1000});send({t:"terminal",ok:true,json:JSON.stringify(result)})}catch(e){send({t:"terminal",ok:false,error:String(e?.message||e).slice(0,2000)})}}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const home = fs.realpathSync(os.homedir()),
@@ -444,7 +537,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     relativeToHome === "" || (!relativeToHome.startsWith("..") && !path.isAbsolute(relativeToHome))
                         ? home
                         : undefined,
-            });
+            }),
+        shellExecutor =
+            options.shellExecutor ??
+            ((request: ShellRequest) => runWorkflowShell(request, options.environment ?? process.env));
     let shuttingDown = false,
         pendingLaunches = 0,
         pendingLaunchWaiter: (() => void) | undefined;
@@ -620,7 +716,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     !ready ||
                     typeof frame.id !== "string" ||
                     typeof frame.method !== "string" ||
-                    !(frame.method === "agent"
+                    !(["agent", "shell"].includes(frame.method)
                         ? exact(frame, ["v", "t", "id", "method", "value", "identity"])
                         : exact(frame, ["v", "t", "id", "method", "value"])) ||
                     ++pending > MAX_PENDING
@@ -660,6 +756,121 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         });
                         active.summary.recentActivity = active.summary.recentActivity.slice(-20);
                         publish(active);
+                    } else if (frame.method === "shell") {
+                        if (
+                            typeof frame.identity !== "string" ||
+                            frame.identity.length > 1024 ||
+                            !frame.identity.includes("#")
+                        )
+                            throw new Error("Invalid workflow operation identity.");
+                        const operationId = `shell-${createHash("sha256").update(frame.identity).digest("hex")}`.slice(
+                            0,
+                            MAX_WORKFLOW_ID,
+                        );
+                        if (active.completions.has(operationId)) {
+                            value = structuredClone(active.completions.get(operationId));
+                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                            return;
+                        }
+                        await waitWhilePaused(active);
+                        if (!frame.value || typeof frame.value !== "object" || Array.isArray(frame.value))
+                            throw new Error("Invalid shell request.");
+                        const request = frame.value as Record<string, unknown>,
+                            command = request.command,
+                            rawOptions = request.options;
+                        if (
+                            Object.keys(request).some((key) => !["command", "options"].includes(key)) ||
+                            typeof command !== "string" ||
+                            !command.trim() ||
+                            Buffer.byteLength(command) > 8_000 ||
+                            !rawOptions ||
+                            typeof rawOptions !== "object" ||
+                            Array.isArray(rawOptions)
+                        )
+                            throw new Error("Invalid shell request.");
+                        const opts = rawOptions as Record<string, unknown>;
+                        if (
+                            Object.keys(opts).some((key) => !["timeoutMs", "env"].includes(key)) ||
+                            (opts.timeoutMs !== undefined &&
+                                (!Number.isFinite(opts.timeoutMs) || (opts.timeoutMs as number) <= 0)) ||
+                            (opts.env !== undefined &&
+                                (!opts.env || typeof opts.env !== "object" || Array.isArray(opts.env)))
+                        )
+                            throw new Error("Invalid or unknown shell option.");
+                        let env: Record<string, string> | undefined;
+                        if (opts.env !== undefined) {
+                            const entries = Object.entries(opts.env as Record<string, unknown>);
+                            if (
+                                entries.length > 128 ||
+                                entries.some(
+                                    ([key, item]) =>
+                                        !key ||
+                                        key.length > 256 ||
+                                        key.includes("=") ||
+                                        key.includes("\0") ||
+                                        typeof item !== "string" ||
+                                        Buffer.byteLength(item) > 8_000,
+                                )
+                            )
+                                throw new Error("Invalid shell environment override.");
+                            env = Object.fromEntries(entries) as Record<string, string>;
+                        }
+                        bounded(opts);
+                        const timeoutMs = Math.min(
+                                DEFAULT_WORKFLOW_LIMITS.timeoutMs,
+                                Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
+                            ),
+                            activity: WorkflowActivityV1 = {
+                                sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
+                                timestamp: now(),
+                                kind: "tool" as const,
+                                title: `$ ${command}`.slice(0, 2000),
+                            };
+                        active.summary.recentActivity.push(activity);
+                        active.summary.recentActivity = active.summary.recentActivity.slice(-20);
+                        publish(active);
+                        const controller = new AbortController(),
+                            signal = AbortSignal.any([active.controller.signal, controller.signal]);
+                        let timer: NodeJS.Timeout | undefined;
+                        try {
+                            const timeout = new Promise<never>((_, reject) => {
+                                    timer = setTimeout(() => {
+                                        controller.abort();
+                                        reject(new Error("Shell command timed out."));
+                                    }, timeoutMs);
+                                }),
+                                operation = Promise.resolve(
+                                    shellExecutor({ command, cwd: input.cwd, env, signal, timeoutMs }),
+                                );
+                            active.cooperativeTasks.add(operation);
+                            operation.finally(() => active.cooperativeTasks.delete(operation)).catch(() => {});
+                            const result = await Promise.race([operation, timeout]);
+                            if (
+                                !result ||
+                                typeof result !== "object" ||
+                                Array.isArray(result) ||
+                                Object.keys(result).some((key) => !["exitCode", "stdout", "stderr"].includes(key)) ||
+                                !Number.isInteger(result.exitCode) ||
+                                result.exitCode < 0 ||
+                                typeof result.stdout !== "string" ||
+                                typeof result.stderr !== "string" ||
+                                Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) >
+                                    MAX_SHELL_OUTPUT_BYTES
+                            )
+                                throw new Error("Shell executor returned an invalid or oversized result.");
+                            value = result;
+                            bounded(value);
+                            if (active.directory)
+                                await options.storage?.complete(active.directory, operationId, value, now());
+                            active.completions.set(operationId, structuredClone(value));
+                            await options.afterDurableCompletion?.(operationId);
+                        } catch (error) {
+                            activity.isError = true;
+                            throw error;
+                        } finally {
+                            if (timer) clearTimeout(timer);
+                            publish(active);
+                        }
                     } else if (frame.method === "agent") {
                         if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
                         if (agents === LARGE_RUN_WARNING_AGENTS) {

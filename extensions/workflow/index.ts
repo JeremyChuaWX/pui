@@ -273,7 +273,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         await authorize(
             workflowApprovalKey(project, source.path, source.script),
             `Approve workflow file: ${source.name}`,
-            `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${source.script}`,
+            `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${source.script}`,
             ctx.ui,
         );
         if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
@@ -314,7 +314,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         name: "workflow",
         label: "Workflow",
         description:
-            "Approve and launch either an inline TypeScript script or an explicit .ts file exporting a workflow function (exactly one).",
+            "Approve and launch either an inline TypeScript script or an explicit .ts file exporting a workflow function (exactly one). Workflows can orchestrate agents and run CLI commands with shell().",
         parameters: WorkflowParams,
         async execute(_id, params, _signal, _update, ctx) {
             const hasScript = params.script !== undefined;
@@ -341,7 +341,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             await authorize(
                 workflowApprovalKey(project, inlineName, script),
                 "Run inline workflow",
-                `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\n\n${script}`,
+                `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${script}`,
                 ui,
             );
             if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
