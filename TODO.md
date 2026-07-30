@@ -1,10 +1,10 @@
 - workflows
   - [x] dont have workflow in a separate window, prefer an interactive chat block (already scrollable); unless u rather make the separate window scrollable, because now it is not, and cannot read long workflows properly
   - [x] pui shouldnt save workflows, should just be able to point to a file that contains a workflow
+  - [x] make workflow files ts files, with support for running ts
+    - [x] exported typescript functions
+  - [ ] llm-friendly documentation (like pi documentation)
   - [ ] headless workflows
-  - [ ] make workflow files ts files, with support for running ts
-    - [ ] exported typescript functions
-    - [ ] llm-friendly documentation (like pi documentation)
   - [ ] remove "run once / trust" window, after accept, just run
   - [ ] add a "-y" mode to /workflow
   - [ ] update file dropdown to include hidden files (with appropriate blacklist, e.g.: .git, ...)
