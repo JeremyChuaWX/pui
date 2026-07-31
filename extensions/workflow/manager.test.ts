@@ -50,8 +50,9 @@ test("manager delivers a repeated terminal snapshot exactly once and shuts backe
     expect(unsubscribed).toBe(1);
 });
 
-test("does not claim or deliver terminal runs excluded by host policy", async () => {
+test("does not emit, claim, or deliver live runs excluded by host policy", async () => {
     let listener: (run: WorkflowRunSummaryV1) => void = () => {};
+    let emissions = 0;
     let claims = 0;
     let deliveries = 0;
     const backend: WorkflowBackend = {
@@ -72,13 +73,15 @@ test("does not claim or deliver terminal runs excluded by host policy", async ()
     };
     const manager = new WorkflowRunManager({
         backend,
-        emit: () => {},
+        emit: () => emissions++,
         shouldDeliver: () => false,
         deliver: () => deliveries++,
     });
 
+    listener(run("running"));
     listener(run("succeeded"));
     await manager.initialize("/x");
+    expect(emissions).toBe(0);
     expect(claims).toBe(0);
     expect(deliveries).toBe(0);
     await manager.shutdown();

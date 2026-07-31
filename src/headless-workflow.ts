@@ -10,10 +10,12 @@ import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
 import { readWorkflowFile } from "../extensions/workflow/source.js";
 
 const HEADLESS_WORKFLOW_SESSION_PREFIX = "headless-";
+const HEADLESS_WORKFLOW_SESSION_PATTERN =
+    /^headless-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TERMINAL_WORKFLOW_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 export function isHeadlessWorkflowSession(sessionId: string): boolean {
-    return sessionId.startsWith(HEADLESS_WORKFLOW_SESSION_PREFIX);
+    return HEADLESS_WORKFLOW_SESSION_PATTERN.test(sessionId);
 }
 
 function compactProgressText(value: string, maximum = 200): string {

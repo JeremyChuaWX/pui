@@ -153,14 +153,14 @@ describe("workflow extension", () => {
         let recoveryPrompts = 0;
         const headlessFailed = {
             ...summary("succeeded"),
-            sessionId: "headless-failed",
+            sessionId: "headless-7e2646bb-a375-4e8d-8a70-3c352d2e91cc",
             status: "failed" as const,
             error: "headless failure",
         };
         const headlessInterrupted = {
             ...summary("running"),
             id: "run-interrupted",
-            sessionId: "headless-interrupted",
+            sessionId: "headless-8f3757cc-b486-4f9e-9b81-4d463e3f02dd",
             status: "paused" as const,
         };
         const f = fixture({

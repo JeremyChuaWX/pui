@@ -4,9 +4,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createWorkflowBackend, type WorkflowBackend } from "../extensions/workflow/backend.js";
 import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
-import { createWorkflowAgentExecutor, parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./headless-workflow.js";
+import {
+    createWorkflowAgentExecutor,
+    isHeadlessWorkflowSession,
+    parseHeadlessWorkflowArgs,
+    runHeadlessWorkflow,
+} from "./headless-workflow.js";
 
 describe("headless workflows", () => {
+    test("only recognizes generated headless session IDs", () => {
+        expect(isHeadlessWorkflowSession("headless-7e2646bb-a375-4e8d-8a70-3c352d2e91cc")).toBe(true);
+        expect(isHeadlessWorkflowSession("headless-user-session")).toBe(false);
+        expect(isHeadlessWorkflowSession("headless-7e2646bb-a375-4e8d-8a70-3c352d2e91cc-extra")).toBe(false);
+        expect(isHeadlessWorkflowSession("headless-7e2646bb-a375-1e8d-8a70-3c352d2e91cc")).toBe(false);
+    });
+
     test("rejects inherited object properties as agent roles", async () => {
         const execute = createWorkflowAgentExecutor();
         await expect(
@@ -115,7 +127,7 @@ describe("headless workflows", () => {
             await backend.shutdown();
             await fs.promises.rm(root, { recursive: true, force: true });
         }
-    });
+    }, 30_000);
 
     test("does not shut down supplied backends and unsubscribes when launch fails", async () => {
         const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-headless-"));
@@ -153,20 +165,29 @@ describe("headless workflows", () => {
                 path.join(root, "answer.ts"),
                 "export default async function answer() { return null }\n",
             );
+            const timedOutRun = {
+                id: "timed",
+                status: "timed_out",
+                error: "deadline exceeded",
+                phases: [],
+                recentActivity: [],
+                agents: [],
+            };
+            let notify: Parameters<WorkflowBackend["subscribe"]>[0] = () => {};
+            let inspections = 0;
             const backend = {
-                subscribe: () => () => {},
+                subscribe: (callback: Parameters<WorkflowBackend["subscribe"]>[0]) => {
+                    notify = callback;
+                    return () => {};
+                },
                 launch: async () => ({ runId: "timed" }),
-                inspect: () => ({
-                    run: {
-                        id: "timed",
-                        status: "timed_out",
-                        error: "deadline exceeded",
-                        phases: [],
-                        recentActivity: [],
-                        agents: [],
-                    },
-                    script: "",
-                }),
+                inspect: () => {
+                    if (inspections++ === 0) {
+                        queueMicrotask(() => notify(timedOutRun as unknown as Parameters<typeof notify>[0]));
+                        return { run: { ...timedOutRun, status: "running", error: undefined }, script: "" };
+                    }
+                    return { run: timedOutRun, script: "" };
+                },
                 shutdown: async () => {},
             } as unknown as WorkflowBackend;
             await expect(runHeadlessWorkflow({ path: "answer.ts", cwd: root, backend })).rejects.toThrow(
@@ -268,11 +289,13 @@ describe("headless workflows", () => {
             expect(oversizedExit).toBe(1);
 
             const failure = invoke(["answer.ts", "not-json"]);
-            const [failureStderr, failureExit] = await Promise.all([
+            const [failureStdout, failureStderr, failureExit] = await Promise.all([
+                new Response(failure.stdout).text(),
                 new Response(failure.stderr).text(),
                 failure.exited,
             ]);
             expect(failureExit).toBe(1);
+            expect(failureStdout).toBe("");
             expect(failureStderr).toContain("pui: Workflow arguments must be valid JSON.");
         } finally {
             await fs.promises.rm(root, { recursive: true, force: true });

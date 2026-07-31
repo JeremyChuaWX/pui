@@ -18,9 +18,9 @@ export class WorkflowRunManager {
     private shuttingDown = false;
     constructor(private readonly options: WorkflowManagerOptions) {
         this.unsubscribe = options.backend.subscribe((run) => {
-            if (this.shuttingDown) return;
+            if (this.shuttingDown || !this.shouldDeliver(run)) return;
             options.emit(run);
-            if (terminal(run.status) && this.shouldDeliver(run))
+            if (terminal(run.status))
                 void this.deliver(run).catch((error) =>
                     console.error(
                         `Workflow terminal delivery failed: ${error instanceof Error ? error.message : String(error)}`,
