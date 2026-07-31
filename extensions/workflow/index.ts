@@ -220,11 +220,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     const authorize = async (key: string, title: string, body: string, ui: Partial<ExtensionUIContext>) => {
         if (await approvalStore.has(key)) return;
         if (!ui.confirm || !(await ui.confirm(title, body))) throw new Error("Workflow launch was denied.");
-        // Confirmation-only hosts can authorize this run but cannot express durable trust.
-        if (!ui.select) return;
-        const choice = await ui.select(title, ["Run once", "Trust unchanged script in this project"]);
-        if (choice === undefined) throw new Error("Workflow launch was denied.");
-        if (choice === "Trust unchanged script in this project") await approvalStore.add(key);
+        await approvalStore.add(key);
     };
     const launchFile = async (requestedPath: string, args: unknown, ctx: ExtensionContext) => {
         const launchGeneration = lifecycleGeneration;
