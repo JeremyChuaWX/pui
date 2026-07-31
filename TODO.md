@@ -5,7 +5,7 @@
     - [x] exported typescript functions
   - [x] headless workflows
   - [x] remove "run once / trust" window; after accept, just run
-  - [ ] llm-friendly documentation on how to write workflows (like pi self-documentation system); only inject in context window when asked to write a workflow though
+  - [x] llm-friendly documentation on how to write workflows (like pi self-documentation system); only inject in context window when asked to write a workflow though
 - performance and uptime issues
   - [ ] when pui left running for long, when /new invoked, takes very long to create new session
   - [ ] startup time also quite long after ending a long running session

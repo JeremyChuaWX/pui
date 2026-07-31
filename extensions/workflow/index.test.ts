@@ -107,6 +107,34 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
 }
 
 describe("workflow extension", () => {
+    test("injects authoring documentation only for workflow-writing requests", () => {
+        const f = fixture();
+        const beforeAgentStart = f.handlers.get("before_agent_start")!;
+
+        for (const prompt of [
+            "Create a TypeScript workflow for reviews",
+            "How do I write workflows?",
+            "Please create a workflow.",
+            "This workflow, I'd like you to write",
+        ]) {
+            const result = beforeAgentStart({ prompt, systemPrompt: "base prompt" });
+            expect(result.systemPrompt).toStartWith("base prompt\n\n# Writing pui workflows");
+            expect(result.systemPrompt).toContain("default-export one **named async function**");
+            expect(result.systemPrompt).toContain("WorkflowContext");
+        }
+
+        for (const prompt of [
+            "Run the workflow in review.ts",
+            "Inspect the active workflow",
+            "Create a TypeScript utility",
+            "Write the release notes",
+            "Write documentation about workflows",
+            "Explain workflow creation",
+        ]) {
+            expect(beforeAgentStart({ prompt, systemPrompt: "base prompt" })).toBeUndefined();
+        }
+    });
+
     test("registration, confirmation, launch, events, deduplication, and shutdown", async () => {
         const approvals = new Set<string>();
         const f = fixture({
