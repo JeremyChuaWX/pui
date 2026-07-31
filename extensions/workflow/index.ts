@@ -7,7 +7,7 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createWorkflowAgentExecutor } from "../../src/headless-workflow.js";
+import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../../src/headless-workflow.js";
 import { AGENTS, type ResolvedAgentName, resolveModel } from "../subagent/presets.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 import {
@@ -112,6 +112,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     manager = new WorkflowRunManager({
         backend,
         emit: (run) => emitEnvelope("upsert", { run }, { sessionId: run.sessionId, cwd: run.cwd }),
+        shouldDeliver: (run) => !isHeadlessWorkflowSession(run.sessionId),
         deliver: (run, result) =>
             pi.sendMessage(
                 {
@@ -177,7 +178,9 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         if (generation !== lifecycleGeneration || abort.signal.aborted || !recovered) return;
         emitEnvelope("ready", {}, route);
         for (const run of recovered.filter(
-            (item) => !["succeeded", "failed", "cancelled", "timed_out"].includes(item.status),
+            (item) =>
+                !isHeadlessWorkflowSession(item.sessionId) &&
+                !["succeeded", "failed", "cancelled", "timed_out"].includes(item.status),
         )) {
             if (generation !== lifecycleGeneration || abort.signal.aborted) return;
             try {

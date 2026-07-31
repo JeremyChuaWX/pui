@@ -86,7 +86,7 @@ Programmatic workflows are built in and enabled by default. pui registers the `w
 pui workflow [--cwd /path/to/project] ./review.ts '{"user":"Ada"}'
 ```
 
-The explicit command authorizes that exact file for this invocation, so the interactive approval and project-trust prompts are intentionally bypassed. The workflow's JSON result is written to stdout; launch or workflow failures are written to stderr and produce a nonzero exit. Durable run artifacts and all normal sandbox, policy, Node-resolution, and worktree rules still apply.
+The explicit command authorizes that exact file for this invocation, so the interactive approval and project-trust prompts are intentionally bypassed. JSON args are optional. Progress (phases, logs, shell calls, and agent lifecycle) is written to stderr while the workflow runs; stdout remains reserved for the final JSON result. Launch or workflow failures are written to stderr and produce a nonzero exit. Durable run artifacts and all normal sandbox, policy, Node-resolution, and worktree rules still apply. Headless runs are not delivered, recovered, or continued by a later TUI session.
 
 Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
 

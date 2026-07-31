@@ -5,6 +5,8 @@ export interface WorkflowManagerOptions {
     backend: WorkflowBackend;
     emit: (run: WorkflowRunSummaryV1) => void;
     deliver: (run: WorkflowRunSummaryV1, result?: string) => unknown;
+    /** Exclude runs owned by another host, such as headless CLI invocations, from session delivery. */
+    shouldDeliver?: (run: WorkflowRunSummaryV1) => boolean;
 }
 const terminal = (status: string) => status === "succeeded" || status === "failed" || status === "cancelled";
 
@@ -18,7 +20,7 @@ export class WorkflowRunManager {
         this.unsubscribe = options.backend.subscribe((run) => {
             if (this.shuttingDown) return;
             options.emit(run);
-            if (terminal(run.status))
+            if (terminal(run.status) && this.shouldDeliver(run))
                 void this.deliver(run).catch((error) =>
                     console.error(
                         `Workflow terminal delivery failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -26,8 +28,11 @@ export class WorkflowRunManager {
                 );
         });
     }
+    private shouldDeliver(run: WorkflowRunSummaryV1): boolean {
+        return this.options.shouldDeliver?.(run) ?? true;
+    }
     private async deliver(run: WorkflowRunSummaryV1, recovery = false): Promise<void> {
-        if (this.delivered.has(run.id)) return;
+        if (!this.shouldDeliver(run) || this.delivered.has(run.id)) return;
         this.delivered.add(run.id);
         let claimed = !this.options.backend.claimTerminalDelivery;
         try {
@@ -59,7 +64,9 @@ export class WorkflowRunManager {
     }
     async initialize(cwd: string): Promise<WorkflowRunSummaryV1[]> {
         const runs = (await this.options.backend.initialize?.(cwd)) ?? [];
-        await Promise.all(runs.filter((run) => terminal(run.status)).map((run) => this.deliver(run, true)));
+        await Promise.all(
+            runs.filter((run) => terminal(run.status) && this.shouldDeliver(run)).map((run) => this.deliver(run, true)),
+        );
         return runs;
     }
     launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }> {

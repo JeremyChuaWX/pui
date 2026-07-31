@@ -149,6 +149,48 @@ describe("workflow extension", () => {
         expect(f.emitted.at(-1)?.[1].type).toBe("reset");
     });
 
+    test("keeps recovered headless runs out of TUI delivery and recovery", async () => {
+        let recoveryPrompts = 0;
+        const headlessFailed = {
+            ...summary("succeeded"),
+            sessionId: "headless-failed",
+            status: "failed" as const,
+            error: "headless failure",
+        };
+        const headlessInterrupted = {
+            ...summary("running"),
+            id: "run-interrupted",
+            sessionId: "headless-interrupted",
+            status: "paused" as const,
+        };
+        const f = fixture({
+            backend: {
+                initialize: async () => [headlessFailed, headlessInterrupted],
+                list: () => [headlessFailed, headlessInterrupted],
+            },
+        });
+
+        await f.handlers.get("session_start")!(
+            {},
+            {
+                cwd: process.cwd(),
+                sessionManager: { getSessionId: () => "session-1" },
+                ui: {
+                    select: async () => {
+                        recoveryPrompts++;
+                        return "Resume";
+                    },
+                    notify: () => {},
+                },
+            },
+        );
+
+        expect(f.messages).toEqual([]);
+        expect(recoveryPrompts).toBe(0);
+        expect(f.emitted.filter(([, value]) => value.type === "upsert")).toEqual([]);
+        await f.handlers.get("session_shutdown")!();
+    });
+
     test("ignores metadata-like text when naming inline workflows", async () => {
         const f = fixture({ approvalStore: { has: async () => true, add: async () => {} } });
         await f.handlers.get("session_start")!(

@@ -32,6 +32,7 @@ const MAX_SCRIPT_BYTES = 64 * 1024,
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
     LARGE_RUN_WARNING_AGENTS = 25,
+    MAX_AGENT_PROMPT_BYTES = 8_000,
     MAX_SHELL_INVOCATIONS = 1_000,
     MAX_SHELL_OUTPUT_BYTES = 128 * 1024;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
@@ -924,19 +925,19 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         }
                         await waitWhilePaused(active);
                         if (!frame.value || typeof frame.value !== "object" || Array.isArray(frame.value))
-                            throw new Error("Invalid agent request.");
+                            throw new Error("Invalid agent request payload.");
                         const request = frame.value as Record<string, unknown>,
                             prompt = request.prompt,
                             rawOptions = request.options;
-                        if (
-                            typeof prompt !== "string" ||
-                            !prompt.trim() ||
-                            Buffer.byteLength(prompt) > 8000 ||
-                            !rawOptions ||
-                            typeof rawOptions !== "object" ||
-                            Array.isArray(rawOptions)
-                        )
-                            throw new Error("Invalid agent request.");
+                        if (typeof prompt !== "string") throw new Error("Agent prompt must be a string.");
+                        if (!prompt.trim()) throw new Error("Agent prompt must not be empty.");
+                        const promptBytes = Buffer.byteLength(prompt);
+                        if (promptBytes > MAX_AGENT_PROMPT_BYTES)
+                            throw new Error(
+                                `Agent prompt exceeds the ${MAX_AGENT_PROMPT_BYTES.toLocaleString("en-US")}-byte limit (received ${promptBytes.toLocaleString("en-US")} bytes).`,
+                            );
+                        if (!rawOptions || typeof rawOptions !== "object" || Array.isArray(rawOptions))
+                            throw new Error("Agent options must be an object.");
                         const opts = rawOptions as Record<string, unknown>;
                         if (
                             Object.keys(opts).some(

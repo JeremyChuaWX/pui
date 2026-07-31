@@ -76,7 +76,10 @@ function parseArgs(argv: string[]): CliOptions {
 
 async function main(): Promise<void> {
     if (process.argv[2] === "workflow") {
-        const result = await runHeadlessWorkflow(parseHeadlessWorkflowArgs(process.argv.slice(3)));
+        const result = await runHeadlessWorkflow({
+            ...parseHeadlessWorkflowArgs(process.argv.slice(3)),
+            onProgress: (message) => process.stderr.write(`pui workflow: ${message}\n`),
+        });
         process.stdout.write(`${JSON.stringify(result)}\n`);
         return;
     }

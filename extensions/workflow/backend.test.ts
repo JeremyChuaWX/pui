@@ -253,6 +253,27 @@ return value;`;
         expect(attempts).toBe(6);
         await backend.shutdown();
     });
+    test("reports oversized agent prompts actionably without invoking an agent", async () => {
+        let executions = 0;
+        const backend = createWorkflowBackend({
+            agentExecutor: async () => {
+                executions++;
+                return { value: null };
+            },
+        });
+        const { runId } = await backend.launch({
+            name: "oversized agent prompt",
+            script: `await agent(${JSON.stringify("x".repeat(8_001))})`,
+            sessionId: "s",
+            cwd: process.cwd(),
+        });
+        await waitFor(() => backend.inspect(runId).run.status === "failed");
+        expect(backend.inspect(runId).run.error).toBe(
+            "Agent prompt exceeds the 8,000-byte limit (received 8,001 bytes).",
+        );
+        expect(executions).toBe(0);
+        await backend.shutdown();
+    });
     test("runs host shell commands directly and returns nonzero exits", async () => {
         const node = await resolveWorkflowNode();
         const executable = process.platform === "win32" ? `"${node}"` : JSON.stringify(node);
