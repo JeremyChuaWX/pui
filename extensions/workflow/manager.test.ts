@@ -50,6 +50,43 @@ test("manager delivers a repeated terminal snapshot exactly once and shuts backe
     expect(unsubscribed).toBe(1);
 });
 
+test("does not emit, claim, or deliver live runs excluded by host policy", async () => {
+    let listener: (run: WorkflowRunSummaryV1) => void = () => {};
+    let emissions = 0;
+    let claims = 0;
+    let deliveries = 0;
+    const backend: WorkflowBackend = {
+        initialize: async () => [run("succeeded")],
+        launch: async () => ({ runId: "r" }),
+        list: () => [],
+        inspect: () => ({ run: run("succeeded"), script: "", result: "ok" }),
+        subscribe: (fn) => {
+            listener = fn;
+            return () => {};
+        },
+        control: async () => undefined,
+        claimTerminalDelivery: async () => {
+            claims++;
+            return true;
+        },
+        shutdown: async () => {},
+    };
+    const manager = new WorkflowRunManager({
+        backend,
+        emit: () => emissions++,
+        shouldDeliver: () => false,
+        deliver: () => deliveries++,
+    });
+
+    listener(run("running"));
+    listener(run("succeeded"));
+    await manager.initialize("/x");
+    expect(emissions).toBe(0);
+    expect(claims).toBe(0);
+    expect(deliveries).toBe(0);
+    await manager.shutdown();
+});
+
 test("reserves a run while a terminal delivery claim is pending", async () => {
     let listener: (run: WorkflowRunSummaryV1) => void = () => {};
     let resolveClaim: (claimed: boolean) => void = () => {};

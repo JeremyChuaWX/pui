@@ -80,7 +80,15 @@ See the [extension guide](extensions/subagent/README.md) for configuration and t
 
 ## Workflows
 
-Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
+Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. A file can also run without the TUI or a Pi session:
+
+```sh
+pui workflow [--cwd /path/to/project] ./review.ts '{"user":"Ada"}'
+```
+
+The explicit command authorizes that exact file for this invocation, so the interactive approval and project-trust prompts are intentionally bypassed. JSON args are optional. Progress (phases, logs, shell calls, and agent lifecycle) is written to stderr while the workflow runs; stdout remains reserved for the final JSON result. Launch or workflow failures are written to stderr and produce a nonzero exit. Durable run artifacts and all normal sandbox, policy, Node-resolution, and worktree rules still apply. Headless runs are not delivered, recovered, or continued by a later TUI session.
+
+Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
 
 Inline workflows accept TypeScript (and its JavaScript subset) using `agent`, `shell`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
 

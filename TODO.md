@@ -3,7 +3,6 @@
   - [x] pui shouldnt save workflows, should just be able to point to a file that contains a workflow
   - [x] make workflow files ts files, with support for running ts
     - [x] exported typescript functions
-  - [ ] llm-friendly documentation (like pi documentation)
   - [ ] headless workflows
   - [ ] remove "run once / trust" window, after accept, just run
   - [ ] add a "-y" mode to /workflow
@@ -12,6 +11,7 @@
     - [ ] expose js functions
     - [ ] llms write workflow script
     - [ ] run the workflow script (output string) from the llm in a node env with the js functions
+  - [ ] llm-friendly documentation (like pi documentation)
 - performance and uptime issues
   - [ ] when pui left running for long, when /new invoked, takes very long to create new session
   - [ ] startup time also quite long after ending a long running session
