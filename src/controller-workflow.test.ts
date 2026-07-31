@@ -63,6 +63,7 @@ function harness(cwd: string) {
         thinkingLevel: "off",
         isStreaming: false,
         isCompacting: false,
+        prompt: async () => {},
         agent: { state: { streamingMessage: undefined, pendingToolCalls: new Set() } },
         getContextUsage: () => undefined,
         getSteeringMessages: () => [],
@@ -158,6 +159,8 @@ describe("PuiController workflow bridge", () => {
             expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["run-1"]);
             expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
             expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
+            expect(h.controller.handlePrompt("/workflow review.ts")).toBe("workflow");
+            expect(h.controller.handlePrompt("/workflow")).toBe("sent");
 
             const controls: unknown[] = [];
             h.bus.on("pui.workflow.background.control", (value) => controls.push(value));
