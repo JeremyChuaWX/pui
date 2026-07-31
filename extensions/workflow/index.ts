@@ -27,6 +27,20 @@ import {
 import { WorkflowRunManager } from "./manager.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
+import workflowWritingDocumentation from "./writing-workflows.md" with { type: "text" };
+
+export function isWorkflowWritingRequest(prompt: string): boolean {
+    const words = prompt.toLowerCase().match(/[a-z]+/g) ?? [];
+    return words.some(
+        (word, verbIndex) =>
+            (word === "write" || word === "create") &&
+            !["about", "doc", "docs", "documentation"].includes(words[verbIndex + 1] ?? "") &&
+            words.some(
+                (candidate, workflowIndex) =>
+                    (candidate === "workflow" || candidate === "workflows") && Math.abs(workflowIndex - verbIndex) <= 6,
+            ),
+    );
+}
 
 const WorkflowParams = Type.Object({
     script: Type.Optional(
@@ -123,6 +137,12 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 },
                 { deliverAs: "followUp", triggerTurn: true },
             ),
+    });
+    pi.on("before_agent_start", (event) => {
+        if (!isWorkflowWritingRequest(event.prompt)) return;
+        return {
+            systemPrompt: `${event.systemPrompt}\n\n${workflowWritingDocumentation.trim()}`,
+        };
     });
     pi.on("session_start", async (_event, ctx) => {
         const generation = ++lifecycleGeneration;
