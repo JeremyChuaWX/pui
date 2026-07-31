@@ -4,7 +4,7 @@
   - [x] make workflow files ts files, with support for running ts
     - [x] exported typescript functions
   - [x] headless workflows
-  - [ ] remove "run once / trust" window; after accept, just run
+  - [x] remove "run once / trust" window; after accept, just run
   - simplify, focus on being an api that allows llms to write a script that represents a worflow that is then ran in pui
     - [ ] expose js functions
     - [ ] llms write workflow script

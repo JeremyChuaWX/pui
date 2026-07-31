@@ -108,7 +108,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
 
 describe("workflow extension", () => {
     test("registration, confirmation, launch, events, deduplication, and shutdown", async () => {
-        const f = fixture();
+        const approvals = new Set<string>();
+        const f = fixture({
+            approvalStore: {
+                has: async (key: string) => approvals.has(key),
+                add: async (key: string) => {
+                    approvals.add(key);
+                },
+            },
+        });
         expect(f.tool.name).toBe("workflow");
         expect(f.tool.description).toContain("shell()");
         expect(f.tool.parameters.properties.script.description).toContain("TypeScript");
@@ -435,10 +443,20 @@ describe("workflow extension", () => {
                 {},
                 { cwd: root, sessionManager: { getSessionId: () => "session-1" } },
             );
+            let confirmations = 0;
             const context = {
                 cwd: root,
                 isProjectTrusted: () => false,
-                ui: { confirm: () => true, select: () => "Trust unchanged script in this project", notify: () => {} },
+                ui: {
+                    confirm: () => {
+                        confirmations++;
+                        return true;
+                    },
+                    select: () => {
+                        throw new Error("Unexpected post-acceptance prompt");
+                    },
+                    notify: () => {},
+                },
             };
             await expect(
                 f.tool.execute("id", { path: "demo.ts", args: { x: 1 } }, undefined, undefined, context),
@@ -455,8 +473,10 @@ describe("workflow extension", () => {
                 workflowApprovalKey(await fs.promises.realpath(root), await fs.promises.realpath(file), exactScript),
             );
             const approved = keys.size;
+            expect(confirmations).toBe(1);
             await f.command.handler(`demo.ts {"from":"command"}`, context);
             expect(keys.size).toBe(approved);
+            expect(confirmations).toBe(1);
             const moved = path.join(root, "moved.ts");
             await fs.promises.copyFile(file, moved);
             await f.tool.execute("id", { path: moved }, undefined, undefined, context);
@@ -467,6 +487,7 @@ describe("workflow extension", () => {
             );
             await f.tool.execute("id", { path: file }, undefined, undefined, context);
             expect(keys.size).toBe(approved + 2);
+            expect(confirmations).toBe(3);
             await expect(
                 f.tool.execute("id", { path: file, script: "return 1" }, undefined, undefined, context),
             ).rejects.toThrow("exactly one");
