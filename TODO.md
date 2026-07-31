@@ -6,6 +6,9 @@
   - [x] headless workflows
   - [x] remove "run once / trust" window; after accept, just run
   - [x] llm-friendly documentation on how to write workflows (like pi self-documentation system); only inject in context window when asked to write a workflow though
+  - [ ] improve workflows UI panels
+    - [ ] enter to see internal chat and turns
+    - [ ] dont make cancelling so easy, especially subagents (now just press enter and it gets cancelled)
 - performance and uptime issues
   - [ ] when pui left running for long, when /new invoked, takes very long to create new session
   - [ ] startup time also quite long after ending a long running session
