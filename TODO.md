@@ -3,17 +3,16 @@
   - [x] pui shouldnt save workflows, should just be able to point to a file that contains a workflow
   - [x] make workflow files ts files, with support for running ts
     - [x] exported typescript functions
-  - [ ] headless workflows
-  - [ ] remove "run once / trust" window, after accept, just run
-  - [ ] add a "-y" mode to /workflow
-  - [ ] update file dropdown to include hidden files (with appropriate blacklist, e.g.: .git, ...)
+  - [x] headless workflows
+  - [ ] remove "run once / trust" window; after accept, just run
   - simplify, focus on being an api that allows llms to write a script that represents a worflow that is then ran in pui
     - [ ] expose js functions
     - [ ] llms write workflow script
     - [ ] run the workflow script (output string) from the llm in a node env with the js functions
-  - [ ] llm-friendly documentation (like pi documentation)
+  - [ ] llm-friendly documentation on how to write workflows (like pi self-documentation system); only inject in context window when asked to write a workflow though
 - performance and uptime issues
   - [ ] when pui left running for long, when /new invoked, takes very long to create new session
   - [ ] startup time also quite long after ending a long running session
 - [ ] add up/down to navigate history keybinds
+- [ ] update file dropdown to include hidden files (with appropriate blacklist, e.g.: .git, ...)
 - [ ] abstract agent runtime layer for subagents and workflows
