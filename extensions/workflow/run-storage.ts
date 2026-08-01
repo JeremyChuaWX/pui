@@ -598,8 +598,14 @@ export class WorkflowRunStorage {
         for (const entry of entries) {
             if (!entry.isDirectory() || !RUN_ID.test(entry.name)) continue;
             try {
-                const directory = await this.assertDirectory(path.join(project, entry.name)),
-                    sourceFiles = await Promise.all(
+                const directory = await this.assertDirectory(path.join(project, entry.name));
+                const { value: delivery, malformed: malformedDelivery } = await readDelivery(
+                    path.join(directory, "delivery.json"),
+                );
+                // Delivered terminal runs have no recovery work left. Skipping their potentially
+                // large artifacts keeps startup and /new proportional to unfinished work.
+                if (!malformedDelivery && delivery.version === 1 && delivery.delivered === true) continue;
+                const sourceFiles = await Promise.all(
                         ["workflow.ts", "workflow.js"].map(async (name) => {
                             const file = path.join(directory, name);
                             try {
@@ -700,9 +706,6 @@ export class WorkflowRunStorage {
                     } else if (item.type === "worktree-released") worktrees.delete(item.operation);
                     else throw new Error(`Invalid workflow journal in ${entry.name}.`);
                 }
-                const { value: delivery, malformed: malformedDelivery } = await readDelivery(
-                    path.join(directory, "delivery.json"),
-                );
                 if (
                     !malformedDelivery &&
                     delivery.version !== undefined &&

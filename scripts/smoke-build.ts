@@ -35,7 +35,7 @@ try {
         JSON.stringify(result.completed) !== JSON.stringify(["left-done", "right-done"]) ||
         result.stopped !== "cancelled" ||
         result.deliveries !== 2 ||
-        result.recovered !== true
+        result.recovered !== false
     )
         throw new Error(`Unexpected compiled workflow smoke result: ${JSON.stringify(result)}`);
 

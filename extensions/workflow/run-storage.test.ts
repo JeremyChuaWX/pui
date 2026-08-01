@@ -57,7 +57,8 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         expect(await storage.claimDelivery(directory)).toBe(true);
         expect(await storage.claimDelivery(directory)).toBe(false);
         await storage.markDelivered(directory);
-        expect((await storage.discover(project))[0]?.delivery.delivered).toBe(true);
+        await fs.promises.writeFile(path.join(directory, "journal.jsonl"), "historical artifact need not be parsed");
+        expect(await storage.discover(project)).toEqual([]);
         expect((await fs.promises.stat(directory)).mode & 0o077).toBe(0);
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 - performance and uptime issues
-  - [ ] when pui left running for long, when /new invoked, takes very long to create new session
-  - [ ] startup time also quite long after ending a long running session
+  - [x] keep /new fast after long-running sessions by skipping delivered workflow artifacts during recovery
+  - [x] keep startup fast after long-running sessions by recovering only unfinished workflows
 - [ ] add up/down to navigate history keybinds
 - [ ] update file dropdown to include hidden files (with appropriate blacklist, e.g.: .git, ...)
 - [ ] abstract agent runtime layer for subagents and workflows
