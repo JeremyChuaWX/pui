@@ -25,6 +25,7 @@ import {
 import { syntaxStyle, theme } from "./theme.js";
 import type { DisplayItem, PromptCompletions, PuiSnapshot, ToastMessage, ToolDisplayItem } from "./types.js";
 import type { WorkflowRunSummaryV1 } from "./workflow.js";
+import { isWorkflowBackShortcut, workflowBackKeyHint } from "./workflow-navigation.js";
 
 interface PickerItem {
     label: string;
@@ -259,6 +260,15 @@ export function App(props: { controller: PuiController }) {
     const wide = createMemo(() => dimensions().width >= 112);
     const sidebarVisible = createMemo(() => dimensions().width >= 72 && (sidebarOverride() ?? wide()));
     const activeWorkflowRun = createMemo(() => snapshot.workflows.find((run) => run.id === activeWorkflowRunId()));
+
+    function closeWorkflowPage(): void {
+        setActiveWorkflowRunId(undefined);
+        setPendingWorkflowRun(undefined);
+        setTimeout(() => {
+            if (dialog() || extensionConfirmActive() || externalEditorOpen) return;
+            if (prompt && !prompt.isDestroyed) prompt.focus();
+        }, 0);
+    }
 
     function closePromptCompletions(): void {
         completionRequest += 1;
@@ -782,12 +792,10 @@ export function App(props: { controller: PuiController }) {
         }
         if (dialog()) return;
 
-        if (key.name === "escape" && activeWorkflowRun()) {
+        if (activeWorkflowRun() && isWorkflowBackShortcut(key)) {
             key.preventDefault();
             key.stopPropagation();
-            setActiveWorkflowRunId(undefined);
-            setPendingWorkflowRun(undefined);
-            setTimeout(() => prompt?.focus(), 0);
+            closeWorkflowPage();
             return;
         }
 
@@ -1267,7 +1275,7 @@ function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: Scroll
                 </text>
                 <text fg={theme.muted}>
                     {runState().label} · {props.run.phases.length} phases · {props.run.agents.length} agents ·{" "}
-                    {formatCount(props.run.usage.totalTokens)} tokens · Esc to return
+                    {formatCount(props.run.usage.totalTokens)} tokens · {workflowBackKeyHint} to return
                 </text>
                 <Show when={props.run.warning}>
                     <text fg={theme.warning}>{props.run.warning}</text>
@@ -2097,6 +2105,7 @@ function Help(props: { width: number; onClose: () => void }) {
             <text fg={theme.muted}>Ctrl+P / Ctrl+N prompt history</text>
             <text fg={theme.muted}>Ctrl+G edit in nvim with last agent response</text>
             <text fg={theme.muted}>Escape abort the current operation</text>
+            <text fg={theme.muted}>{workflowBackKeyHint} return from workflow status</text>
             <text fg={theme.muted}>Shift+Tab cycle thinking level</text>
             <text fg={theme.muted}>Alt+N / Alt+P cycle models</text>
             <text fg={theme.muted}>Ctrl+L model picker</text>

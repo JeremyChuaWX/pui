@@ -57,12 +57,38 @@ test("durably stores immutable launch, fsynced completions, snapshots and delive
         expect(await storage.claimDelivery(directory)).toBe(true);
         expect(await storage.claimDelivery(directory)).toBe(false);
         await storage.markDelivered(directory);
-        expect((await storage.discover(project))[0]?.delivery.delivered).toBe(true);
+        await fs.promises.writeFile(path.join(directory, "journal.jsonl"), "historical artifact need not be parsed");
+        expect(await storage.discover(project)).toEqual([]);
         expect((await fs.promises.stat(directory)).mode & 0o077).toBe(0);
     } finally {
         await fs.promises.rm(temp, { recursive: true, force: true });
     }
 });
+test("reports delivered runs with invalid delivery fields as corrupt", async () => {
+    const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-invalid-delivery-")),
+        project = path.join(temp, "project"),
+        storage = new WorkflowRunStorage(path.join(temp, "runs"));
+    await fs.promises.mkdir(project);
+    try {
+        const directory = await storage.create(
+            project,
+            "run-1",
+            { script: "", policy: {}, roles: [], models: [], limits: {} },
+            makeSummary(project),
+        );
+        await fs.promises.writeFile(
+            path.join(directory, "delivery.json"),
+            JSON.stringify({ version: 1, delivered: true, pid: "bad" }),
+        );
+
+        const [stored] = await storage.discover(project);
+        expect(stored?.corrupt).toBe(true);
+        expect(stored?.snapshot.error).toContain("Invalid workflow delivery state");
+    } finally {
+        await fs.promises.rm(temp, { recursive: true, force: true });
+    }
+});
+
 test("discovers workflow.ts sources written by prior versions", async () => {
     const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-run-typescript-source-")),
         project = path.join(temp, "project"),
