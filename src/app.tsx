@@ -51,6 +51,8 @@ type DialogState = (
 ) & { extensionRequestId?: number };
 
 const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
+const WORKFLOW_REQUEST_TIMEOUT_MS = 30_000;
+const WORKFLOW_PAGE_AGENT_LIMIT = 100;
 
 const promptKeyBindings: KeyBinding[] = [
     { name: "return", action: "submit" },
@@ -101,6 +103,12 @@ export function App(props: { controller: PuiController }) {
     const [sidebarOverride, setSidebarOverride] = createSignal<boolean>();
     const [toolsExpanded, setToolsExpanded] = createSignal(false);
     const [thinkingExpanded, setThinkingExpanded] = createSignal(false);
+    const [activeWorkflowRunId, setActiveWorkflowRunId] = createSignal<string>();
+    const [pendingWorkflowRun, setPendingWorkflowRun] = createSignal<{
+        ids: ReadonlySet<string>;
+        requestedAt: number;
+        sessionId: string;
+    }>();
     const [elapsedNow, setElapsedNow] = createSignal(Date.now());
     const promptHistory = new PromptHistory();
     let prompt: TextareaRenderable | undefined;
@@ -195,6 +203,49 @@ export function App(props: { controller: PuiController }) {
     });
 
     createEffect(() => {
+        const pending = pendingWorkflowRun();
+        if (!pending) return;
+        if (
+            pending.sessionId !== snapshot.sessionId ||
+            Date.now() - pending.requestedAt >= WORKFLOW_REQUEST_TIMEOUT_MS
+        ) {
+            setPendingWorkflowRun(undefined);
+            return;
+        }
+        const run = snapshot.workflows
+            .filter((candidate) => !pending.ids.has(candidate.id) && candidate.updatedAt >= pending.requestedAt)
+            .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        if (run) {
+            setActiveWorkflowRunId(run.id);
+            setPendingWorkflowRun(undefined);
+            return;
+        }
+        const timer = setTimeout(
+            () => setPendingWorkflowRun((current) => (current === pending ? undefined : current)),
+            WORKFLOW_REQUEST_TIMEOUT_MS - (Date.now() - pending.requestedAt),
+        );
+        onCleanup(() => clearTimeout(timer));
+    });
+
+    createEffect(() => {
+        const runId = activeWorkflowRunId();
+        onCleanup(() => {
+            transcript = undefined;
+            if (!runId) {
+                prompt = undefined;
+                promptAnchor = undefined;
+                releasePromptFocusTrap?.();
+                releasePromptFocusTrap = undefined;
+            }
+        });
+    });
+
+    createEffect(() => {
+        const runId = activeWorkflowRunId();
+        if (runId && !snapshot.workflows.some((run) => run.id === runId)) setActiveWorkflowRunId(undefined);
+    });
+
+    createEffect(() => {
         if (
             activeSubagentItems(snapshot.display).length === 0 &&
             !snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))
@@ -207,6 +258,7 @@ export function App(props: { controller: PuiController }) {
 
     const wide = createMemo(() => dimensions().width >= 112);
     const sidebarVisible = createMemo(() => dimensions().width >= 72 && (sidebarOverride() ?? wide()));
+    const activeWorkflowRun = createMemo(() => snapshot.workflows.find((run) => run.id === activeWorkflowRunId()));
 
     function closePromptCompletions(): void {
         completionRequest += 1;
@@ -350,8 +402,14 @@ export function App(props: { controller: PuiController }) {
         const value = prompt?.plainText ?? promptText();
         if (!value.trim()) return;
         promptHistory.add(value);
+        const workflowRequest = {
+            ids: new Set(snapshot.workflows.map((run) => run.id)),
+            requestedAt: Date.now(),
+            sessionId: snapshot.sessionId,
+        };
         const action = props.controller.handlePrompt(value, delivery);
         clearPrompt();
+        if (action === "workflow") setPendingWorkflowRun(workflowRequest);
         if (action === "models") void openModels();
         if (action === "sessions") void openSessions();
         if (action === "subagents") openSubagents();
@@ -724,6 +782,15 @@ export function App(props: { controller: PuiController }) {
         }
         if (dialog()) return;
 
+        if (key.name === "escape" && activeWorkflowRun()) {
+            key.preventDefault();
+            key.stopPropagation();
+            setActiveWorkflowRunId(undefined);
+            setPendingWorkflowRun(undefined);
+            setTimeout(() => prompt?.focus(), 0);
+            return;
+        }
+
         const historyKey = key.ctrl && (key.name === "p" || key.name === "n");
         if (historyKey && promptHistory.isTraversing) {
             key.preventDefault();
@@ -858,65 +925,90 @@ export function App(props: { controller: PuiController }) {
             <box flexDirection="row" flexGrow={1} minHeight={0}>
                 <box flexGrow={1} minWidth={0} paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
                     <Show
-                        when={snapshot.display.length > 0 || extensionConfirmActive()}
-                        fallback={<Welcome cwd={snapshot.compactCwd} />}
+                        when={extensionConfirmActive() ? undefined : activeWorkflowRun()}
+                        fallback={
+                            <>
+                                <Show
+                                    when={snapshot.display.length > 0 || extensionConfirmActive()}
+                                    fallback={<Welcome cwd={snapshot.compactCwd} />}
+                                >
+                                    <scrollbox
+                                        ref={(value) => (transcript = value)}
+                                        flexGrow={1}
+                                        minHeight={0}
+                                        stickyScroll
+                                        stickyStart="bottom"
+                                        viewportOptions={{ paddingRight: 1 }}
+                                        verticalScrollbarOptions={{
+                                            visible: false,
+                                            trackOptions: {
+                                                backgroundColor: theme.element,
+                                                foregroundColor: theme.border,
+                                            },
+                                        }}
+                                        contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }}
+                                    >
+                                        <For each={snapshot.display}>
+                                            {(item) => (
+                                                <MessageItem
+                                                    item={() => item}
+                                                    toolsExpanded={toolsExpanded()}
+                                                    thinkingExpanded={thinkingExpanded()}
+                                                    now={elapsedNow()}
+                                                />
+                                            )}
+                                        </For>
+                                        <Index each={snapshot.queuedSteering}>
+                                            {(message) => (
+                                                <QueuedMessage
+                                                    message={message()}
+                                                    label="steer"
+                                                    color={theme.primary}
+                                                />
+                                            )}
+                                        </Index>
+                                        <Index each={snapshot.queuedFollowUp}>
+                                            {(message) => (
+                                                <QueuedMessage
+                                                    message={message()}
+                                                    label="follow up"
+                                                    color={theme.secondary}
+                                                />
+                                            )}
+                                        </Index>
+                                        <Show when={extensionConfirm()}>
+                                            {(request) => (
+                                                <ExtensionConfirmation
+                                                    title={request().title}
+                                                    message={request().message}
+                                                />
+                                            )}
+                                        </Show>
+                                    </scrollbox>
+                                </Show>
+                                <Show when={promptCompletions()}>
+                                    {(completions) => (
+                                        <PromptAutocomplete
+                                            completions={completions()}
+                                            selected={completionIndex()}
+                                            anchor={() => promptAnchor}
+                                        />
+                                    )}
+                                </Show>
+                                <Prompt
+                                    snapshot={snapshot}
+                                    focused={!dialog() && !extensionConfirmActive()}
+                                    setAnchorRef={(value) => (promptAnchor = value)}
+                                    setRef={setPromptRef}
+                                    onChange={handlePromptChange}
+                                    onCursorChange={handlePromptCursorChange}
+                                    onSubmit={() => submit("steer")}
+                                />
+                            </>
+                        }
                     >
-                        <scrollbox
-                            ref={(value) => (transcript = value)}
-                            flexGrow={1}
-                            minHeight={0}
-                            stickyScroll
-                            stickyStart="bottom"
-                            viewportOptions={{ paddingRight: 1 }}
-                            verticalScrollbarOptions={{
-                                visible: false,
-                                trackOptions: { backgroundColor: theme.element, foregroundColor: theme.border },
-                            }}
-                            contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }}
-                        >
-                            <For each={snapshot.display}>
-                                {(item) => (
-                                    <MessageItem
-                                        item={() => item}
-                                        toolsExpanded={toolsExpanded()}
-                                        thinkingExpanded={thinkingExpanded()}
-                                        now={elapsedNow()}
-                                    />
-                                )}
-                            </For>
-                            <Index each={snapshot.queuedSteering}>
-                                {(message) => <QueuedMessage message={message()} label="steer" color={theme.primary} />}
-                            </Index>
-                            <Index each={snapshot.queuedFollowUp}>
-                                {(message) => (
-                                    <QueuedMessage message={message()} label="follow up" color={theme.secondary} />
-                                )}
-                            </Index>
-                            <Show when={extensionConfirm()}>
-                                {(request) => (
-                                    <ExtensionConfirmation title={request().title} message={request().message} />
-                                )}
-                            </Show>
-                        </scrollbox>
+                        {(run) => <WorkflowPage run={run()} setRef={(value) => (transcript = value)} />}
                     </Show>
-                    <Show when={promptCompletions()}>
-                        {(completions) => (
-                            <PromptAutocomplete
-                                completions={completions()}
-                                selected={completionIndex()}
-                                anchor={() => promptAnchor}
-                            />
-                        )}
-                    </Show>
-                    <Prompt
-                        snapshot={snapshot}
-                        focused={!dialog() && !extensionConfirmActive()}
-                        setAnchorRef={(value) => (promptAnchor = value)}
-                        setRef={setPromptRef}
-                        onChange={handlePromptChange}
-                        onCursorChange={handlePromptCursorChange}
-                        onSubmit={() => submit("steer")}
-                    />
                 </box>
                 <Show when={sidebarVisible()}>
                     <Sidebar snapshot={snapshot} now={elapsedNow()} />
@@ -1140,6 +1232,103 @@ function MessageItem(props: {
                 </box>
             </Match>
         </Switch>
+    );
+}
+
+function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: ScrollBoxRenderable) => void }) {
+    const runState = () => workflowStatusPresentation(props.run.status);
+    const agentsById = createMemo(() => new Map(props.run.agents.map((agent) => [agent.id, agent])));
+    const runColor = () => {
+        const tone = workflowStatusTone(props.run.status);
+        return tone === "success"
+            ? theme.success
+            : tone === "error"
+              ? theme.error
+              : tone === "warning"
+                ? theme.warning
+                : tone === "info"
+                  ? theme.info
+                  : theme.muted;
+    };
+    return (
+        <scrollbox
+            ref={props.setRef}
+            flexGrow={1}
+            minHeight={0}
+            viewportOptions={{ paddingRight: 1 }}
+            verticalScrollbarOptions={{ visible: false }}
+            contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }}
+        >
+            <box border={["bottom"]} borderColor={theme.border} paddingBottom={1} marginBottom={1}>
+                <text fg={runColor()}>
+                    <strong>
+                        {runState().icon} Workflow · {props.run.name}
+                    </strong>
+                </text>
+                <text fg={theme.muted}>
+                    {runState().label} · {props.run.phases.length} phases · {props.run.agents.length} agents ·{" "}
+                    {formatCount(props.run.usage.totalTokens)} tokens · Esc to return
+                </text>
+                <Show when={props.run.warning}>
+                    <text fg={theme.warning}>{props.run.warning}</text>
+                </Show>
+                <Show when={props.run.error}>
+                    <text fg={theme.error}>{props.run.error}</text>
+                </Show>
+            </box>
+            <For each={props.run.phases}>
+                {(phase, index) => {
+                    const phaseStatus = () =>
+                        workflowStatusPresentation(phase.status === "skipped" ? "cancelled" : phase.status);
+                    return (
+                        <box
+                            marginBottom={1}
+                            border={["left"]}
+                            borderColor={phase.status === "running" ? theme.warning : theme.border}
+                            paddingLeft={2}
+                        >
+                            <text fg={phase.status === "running" ? theme.warning : theme.text}>
+                                <strong>
+                                    {phaseStatus().icon} Phase {index() + 1} · {phase.name}
+                                </strong>
+                                <span> · {phase.status === "skipped" ? "Skipped" : phaseStatus().label}</span>
+                            </text>
+                            <For each={phase.agentIds.slice(0, WORKFLOW_PAGE_AGENT_LIMIT)}>
+                                {(agentId) => {
+                                    const agent = createMemo(() => agentsById().get(agentId));
+                                    const state = createMemo(() => {
+                                        const value = agent();
+                                        return value ? workflowStatusPresentation(value.status) : undefined;
+                                    });
+                                    return (
+                                        <text
+                                            fg={
+                                                agent()?.status === "failed" || agent()?.status === "timed_out"
+                                                    ? theme.error
+                                                    : theme.subtle
+                                            }
+                                            wrapMode="none"
+                                        >
+                                            {state()?.icon ?? "?"} {agent()?.label ?? agentId} ·{" "}
+                                            {state()?.label ?? "Unavailable"}
+                                            {agent()?.role ? ` · ${agent()?.role}` : ""}
+                                        </text>
+                                    );
+                                }}
+                            </For>
+                            <Show when={phase.agentIds.length > WORKFLOW_PAGE_AGENT_LIMIT}>
+                                <text fg={theme.muted}>
+                                    … {phase.agentIds.length - WORKFLOW_PAGE_AGENT_LIMIT} more agents
+                                </text>
+                            </Show>
+                            <Show when={phase.agentIds.length === 0}>
+                                <text fg={theme.muted}>No agents in this phase</text>
+                            </Show>
+                        </box>
+                    );
+                }}
+            </For>
+        </scrollbox>
     );
 }
 

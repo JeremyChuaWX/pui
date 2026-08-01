@@ -143,4 +143,13 @@ export interface AppliedPromptCompletion {
     cursorOffset: number;
 }
 
-export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "workflows" | "commands" | "help" | "ignored";
+export type PromptAction =
+    | "sent"
+    | "workflow"
+    | "models"
+    | "sessions"
+    | "subagents"
+    | "workflows"
+    | "commands"
+    | "help"
+    | "ignored";

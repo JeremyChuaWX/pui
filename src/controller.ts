@@ -707,7 +707,7 @@ export class PuiController {
                 },
             })
             .catch((error: unknown) => this.notify(error instanceof Error ? error.message : String(error), "error"));
-        return "sent";
+        return command === "/workflow" && args ? "workflow" : "sent";
     }
 
     private async executeBash(command: string, excluded: boolean): Promise<void> {

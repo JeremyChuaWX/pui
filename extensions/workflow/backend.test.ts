@@ -274,6 +274,35 @@ return value;`;
         expect(executions).toBe(0);
         await backend.shutdown();
     });
+    test("drains sibling RPCs before reporting a concurrent workflow failure", async () => {
+        let finishSlow: () => void = () => {};
+        const slow = new Promise<{ value: null }>((resolve) => {
+            finishSlow = () => resolve({ value: null });
+        });
+        const backend = createWorkflowBackend({ agentExecutor: async () => slow });
+        try {
+            const { runId } = await backend.launch({
+                name: "concurrent failure",
+                script: `try { await Promise.all([agent("slow"),agent(${JSON.stringify("x".repeat(8_001))})]) } catch (error) { await log("sibling failure handled"); throw error }`,
+                sessionId: "s",
+                cwd: process.cwd(),
+            });
+            await waitFor(() =>
+                backend
+                    .inspect(runId)
+                    .run.recentActivity.some((activity) => activity.title === "sibling failure handled"),
+            );
+            expect(backend.inspect(runId).run.status).toBe("running");
+            finishSlow();
+            await waitFor(() => backend.inspect(runId).run.status === "failed");
+            const run = backend.inspect(runId).run;
+            expect(run.error).toBe("Agent prompt exceeds the 8,000-byte limit (received 8,001 bytes).");
+            expect(run.agents[0]?.status).toBe("succeeded");
+        } finally {
+            finishSlow();
+            await backend.shutdown();
+        }
+    });
     test("runs host shell commands directly and returns nonzero exits", async () => {
         const node = await resolveWorkflowNode();
         const executable = process.platform === "win32" ? `"${node}"` : JSON.stringify(node);
