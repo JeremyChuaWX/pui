@@ -602,6 +602,18 @@ export class WorkflowRunStorage {
                 const { value: delivery, malformed: malformedDelivery } = await readDelivery(
                     path.join(directory, "delivery.json"),
                 );
+                if (
+                    !malformedDelivery &&
+                    delivery.version !== undefined &&
+                    (delivery.version !== 1 ||
+                        (delivery.claimed !== undefined && typeof delivery.claimed !== "boolean") ||
+                        (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean") ||
+                        (delivery.claimedAt !== undefined && !Number.isFinite(delivery.claimedAt)) ||
+                        (delivery.owner !== undefined && typeof delivery.owner !== "string") ||
+                        (delivery.pid !== undefined && (!Number.isInteger(delivery.pid) || delivery.pid <= 0)) ||
+                        (delivery.host !== undefined && typeof delivery.host !== "string"))
+                )
+                    throw new Error(`Invalid workflow delivery state in ${entry.name}.`);
                 // Delivered terminal runs have no recovery work left. Skipping their potentially
                 // large artifacts keeps startup and /new proportional to unfinished work.
                 if (!malformedDelivery && delivery.version === 1 && delivery.delivered === true) continue;
@@ -706,18 +718,6 @@ export class WorkflowRunStorage {
                     } else if (item.type === "worktree-released") worktrees.delete(item.operation);
                     else throw new Error(`Invalid workflow journal in ${entry.name}.`);
                 }
-                if (
-                    !malformedDelivery &&
-                    delivery.version !== undefined &&
-                    (delivery.version !== 1 ||
-                        (delivery.claimed !== undefined && typeof delivery.claimed !== "boolean") ||
-                        (delivery.delivered !== undefined && typeof delivery.delivered !== "boolean") ||
-                        (delivery.claimedAt !== undefined && !Number.isFinite(delivery.claimedAt)) ||
-                        (delivery.owner !== undefined && typeof delivery.owner !== "string") ||
-                        (delivery.pid !== undefined && (!Number.isInteger(delivery.pid) || delivery.pid <= 0)) ||
-                        (delivery.host !== undefined && typeof delivery.host !== "string"))
-                )
-                    throw new Error(`Invalid workflow delivery state in ${entry.name}.`);
                 runs.push({
                     id: entry.name,
                     directory,

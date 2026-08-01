@@ -264,7 +264,10 @@ export function App(props: { controller: PuiController }) {
     function closeWorkflowPage(): void {
         setActiveWorkflowRunId(undefined);
         setPendingWorkflowRun(undefined);
-        setTimeout(() => prompt?.focus(), 0);
+        setTimeout(() => {
+            if (dialog() || extensionConfirmActive() || externalEditorOpen) return;
+            if (prompt && !prompt.isDestroyed) prompt.focus();
+        }, 0);
     }
 
     function closePromptCompletions(): void {
