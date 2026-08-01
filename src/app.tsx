@@ -51,6 +51,8 @@ type DialogState = (
 ) & { extensionRequestId?: number };
 
 const isEnterName = (name: string): boolean => ["return", "enter", "linefeed"].includes(name);
+const WORKFLOW_REQUEST_TIMEOUT_MS = 30_000;
+const WORKFLOW_PAGE_AGENT_LIMIT = 100;
 
 const promptKeyBindings: KeyBinding[] = [
     { name: "return", action: "submit" },
@@ -105,6 +107,7 @@ export function App(props: { controller: PuiController }) {
     const [pendingWorkflowRun, setPendingWorkflowRun] = createSignal<{
         ids: ReadonlySet<string>;
         requestedAt: number;
+        sessionId: string;
     }>();
     const [elapsedNow, setElapsedNow] = createSignal(Date.now());
     const promptHistory = new PromptHistory();
@@ -202,12 +205,39 @@ export function App(props: { controller: PuiController }) {
     createEffect(() => {
         const pending = pendingWorkflowRun();
         if (!pending) return;
+        if (
+            pending.sessionId !== snapshot.sessionId ||
+            Date.now() - pending.requestedAt >= WORKFLOW_REQUEST_TIMEOUT_MS
+        ) {
+            setPendingWorkflowRun(undefined);
+            return;
+        }
         const run = snapshot.workflows
             .filter((candidate) => !pending.ids.has(candidate.id) && candidate.updatedAt >= pending.requestedAt)
             .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-        if (!run) return;
-        setActiveWorkflowRunId(run.id);
-        setPendingWorkflowRun(undefined);
+        if (run) {
+            setActiveWorkflowRunId(run.id);
+            setPendingWorkflowRun(undefined);
+            return;
+        }
+        const timer = setTimeout(
+            () => setPendingWorkflowRun((current) => (current === pending ? undefined : current)),
+            WORKFLOW_REQUEST_TIMEOUT_MS - (Date.now() - pending.requestedAt),
+        );
+        onCleanup(() => clearTimeout(timer));
+    });
+
+    createEffect(() => {
+        const runId = activeWorkflowRunId();
+        onCleanup(() => {
+            transcript = undefined;
+            if (!runId) {
+                prompt = undefined;
+                promptAnchor = undefined;
+                releasePromptFocusTrap?.();
+                releasePromptFocusTrap = undefined;
+            }
+        });
     });
 
     createEffect(() => {
@@ -375,6 +405,7 @@ export function App(props: { controller: PuiController }) {
         const workflowRequest = {
             ids: new Set(snapshot.workflows.map((run) => run.id)),
             requestedAt: Date.now(),
+            sessionId: snapshot.sessionId,
         };
         const action = props.controller.handlePrompt(value, delivery);
         clearPrompt();
@@ -750,6 +781,15 @@ export function App(props: { controller: PuiController }) {
             return;
         }
         if (dialog()) return;
+
+        if (key.name === "escape" && activeWorkflowRun()) {
+            key.preventDefault();
+            key.stopPropagation();
+            setActiveWorkflowRunId(undefined);
+            setPendingWorkflowRun(undefined);
+            setTimeout(() => prompt?.focus(), 0);
+            return;
+        }
 
         const historyKey = key.ctrl && (key.name === "p" || key.name === "n");
         if (historyKey && promptHistory.isTraversing) {
@@ -1197,6 +1237,7 @@ function MessageItem(props: {
 
 function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: ScrollBoxRenderable) => void }) {
     const runState = () => workflowStatusPresentation(props.run.status);
+    const agentsById = createMemo(() => new Map(props.run.agents.map((agent) => [agent.id, agent])));
     const runColor = () => {
         const tone = workflowStatusTone(props.run.status);
         return tone === "success"
@@ -1226,7 +1267,7 @@ function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: Scroll
                 </text>
                 <text fg={theme.muted}>
                     {runState().label} · {props.run.phases.length} phases · {props.run.agents.length} agents ·{" "}
-                    {formatCount(props.run.usage.totalTokens)} tokens
+                    {formatCount(props.run.usage.totalTokens)} tokens · Esc to return
                 </text>
                 <Show when={props.run.warning}>
                     <text fg={theme.warning}>{props.run.warning}</text>
@@ -1252,13 +1293,13 @@ function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: Scroll
                                 </strong>
                                 <span> · {phase.status === "skipped" ? "Skipped" : phaseStatus().label}</span>
                             </text>
-                            <For each={phase.agentIds}>
+                            <For each={phase.agentIds.slice(0, WORKFLOW_PAGE_AGENT_LIMIT)}>
                                 {(agentId) => {
-                                    const agent = () => props.run.agents.find((candidate) => candidate.id === agentId);
-                                    const state = () => {
+                                    const agent = createMemo(() => agentsById().get(agentId));
+                                    const state = createMemo(() => {
                                         const value = agent();
                                         return value ? workflowStatusPresentation(value.status) : undefined;
-                                    };
+                                    });
                                     return (
                                         <text
                                             fg={
@@ -1275,6 +1316,11 @@ function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value: Scroll
                                     );
                                 }}
                             </For>
+                            <Show when={phase.agentIds.length > WORKFLOW_PAGE_AGENT_LIMIT}>
+                                <text fg={theme.muted}>
+                                    … {phase.agentIds.length - WORKFLOW_PAGE_AGENT_LIMIT} more agents
+                                </text>
+                            </Show>
                             <Show when={phase.agentIds.length === 0}>
                                 <text fg={theme.muted}>No agents in this phase</text>
                             </Show>

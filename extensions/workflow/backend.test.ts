@@ -283,12 +283,15 @@ return value;`;
         try {
             const { runId } = await backend.launch({
                 name: "concurrent failure",
-                script: `await Promise.all([agent("slow"),agent(${JSON.stringify("x".repeat(8_001))})])`,
+                script: `try { await Promise.all([agent("slow"),agent(${JSON.stringify("x".repeat(8_001))})]) } catch (error) { await log("sibling failure handled"); throw error }`,
                 sessionId: "s",
                 cwd: process.cwd(),
             });
-            await waitFor(() => backend.inspect(runId).run.agents.length === 1);
-            await Bun.sleep(20);
+            await waitFor(() =>
+                backend
+                    .inspect(runId)
+                    .run.recentActivity.some((activity) => activity.title === "sibling failure handled"),
+            );
             expect(backend.inspect(runId).run.status).toBe("running");
             finishSlow();
             await waitFor(() => backend.inspect(runId).run.status === "failed");
