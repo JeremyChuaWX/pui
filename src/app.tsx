@@ -11,6 +11,7 @@ import { formatCount, formatWorkflowSummary, workflowStatusPresentation, workflo
 import { cycleIndex } from "./list-navigation.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { PromptHistory } from "./prompt-history.js";
+import { promptHistoryDirection } from "./prompt-history-key.js";
 import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
 import {
     compactSubagentUsage,
@@ -799,11 +800,11 @@ export function App(props: { controller: PuiController }) {
             return;
         }
 
-        const historyKey = key.ctrl && (key.name === "p" || key.name === "n");
-        if (historyKey && promptHistory.isTraversing) {
+        const historyDirection = promptHistoryDirection(key);
+        if (historyDirection && promptHistory.isTraversing) {
             key.preventDefault();
             key.stopPropagation();
-            navigatePromptHistory(key.name === "p" ? "previous" : "next");
+            navigatePromptHistory(historyDirection);
             return;
         }
 
@@ -837,10 +838,10 @@ export function App(props: { controller: PuiController }) {
             }
         }
 
-        if (historyKey) {
+        if (historyDirection) {
             key.preventDefault();
             key.stopPropagation();
-            navigatePromptHistory(key.name === "p" ? "previous" : "next");
+            navigatePromptHistory(historyDirection);
             return;
         }
         if ((key.meta || key.option) && isEnterName(key.name)) {
@@ -2102,7 +2103,7 @@ function Help(props: { width: number; onClose: () => void }) {
             <text fg={theme.muted}>Enter send / steer while working</text>
             <text fg={theme.muted}>Shift+Enter insert a new line</text>
             <text fg={theme.muted}>Alt+Enter queue a follow-up</text>
-            <text fg={theme.muted}>Ctrl+P / Ctrl+N prompt history</text>
+            <text fg={theme.muted}>Up / Down or Ctrl+P / Ctrl+N prompt history</text>
             <text fg={theme.muted}>Ctrl+G edit in nvim with last agent response</text>
             <text fg={theme.muted}>Escape abort the current operation</text>
             <text fg={theme.muted}>{workflowBackKeyHint} return from workflow status</text>
