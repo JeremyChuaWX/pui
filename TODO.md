@@ -1,3 +1,2 @@
-- [ ] add up/down to navigate history keybinds
 - [ ] update file dropdown to include hidden files (with appropriate blacklist, e.g.: .git, ...)
 - [ ] abstract agent runtime layer for subagents and workflows
