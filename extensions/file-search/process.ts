@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
+import { killProcessTree } from "../shared/bounded-process.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_KILL_GRACE_MS = 2_000;
@@ -201,19 +202,7 @@ export async function runFileSearch(options: RunFileSearchOptions): Promise<File
 
     const sendSignal = (signal: NodeJS.Signals) => {
         if (closed) return;
-        if (process.platform !== "win32" && child.pid) {
-            try {
-                process.kill(-child.pid, signal);
-                return;
-            } catch {
-                // Fall back to the direct process if group signaling races with exit.
-            }
-        }
-        try {
-            child.kill(signal);
-        } catch {
-            // The child may have exited between checks.
-        }
+        killProcessTree(child, signal);
     };
     const terminate = (why: "cancelled" | "timed_out") => {
         if (reason || closed) return;

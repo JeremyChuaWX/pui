@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { BoundedProcessError, killProcessTree, runBoundedProcess } from "../shared/bounded-process.js";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
 import { maskLiterals } from "./js-scan.js";
 import {
@@ -257,33 +258,26 @@ export function preflightWorkflow(
     };
 }
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
-            executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
-            args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"],
-            child = spawn(executable, args, {
-                stdio: ["ignore", "pipe", "pipe"],
-                env: environment,
-                windowsHide: true,
-            });
-        let output = "",
-            settled = false;
-        const finish = (error?: Error) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            error ? reject(error) : resolve(output.trim());
-        };
-        const timer = setTimeout(() => {
-            child.kill("SIGKILL");
-            finish(new Error("version probe timed out"));
-        }, 2_000);
-        child.stdout.on("data", (c) => {
-            output = `${output}${c}`.slice(0, 1024);
+    const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
+        executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
+        args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"];
+    let result: Awaited<ReturnType<typeof runBoundedProcess>>;
+    try {
+        result = await runBoundedProcess({
+            command: executable,
+            args,
+            env: environment,
+            timeoutMs: 2_000,
+            directChildOnly: true,
+            output: { maxBytes: 1024, overflow: "keep-head" },
         });
-        child.once("error", (e) => finish(e));
-        child.once("close", (code) => finish(code === 0 ? undefined : new Error(`exit code ${code}`)));
-    });
+    } catch (error) {
+        if (error instanceof BoundedProcessError && error.reason === "timeout")
+            throw new Error("version probe timed out");
+        throw error;
+    }
+    if (result.exitCode !== 0) throw new Error(`exit code ${result.exitCode}`);
+    return result.stdout.trim();
 }
 export async function resolveWorkflowNode(
     options: { environment?: NodeJS.ProcessEnv; configuredPath?: string } = {},
@@ -321,76 +315,26 @@ export async function resolveWorkflowNode(
     );
 }
 
-function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
-    if (request.signal.aborted) return Promise.reject(new Error("Shell command was cancelled."));
-    return new Promise((resolve, reject) => {
-        const child = spawn(request.command, {
+async function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
+    try {
+        return await runBoundedProcess({
+            command: request.command,
             cwd: request.cwd,
             env: { ...environment, ...request.env },
             shell: true,
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: process.platform !== "win32",
-            windowsHide: true,
+            timeoutMs: request.timeoutMs,
+            signal: request.signal,
+            termination: { graceMs: 500 },
+            output: { maxBytes: MAX_SHELL_OUTPUT_BYTES, overflow: "fail", scope: "combined" },
         });
-        let stdout = "",
-            stderr = "",
-            settled = false,
-            closed = false,
-            terminationReason: "cancelled" | "timed_out" | "output" | undefined,
-            killTimer: NodeJS.Timeout | undefined,
-            spawnError: Error | undefined;
-        const sendSignal = (signal: NodeJS.Signals) => {
-            if (closed) return;
-            try {
-                process.platform !== "win32" && child.pid ? process.kill(-child.pid, signal) : child.kill(signal);
-            } catch {}
-        };
-        const terminate = (reason: NonNullable<typeof terminationReason>) => {
-            if (terminationReason || closed) return;
-            terminationReason = reason;
-            sendSignal("SIGTERM");
-            killTimer = setTimeout(() => sendSignal("SIGKILL"), 500);
-            killTimer.unref();
-        };
-        const finish = (error?: Error, result?: ShellResult) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            if (killTimer) clearTimeout(killTimer);
-            request.signal.removeEventListener("abort", abort);
-            if (error) reject(error);
-            else if (result) resolve(result);
-            else reject(new Error("Shell command returned no result."));
-        };
-        const abort = () => terminate("cancelled");
-        const append = (stream: "stdout" | "stderr", chunk: string) => {
-            if (terminationReason === "output") return;
-            if (stream === "stdout") stdout += chunk;
-            else stderr += chunk;
-            if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > MAX_SHELL_OUTPUT_BYTES) terminate("output");
-        };
-        const timer = setTimeout(() => terminate("timed_out"), request.timeoutMs);
-        request.signal.addEventListener("abort", abort, { once: true });
-        child.stdout?.setEncoding("utf8");
-        child.stderr?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => append("stdout", chunk));
-        child.stderr?.on("data", (chunk: string) => append("stderr", chunk));
-        child.once("error", (error) => {
-            spawnError = error;
-        });
-        child.once("close", (code) => {
-            // The platform shell can exit while one of its descendants ignores SIGTERM.
-            if (terminationReason) sendSignal("SIGKILL");
-            closed = true;
-            if (spawnError) finish(spawnError);
-            else if (terminationReason === "cancelled") finish(new Error("Shell command was cancelled."));
-            else if (terminationReason === "timed_out") finish(new Error("Shell command timed out."));
-            else if (terminationReason === "output")
-                finish(new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`));
-            else finish(undefined, { exitCode: code ?? 1, stdout, stderr });
-        });
-        if (request.signal.aborted) abort();
-    });
+    } catch (error) {
+        if (!(error instanceof BoundedProcessError)) throw error;
+        if (error.reason === "cancelled") throw new Error("Shell command was cancelled.");
+        if (error.reason === "timeout") throw new Error("Shell command timed out.");
+        if (error.reason === "output")
+            throw new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`);
+        throw new Error(error.message);
+    }
 }
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
@@ -510,18 +454,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             );
             active.child = child;
             const terminate = () => {
-                try {
-                    process.platform !== "win32" && child.pid
-                        ? process.kill(-child.pid, "SIGTERM")
-                        : child.kill("SIGTERM");
-                } catch {}
-                setTimeout(() => {
-                    try {
-                        process.platform !== "win32" && child.pid
-                            ? process.kill(-child.pid, "SIGKILL")
-                            : child.kill("SIGKILL");
-                    } catch {}
-                }, 500).unref();
+                killProcessTree(child, "SIGTERM");
+                setTimeout(() => killProcessTree(child, "SIGKILL"), 500).unref();
             };
             active.controller.signal.addEventListener("abort", terminate, { once: true });
             if (active.controller.signal.aborted) terminate();

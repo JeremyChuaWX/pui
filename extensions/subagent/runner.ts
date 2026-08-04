@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { killProcessTree } from "../shared/bounded-process.js";
 import { JsonLineParser } from "./json-events.js";
 import {
     aggregateSubagentUsage,
@@ -429,19 +430,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
     const sendSignal = (signal: NodeJS.Signals) => {
         if (!child || closed) return;
-        if (process.platform !== "win32" && child.pid) {
-            try {
-                process.kill(-child.pid, signal);
-                return;
-            } catch {
-                // Fall back to signaling just the direct child.
-            }
-        }
-        try {
-            child.kill(signal);
-        } catch {
-            // The process may already have exited between the checks.
-        }
+        killProcessTree(child, signal);
     };
 
     const requestTermination = (reason: Extract<SubagentTerminalStatus, "cancelled" | "timed_out">) => {
