@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+    acquireDirectoryLock,
+    atomicWrite,
+    exclusiveWrite,
+    isProcessAlive,
+    readBoundedJson,
+    syncDirectory,
+} from "./durable-fs.js";
 import type { WorkflowEntrypoint } from "./protocol.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
@@ -12,7 +20,6 @@ const MAX_ARTIFACT = 16 * 1024 * 1024;
 const MAX_TERMINAL_ARTIFACT = MAX_ARTIFACT * 2 + 1_024;
 const DELIVERY_RECOVERY_LOCK_STALE_MS = 30_000;
 const RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,255}$/;
-const RECOVERY_LOCK_OWNER = /^owner-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface ImmutableRunLaunch {
     name?: string;
     sessionId?: string;
@@ -46,12 +53,6 @@ interface TerminalState {
     result: unknown;
     summary: WorkflowRunSummaryV1;
 }
-interface DeliveryRecoveryLockOwner {
-    token: string;
-    pid: number;
-    host: string;
-    startedAt: number;
-}
 export interface StoredRun {
     id: string;
     directory: string;
@@ -70,67 +71,9 @@ function json(value: unknown, maximum = MAX_ARTIFACT): string {
     if (Buffer.byteLength(text) > maximum) throw new Error("Workflow artifact exceeds its size limit.");
     return text;
 }
-async function syncDirectory(directory: string) {
-    let handle: fs.promises.FileHandle | undefined;
-    try {
-        handle = await fs.promises.open(directory, "r");
-        await handle.sync();
-    } catch (error) {
-        // Windows does not consistently permit opening or syncing directory handles.
-        if (process.platform !== "win32" || !["EISDIR", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? ""))
-            throw error;
-    } finally {
-        await handle?.close();
-    }
-}
-async function atomic(file: string, value: unknown) {
-    const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
-    try {
-        const handle = await fs.promises.open(temp, "wx", 0o600);
-        try {
-            await handle.writeFile(json(value));
-            await handle.sync();
-        } finally {
-            await handle.close();
-        }
-        await fs.promises.rename(temp, file);
-        await syncDirectory(path.dirname(file));
-    } finally {
-        await fs.promises.rm(temp, { force: true });
-    }
-}
-async function exclusive(file: string, value: unknown, maximum = MAX_ARTIFACT): Promise<boolean> {
-    const temp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomUUID()}.tmp`);
-    try {
-        const handle = await fs.promises.open(temp, "wx", 0o600);
-        try {
-            await handle.writeFile(json(value, maximum));
-            await handle.sync();
-        } finally {
-            await handle.close();
-        }
-        try {
-            await fs.promises.link(temp, file);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-            throw error;
-        }
-        await syncDirectory(path.dirname(file));
-        return true;
-    } finally {
-        await fs.promises.rm(temp, { force: true });
-    }
-}
-async function boundedJson<T = unknown>(file: string, maximum = MAX_ARTIFACT): Promise<T> {
-    const stat = await fs.promises.lstat(file);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > maximum)
-        throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
-    try {
-        return JSON.parse(await fs.promises.readFile(file, "utf8"));
-    } catch {
-        throw new Error(`Corrupt workflow artifact: ${file}`);
-    }
-}
+const atomic = (file: string, value: unknown) => atomicWrite(file, json(value));
+const exclusive = (file: string, value: unknown, maximum = MAX_ARTIFACT) => exclusiveWrite(file, json(value, maximum));
+const boundedJson = <T = unknown>(file: string, maximum = MAX_ARTIFACT) => readBoundedJson<T>(file, maximum);
 async function readDelivery(
     file: string,
 ): Promise<{ value: DeliveryState & { version?: number }; malformed: boolean }> {
@@ -154,14 +97,6 @@ async function readDelivery(
 }
 function projectHash(cwd: string) {
     return createHash("sha256").update(cwd).digest("hex");
-}
-function isProcessAlive(pid: number) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "EPERM";
-    }
 }
 function blocksDeliveryRecovery(
     state: DeliveryState | undefined,
@@ -190,24 +125,6 @@ async function hasDeliveryRelease(directory: string, owner: string | undefined):
         release = await boundedJson<{ version?: unknown; owner?: unknown }>(file, 4_096).catch(() => undefined);
     return release?.version === 1 && release.owner === owner;
 }
-async function readDeliveryRecoveryLockOwner(ownerDirectory: string): Promise<DeliveryRecoveryLockOwner | undefined> {
-    const file = path.join(ownerDirectory, "owner.json");
-    let owner: Partial<DeliveryRecoveryLockOwner>;
-    try {
-        owner = await boundedJson<Partial<DeliveryRecoveryLockOwner>>(file, 4_096);
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-        throw error;
-    }
-    return typeof owner.token === "string" &&
-        Number.isInteger(owner.pid) &&
-        (owner.pid ?? 0) > 0 &&
-        typeof owner.host === "string" &&
-        Number.isFinite(owner.startedAt)
-        ? (owner as DeliveryRecoveryLockOwner)
-        : undefined;
-}
-
 /** Injectible durable storage. All paths are private and outside the checkout by default. */
 export class WorkflowRunStorage {
     readonly root: string;
@@ -345,86 +262,15 @@ export class WorkflowRunStorage {
         await atomic(path.join(directory, "result.json"), state.result);
         await atomic(summaryFile, state.summary);
     }
-    private async acquireDeliveryRecoveryLock(directory: string): Promise<(() => Promise<void>) | undefined> {
-        const lock = path.join(directory, "delivery.recovery.lock");
-        for (let attempt = 0; attempt < 3; attempt++) {
-            const token = crypto.randomUUID(),
-                ownerName = `owner-${token}`,
-                candidate = path.join(directory, `.delivery.recovery.lock.candidate-${token}`),
-                ownerDirectory = path.join(candidate, ownerName);
-            try {
-                await fs.promises.mkdir(ownerDirectory, { recursive: true, mode: 0o700 });
-                const owner = await fs.promises.open(path.join(ownerDirectory, "owner.json"), "wx", 0o600);
-                try {
-                    await owner.writeFile(
-                        json({ token, pid: process.pid, host: os.hostname(), startedAt: Date.now() }, 4_096),
-                    );
-                    await owner.sync();
-                } finally {
-                    await owner.close();
-                }
-                try {
-                    await fs.promises.rename(candidate, lock);
-                } catch (error) {
-                    const stat = await fs.promises.lstat(lock).catch((statError: NodeJS.ErrnoException) => {
-                        if (statError.code === "ENOENT") return undefined;
-                        throw statError;
-                    });
-                    if (!stat) {
-                        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-                        throw error;
-                    }
-                    if (stat.isSymbolicLink() || !stat.isDirectory())
-                        throw new Error(`Unsafe workflow delivery recovery lock: ${lock}`);
-                    const entries = await fs.promises.readdir(lock, { withFileTypes: true }),
-                        entry = entries.length === 1 && entries[0]?.isDirectory() ? entries[0] : undefined,
-                        current =
-                            entry && RECOVERY_LOCK_OWNER.test(entry.name)
-                                ? await readDeliveryRecoveryLockOwner(path.join(lock, entry.name))
-                                : undefined,
-                        startedAt = current ? Math.max(stat.mtimeMs, current.startedAt) : stat.mtimeMs,
-                        abandoned =
-                            Date.now() - startedAt >= DELIVERY_RECOVERY_LOCK_STALE_MS ||
-                            (current?.host === os.hostname() && !isProcessAlive(current.pid));
-                    if (!abandoned) return undefined;
-                    const stale = path.join(directory, `.delivery.recovery.lock.stale-${crypto.randomUUID()}`);
-                    try {
-                        await fs.promises.rename(lock, stale);
-                    } catch (renameError) {
-                        if ((renameError as NodeJS.ErrnoException).code === "ENOENT") continue;
-                        throw renameError;
-                    }
-                    await fs.promises.rm(stale, { recursive: true, force: true });
-                    await syncDirectory(directory);
-                    continue;
-                }
-                await syncDirectory(directory);
-                let released = false;
-                return async () => {
-                    if (released) return;
-                    released = true;
-                    const ownedDirectory = path.join(lock, ownerName),
-                        current = await readDeliveryRecoveryLockOwner(ownedDirectory);
-                    if (current?.token !== token) return;
-                    await fs.promises.rm(ownedDirectory, { recursive: true, force: true });
-                    try {
-                        await fs.promises.rmdir(lock);
-                    } catch (error) {
-                        if (
-                            ["ENOENT", "ENOTEMPTY", "EEXIST", "EPERM", "EACCES"].includes(
-                                (error as NodeJS.ErrnoException).code ?? "",
-                            )
-                        )
-                            return;
-                        throw error;
-                    }
-                    await syncDirectory(directory);
-                };
-            } finally {
-                await fs.promises.rm(candidate, { recursive: true, force: true });
-            }
-        }
-        return undefined;
+    private acquireDeliveryRecoveryLock(directory: string): Promise<(() => Promise<void>) | undefined> {
+        return acquireDirectoryLock(path.join(directory, "delivery.recovery.lock"), {
+            staleMs: DELIVERY_RECOVERY_LOCK_STALE_MS,
+            wait: { attempts: 3 },
+            steal: "stale-or-dead-owner",
+            useOwnerStartedAt: true,
+            syncParent: true,
+            label: "workflow delivery recovery lock",
+        });
     }
     async claimDelivery(directory: string): Promise<boolean> {
         directory = await this.assertDirectory(directory);
