@@ -90,12 +90,22 @@ defaults — the same DI convention as the controller.
   background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes;
   `presets.ts`/`semaphore.ts` are shared with the workflow extension.
 - `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle + sandboxed worker
-  RPC), `run-storage.ts` (durable run directories), `source.ts` (workflow file parsing),
-  `js-scan.ts` (the one JavaScript tokenizer shared by preflight and source parsing),
-  `approval.ts` (cross-process approval store), `worktree.ts`, `manager.ts`, `protocol.ts` +
-  `background-protocol.ts` (wire formats). `agent-executor.ts` provides the default child-Pi agent
-  executor and the shared production backend wiring used by the extension, the headless CLI, and
-  the smoke harness.
+  supervision; collaborators are injectable through an options bag, including a `WorkflowPlatform`
+  seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
+  `worker-protocol.ts` (untrusted worker-frame validation and NDJSON decoding),
+  `worker-source.ts` + `worker/*.js.txt` (the sandboxed worker and bootstrap sources as text
+  imports), `rpc-operations.ts` (pure request/result validators and the one durable-operation
+  pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories),
+  `durable-fs.ts` (shared atomic-write/fsync and the cross-process directory-lock protocol with
+  per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
+  tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
+  `session-lifecycle.ts` (session epoch/generation guards for `index.ts`), `worktree.ts`,
+  `manager.ts`, `protocol.ts` + `background-protocol.ts` (wire formats). `agent-executor.ts`
+  provides the default child-Pi agent executor and the shared production backend wiring used by
+  the extension, the headless CLI, and the smoke harness.
+- `extensions/shared/` — cross-extension primitives: `bounded-process.ts` (`runBoundedProcess`
+  spawn/timeout/kill with bounded output; `killProcessTree` group signaling used by every child
+  supervisor).
 - `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
   previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
   shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
