@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -163,6 +163,7 @@ test("retries a released terminal claim through recovery", async () => {
         releaseTerminalDelivery: async () => {},
         shutdown: async () => {},
     };
+    const failures: string[] = [];
     const manager = new WorkflowRunManager({
         backend,
         emit: () => {},
@@ -171,8 +172,11 @@ test("retries a released terminal claim through recovery", async () => {
             if (attempts === 1) throw new Error("temporary delivery failure");
             resolveDelivery();
         },
+        log: (message) => {
+            failures.push(message);
+            resolveFailure();
+        },
     });
-    const terminalError = spyOn(console, "error").mockImplementation(() => resolveFailure());
 
     try {
         listener(run("succeeded"));
@@ -180,9 +184,8 @@ test("retries a released terminal claim through recovery", async () => {
         listener(run("succeeded"));
         await delivered;
         expect(recoveries).toEqual([false, true]);
-        expect(terminalError).toHaveBeenCalledTimes(1);
+        expect(failures).toEqual(["Workflow terminal delivery failed: temporary delivery failure"]);
     } finally {
-        terminalError.mockRestore();
         await manager.shutdown();
     }
 });

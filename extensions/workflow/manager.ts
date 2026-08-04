@@ -7,6 +7,8 @@ export interface WorkflowManagerOptions {
     deliver: (run: WorkflowRunSummaryV1, result?: string) => unknown;
     /** Exclude runs owned by another host, such as headless CLI invocations, from session delivery. */
     shouldDeliver?: (run: WorkflowRunSummaryV1) => boolean;
+    /** Diagnostics sink for delivery failures. */
+    log?: (message: string) => void;
 }
 const terminal = (status: string) => status === "succeeded" || status === "failed" || status === "cancelled";
 
@@ -22,7 +24,7 @@ export class WorkflowRunManager {
             options.emit(run);
             if (terminal(run.status))
                 void this.deliver(run).catch((error) =>
-                    console.error(
+                    (options.log ?? console.error)(
                         `Workflow terminal delivery failed: ${error instanceof Error ? error.message : String(error)}`,
                     ),
                 );

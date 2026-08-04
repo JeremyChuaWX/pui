@@ -115,7 +115,7 @@ return value;`;
         const repositoryStarted = new Promise<void>((resolve) => (markRepositoryStarted = resolve)),
             repositoryRelease = new Promise<void>((resolve) => (releaseRepository = resolve)),
             backend = createWorkflowBackend({
-                shutdownGraceMs: 20,
+                platform: { shutdownGraceMs: 20 },
                 agentExecutor: async () => ({ value: null }),
                 worktreeManager: {
                     async repository(cwd: string) {

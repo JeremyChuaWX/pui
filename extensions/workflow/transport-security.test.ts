@@ -7,11 +7,14 @@ const ready = `send({v:1,t:"ready"});`;
 async function run(workerSource: string, options: Partial<WorkflowBackendOptions> = {}) {
     const backend = createWorkflowBackend({
         agentExecutor: async () => ({ value: null }),
-        testOnlyWorkerSource: prelude + workerSource,
-        readyTimeoutMs: 2_000,
-        watchdogMs: 100,
-        runTimeoutMs: 500,
         ...options,
+        platform: {
+            workerSource: prelude + workerSource,
+            readyTimeoutMs: 2_000,
+            watchdogMs: 100,
+            runTimeoutMs: 500,
+            ...options.platform,
+        },
     });
     const { runId } = await backend.launch({
         name: "hostile transport",
@@ -81,7 +84,7 @@ describe("workflow hostile transport and watchdog", () => {
     });
 
     test("heartbeat kills a ready worker whose event loop hangs", async () => {
-        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`, { runTimeoutMs: 1_500 });
+        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`, { platform: { runTimeoutMs: 1_500 } });
         expect(result.error).toContain("heartbeat timed out");
     });
 
@@ -103,8 +106,7 @@ describe("workflow hostile transport and watchdog", () => {
     test("supervises an async workflow that enters an infinite loop", async () => {
         const backend = createWorkflowBackend({
             agentExecutor: async () => ({ value: null }),
-            watchdogMs: 100,
-            runTimeoutMs: 500,
+            platform: { watchdogMs: 100, runTimeoutMs: 500 },
         });
         const { runId } = await backend.launch({
             name: "async hang",
@@ -124,7 +126,7 @@ describe("workflow hostile transport and watchdog", () => {
     test("retains the production 128 MiB heap cap under memory pressure", async () => {
         const result = await run(
             `${ready}const held=[];setImmediate(()=>{for(;;)held.push(new Array(100000).fill(Math.random()))});setInterval(()=>send({v:1,t:"heartbeat"}),25)`,
-            { watchdogMs: 2_000, runTimeoutMs: 3_000 },
+            { platform: { watchdogMs: 2_000, runTimeoutMs: 3_000 } },
         );
         expect(result.status).toBe("failed");
         // Depending on Node/OS reserve behavior, either V8's bounded OOM exit or total supervision wins.

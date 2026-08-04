@@ -94,7 +94,7 @@ describe("workflow budgets and pause", () => {
         await timed.shutdown();
 
         const total = createWorkflowBackend({
-            runTimeoutMs: 25,
+            platform: { runTimeoutMs: 25 },
             cooperativeExecutor: true,
             agentExecutor: ({ signal }) =>
                 new Promise((_resolve, reject) =>

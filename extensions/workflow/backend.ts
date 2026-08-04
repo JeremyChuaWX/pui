@@ -26,11 +26,11 @@ import {
     validateShellResult,
     workflowOperationId,
 } from "./rpc-operations.js";
-import type { WorkflowRunStorage } from "./run-storage.js";
+import type { ImmutableRunLaunch, StoredRun } from "./run-storage.js";
 import { executableWorkflowScript } from "./source.js";
 import { parseWorkerFrame, WorkerFrameDecoder } from "./worker-protocol.js";
 import { WORKER_SOURCE } from "./worker-source.js";
-import { WorkflowWorktreeManager } from "./worktree.js";
+import { type OwnedWorktree, WorkflowWorktreeManager } from "./worktree.js";
 
 export { DEFAULT_WORKFLOW_LIMITS };
 
@@ -90,6 +90,43 @@ export interface WorkflowHostPolicy {
     models?: readonly string[];
     resolveModel?: (role: string, requested?: string) => string | undefined;
 }
+/**
+ * Host facilities and supervision timings with production defaults; tests inject overrides here
+ * instead of widening the public options.
+ */
+export interface WorkflowPlatform {
+    now: () => number;
+    uuid: () => string;
+    /** Diagnostics sink for persistence and shutdown failures. */
+    log: (message: string) => void;
+    /**
+     * Trusted worker module source. Never accept untrusted input here. An injected module receives
+     * the same read-only worker-file permission, 128 MiB heap cap, empty environment, and no
+     * filesystem-write, network, or child-process permissions.
+     */
+    workerSource: string;
+    /** Worker startup deadline. */
+    readyTimeoutMs: number;
+    /** Worker heartbeat deadline once ready. */
+    watchdogMs: number;
+    /** Overrides every run's limit-derived total timeout when set. */
+    runTimeoutMs?: number;
+    shutdownGraceMs: number;
+}
+/** The durable-run store the backend requires; WorkflowRunStorage is the production implementation. */
+export interface WorkflowRunStore {
+    readonly root: string;
+    create(cwd: string, id: string, launch: ImmutableRunLaunch, snapshot: WorkflowRunSummaryV1): Promise<string>;
+    snapshot(directory: string, snapshot: WorkflowRunSummaryV1): Promise<void>;
+    complete(directory: string, operation: string, value: unknown, at?: number): Promise<void>;
+    worktree(directory: string, operation: string, owned: OwnedWorktree | null, at?: number): Promise<void>;
+    terminal(directory: string, result: unknown, summary: WorkflowRunSummaryV1): Promise<void>;
+    claimDelivery(directory: string): Promise<boolean>;
+    recoverDeliveryClaim(directory: string, staleAfterMs?: number): Promise<boolean>;
+    markDelivered(directory: string): Promise<void>;
+    releaseClaim(directory: string): Promise<void>;
+    discover(cwd: string): Promise<StoredRun[]>;
+}
 export interface WorkflowBackendOptions {
     agentExecutor: AgentExecutor;
     /** Trusted host command runner. Defaults to the platform shell in the workflow cwd. */
@@ -97,23 +134,12 @@ export interface WorkflowBackendOptions {
     nodePath?: string;
     environment?: NodeJS.ProcessEnv;
     eventSink?: (run: WorkflowRunSummaryV1) => void;
-    now?: () => number;
     policy?: WorkflowHostPolicy;
-    runTimeoutMs?: number;
-    watchdogMs?: number;
-    /** Worker startup deadline. Defaults to 5 seconds in production. */
-    readyTimeoutMs?: number;
-    /**
-     * Trusted-host test hook for injecting worker module source. Never accept untrusted input here.
-     * The injected module receives the same read-only worker-file permission, 128 MiB heap cap,
-     * empty environment, and no filesystem-write, network, or child-process permissions.
-     */
-    testOnlyWorkerSource?: string;
     /** True for executors (such as runSubagent) that honor abort and reap their child process. */
     cooperativeExecutor?: boolean;
-    shutdownGraceMs?: number;
-    storage?: WorkflowRunStorage;
+    storage?: WorkflowRunStore;
     worktreeManager?: WorkflowWorktreeManager;
+    platform?: Partial<WorkflowPlatform>;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }>;
@@ -389,7 +415,17 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     let shuttingDown = false,
         pendingLaunches = 0,
         pendingLaunchWaiter: (() => void) | undefined;
-    const now = options.now ?? Date.now;
+    const platform: WorkflowPlatform = {
+        now: Date.now,
+        uuid: () => crypto.randomUUID(),
+        log: (message) => console.error(message),
+        workerSource: WORKER_SOURCE,
+        readyTimeoutMs: READY_TIMEOUT_MS,
+        watchdogMs: HEARTBEAT_TIMEOUT_MS,
+        shutdownGraceMs: 2_000,
+        ...options.platform,
+    };
+    const now = platform.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
     const emit = (copy: WorkflowRunSummaryV1) => {
         options.eventSink?.(copy);
@@ -405,7 +441,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         const storage = options.storage;
         if (directory && storage && !TERMINAL.has(copy.status))
             void persist(a, () => storage.snapshot(directory, copy)).catch((error) =>
-                console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
+                platform.log(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
     };
     const publishTerminal = (a: ActiveRun, result: unknown) => {
@@ -416,7 +452,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             storage = options.storage;
         if (directory && storage)
             void persist(a, () => storage.terminal(directory, result, copy)).catch((error) =>
-                console.error(`Workflow terminal persistence failed: ${errorMessage(error)}`),
+                platform.log(`Workflow terminal persistence failed: ${errorMessage(error)}`),
             );
         emit(copy);
     };
@@ -465,7 +501,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
             const worker = path.join(directory, "worker.mjs");
-            await fs.promises.writeFile(worker, options.testOnlyWorkerSource ?? WORKER_SOURCE, { mode: 0o600 });
+            await fs.promises.writeFile(worker, platform.workerSource, { mode: 0o600 });
             const canonical = await realpath(worker);
             const child = spawn(
                 node,
@@ -672,7 +708,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             },
                             setup: async () => {
                                 if (request.isolation !== "worktree") return;
-                                operationKey = `${operationId.slice(0, 35)}-${crypto.randomUUID().slice(0, 8)}`;
+                                operationKey = `${operationId.slice(0, 35)}-${platform.uuid().slice(0, 8)}`;
                                 owned = await worktrees.create(input.cwd, active.summary.id.slice(0, 63), operationKey);
                                 if (active.directory && options.storage)
                                     await options.storage.worktree(active.directory, operationKey, owned, now());
@@ -778,9 +814,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 }
             });
             const watchdog = setInterval(() => {
-                const limit = ready
-                    ? (options.watchdogMs ?? HEARTBEAT_TIMEOUT_MS)
-                    : (options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+                const limit = ready ? platform.watchdogMs : platform.readyTimeoutMs;
                 if (now() - lastBeat > limit) {
                     finish(
                         "failed",
@@ -792,7 +826,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             const total = setTimeout(() => {
                 finish("failed", "Workflow run timed out.");
                 active.controller.abort();
-            }, options.runTimeoutMs ?? active.summary.limits.timeoutMs);
+            }, platform.runTimeoutMs ?? active.summary.limits.timeoutMs);
             await new Promise<void>((resolve) => {
                 child.once("error", (e) => {
                     finish("failed", errorMessage(e));
@@ -840,7 +874,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 });
                 checkCancelled();
                 if (shuttingDown) throw new Error("Workflow backend is shutting down.");
-                const id = crypto.randomUUID(),
+                const id = platform.uuid(),
                     timestamp = now(),
                     controller = new AbortController(),
                     limits = normalizeWorkflowLimits(input.limits ?? {});
@@ -1077,7 +1111,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 await Promise.race([
                     new Promise<void>((resolve) => (pendingLaunchWaiter = resolve)),
                     new Promise<void>((resolve) => {
-                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                        timer = setTimeout(resolve, platform.shutdownGraceMs);
                     }),
                 ]);
                 if (timer) clearTimeout(timer);
@@ -1104,12 +1138,12 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 await Promise.race([
                     Promise.allSettled(cooperative),
                     new Promise<void>((resolve) => {
-                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                        timer = setTimeout(resolve, platform.shutdownGraceMs);
                     }),
                 ]);
                 if (timer) clearTimeout(timer);
                 if ([...runs.values()].some((r) => r.cooperativeTasks.size))
-                    console.error("Workflow executor shutdown grace expired; child cleanup may be incomplete.");
+                    platform.log("Workflow executor shutdown grace expired; child cleanup may be incomplete.");
             }
             listeners.clear();
         },
