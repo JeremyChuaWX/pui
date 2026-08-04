@@ -17,6 +17,7 @@ import {
 } from "./protocol.js";
 import type { WorkflowRunStorage } from "./run-storage.js";
 import { executableWorkflowScript } from "./source.js";
+import { MAX_FRAME_BYTES, parseWorkerFrame, WorkerFrameDecoder } from "./worker-protocol.js";
 import { WORKER_SOURCE } from "./worker-source.js";
 import { WorkflowWorktreeManager } from "./worktree.js";
 
@@ -28,9 +29,6 @@ export const DEFAULT_WORKFLOW_LIMITS = {
     maxCost: 0,
 } as const;
 const MAX_SCRIPT_BYTES = 64 * 1024,
-    MAX_FRAME_BYTES = 256 * 1024,
-    MAX_FRAME_LINE_BYTES = MAX_FRAME_BYTES * 2 + 1024,
-    MAX_PENDING = 16,
     STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
@@ -533,8 +531,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 publish(active);
             }
             if (!child.stdin || !child.stdout) throw new Error("Workflow worker pipes were not created.");
-            let buffer = "",
-                pending = 0,
+            let pending = 0,
                 agents = 0,
                 shells = 0,
                 phaseId: string | undefined,
@@ -548,15 +545,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (!child.stdin.writable || child.stdin.writableEnded || child.stdin.destroyed) return false;
                 return child.stdin.write(payload);
             };
-            const exact = (frame: Record<string, unknown>, keys: readonly string[]) =>
-                Object.keys(frame).length === keys.length && keys.every((key) => key in frame);
             const handle = async (inputFrame: unknown) => {
-                if (!inputFrame || typeof inputFrame !== "object" || Array.isArray(inputFrame))
-                    throw new Error("Malformed workflow worker frame.");
-                const frame = inputFrame as Record<string, unknown>;
-                if (frame.v !== 1 || typeof frame.t !== "string") throw new Error("Malformed workflow worker frame.");
+                const frame = parseWorkerFrame(inputFrame, { ready, pending });
                 if (frame.t === "ready") {
-                    if (ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow ready frame.");
                     ready = true;
                     lastBeat = now();
                     send({
@@ -569,43 +560,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     return;
                 }
                 if (frame.t === "heartbeat") {
-                    if (!ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow heartbeat frame.");
                     lastBeat = now();
                     return;
                 }
                 if (frame.t === "terminal") {
-                    if (pending > 0)
-                        throw new Error("Workflow worker sent a terminal frame with pending RPC requests.");
-                    if (
-                        !ready ||
-                        (frame.ok === true
-                            ? !(exact(frame, ["v", "t", "ok"]) || exact(frame, ["v", "t", "ok", "json"]))
-                            : frame.ok !== false || !exact(frame, ["v", "t", "ok", "error"])) ||
-                        (frame.ok === false && typeof frame.error !== "string")
-                    )
-                        throw new Error("Malformed workflow terminal frame.");
-                    if (frame.json !== undefined && typeof frame.json !== "string")
-                        throw new Error("Malformed workflow result.");
-                    if (typeof frame.json === "string" && Buffer.byteLength(frame.json) > MAX_FRAME_BYTES)
-                        throw new Error("Oversized workflow result.");
-                    frame.ok === true
-                        ? finish("succeeded", undefined, frame.json as string | undefined)
-                        : finish("failed", String(frame.error));
+                    frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", frame.error);
                     child.stdin.end();
                     child.kill("SIGTERM");
                     return;
                 }
-                if (
-                    frame.t !== "rpc" ||
-                    !ready ||
-                    typeof frame.id !== "string" ||
-                    typeof frame.method !== "string" ||
-                    !(["agent", "shell"].includes(frame.method)
-                        ? exact(frame, ["v", "t", "id", "method", "value", "identity"])
-                        : exact(frame, ["v", "t", "id", "method", "value"])) ||
-                    ++pending > MAX_PENDING
-                )
-                    throw new Error("Invalid or excessive workflow RPC request.");
+                pending++;
                 try {
                     let value: unknown = null;
                     if (frame.method === "phase") {
@@ -983,30 +947,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 stderr = Buffer.from(`${stderr}${c}`).subarray(-STDERR_BYTES).toString();
             });
             child.stdout.setEncoding("utf8");
+            const decoder = new WorkerFrameDecoder();
             child.stdout.on("data", (chunk) => {
-                buffer += chunk;
-                let index = buffer.indexOf("\n");
-                while (index >= 0) {
-                    const line = buffer.slice(0, index);
-                    buffer = buffer.slice(index + 1);
-                    index = buffer.indexOf("\n");
-                    if (Buffer.byteLength(line) > MAX_FRAME_LINE_BYTES) {
-                        finish("failed", "Oversized workflow worker frame.");
-                        active.controller.abort();
-                        return;
-                    }
-                    try {
-                        void handle(JSON.parse(line)).catch((e) => {
+                try {
+                    for (const parsed of decoder.decode(chunk))
+                        void handle(parsed).catch((e) => {
                             finish("failed", errorMessage(e));
                             active.controller.abort();
                         });
-                    } catch {
-                        finish("failed", "Malformed workflow worker output.");
-                        active.controller.abort();
-                    }
-                }
-                if (Buffer.byteLength(buffer) > MAX_FRAME_LINE_BYTES) {
-                    finish("failed", "Oversized workflow worker frame.");
+                } catch (e) {
+                    finish("failed", errorMessage(e));
                     active.controller.abort();
                 }
             });

@@ -34,23 +34,14 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
     return { ...details.run, result: details.result };
 }
 
-const failureCases = [
-    ["malformed JSON", `send("not-json\\n");setInterval(()=>{},1000)`],
-    ["unknown protocol version", `send({v:2,t:"ready"});setInterval(()=>{},1000)`],
-    ["unknown protocol type", `send({v:1,t:"mystery"});setInterval(()=>{},1000)`],
-    ["duplicate ready", `${ready}${ready}setInterval(()=>{},1000)`],
-    ["extra ready fields", `send({v:1,t:"ready",extra:true});setInterval(()=>{},1000)`],
-    ["unknown RPC method", `${ready}send({v:1,t:"rpc",id:"1",method:"root",value:null});setInterval(()=>{},1000)`],
-    ["oversized unterminated frame", `process.stdout.write("x".repeat(262145));setInterval(()=>{},1000)`],
-] as const;
-
+// Frame-shape and line-cap rules are unit-tested in worker-protocol.test.ts; the tests here keep
+// only the behaviors that need a real worker process: supervision, reaping, and sandbox limits.
 describe("workflow hostile transport and watchdog", () => {
-    for (const [name, source] of failureCases)
-        test(name, async () => {
-            const result = await run(source);
-            expect(result.status).toBe("failed");
-            expect(result.error?.length).toBeLessThanOrEqual(2_000);
-        });
+    test("fails and reaps a worker that violates the frame protocol", async () => {
+        const result = await run(`send({v:2,t:"ready"});setInterval(()=>{},1000)`);
+        expect(result.status).toBe("failed");
+        expect(result.error?.length).toBeLessThanOrEqual(2_000);
+    });
 
     test("accepts coalesced frames containing a terminal value at the JSON size limit", async () => {
         const result = await run(
@@ -87,24 +78,6 @@ describe("workflow hostile transport and watchdog", () => {
         const result = await run(`${ready}process.stdin.once("data",()=>send({v:1,t:"terminal",ok:true,json:"{"}))`);
         expect(result.status).toBe("failed");
         expect(result.error).toContain("Malformed workflow result");
-    });
-
-    test("caps concurrent pending RPC requests with a hanging executor", async () => {
-        const requests = Array.from({ length: 17 }, (_, index) =>
-            JSON.stringify({
-                v: 1,
-                t: "rpc",
-                id: String(index),
-                method: "agent",
-                value: { prompt: "hang", options: {} },
-                identity: `site#${index}`,
-            }),
-        ).join(",");
-        const result = await run(
-            `${ready}for(const x of [${requests}])send(x);setInterval(()=>send({v:1,t:"heartbeat"}),25)`,
-            { agentExecutor: () => new Promise(() => {}) },
-        );
-        expect(result.status).toBe("failed");
     });
 
     test("heartbeat kills a ready worker whose event loop hangs", async () => {
