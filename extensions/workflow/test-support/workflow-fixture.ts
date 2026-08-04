@@ -1,4 +1,4 @@
-import { MAX_WORKFLOW_AGENTS } from "./protocol.js";
+import { MAX_WORKFLOW_AGENTS } from "../protocol.js";
 
 interface WorkflowFixtureAgent {
     id: string;

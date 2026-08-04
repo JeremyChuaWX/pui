@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { FileWorkflowApprovalStore } from "./approval.js";
+import { FileWorkflowApprovalStore } from "../approval.js";
 
 const [file, boundary, key, ready, gate] = process.argv.slice(2);
 if (!file || !boundary || !key || !ready || !gate) throw new Error("Missing helper argument");

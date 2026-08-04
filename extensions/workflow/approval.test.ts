@@ -100,7 +100,7 @@ describe("FileWorkflowApprovalStore", () => {
                     spawn(
                         process.execPath,
                         [
-                            path.join(import.meta.dir, "approval-process-helper.ts"),
+                            path.join(import.meta.dir, "test-support", "approval-process-helper.ts"),
                             file,
                             root,
                             key,

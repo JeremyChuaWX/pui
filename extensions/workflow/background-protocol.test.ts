@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseBackgroundWorkflowControl, parseBackgroundWorkflowEvent } from "./background-protocol.js";
-import { workflowRun } from "./workflow-fixture.js";
+import { workflowRun } from "./test-support/workflow-fixture.js";
 
 const route = { sessionId: "session-1", instanceId: "instance-1", cwd: "/canonical/repo" };
 const envelope = (type: string, extra: Record<string, unknown> = {}) => ({

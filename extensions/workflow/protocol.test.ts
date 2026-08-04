@@ -6,7 +6,7 @@ import {
     parseWorkflowRunV1,
     truncateWorkflowText,
 } from "./protocol.js";
-import { workflowRun } from "./workflow-fixture.js";
+import { workflowRun } from "./test-support/workflow-fixture.js";
 
 describe("workflow v1 protocol", () => {
     test("accepts a bounded synthetic 1,000-agent authoritative snapshot", () => {
