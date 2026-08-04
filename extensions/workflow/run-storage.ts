@@ -2,17 +2,19 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { errorMessage } from "../shared/validate.js";
 import {
     acquireDirectoryLock,
     atomicWrite,
     exclusiveWrite,
+    inferDirectoryBoundary,
     isProcessAlive,
     readBoundedJson,
+    safeDirectory,
     syncDirectory,
 } from "./durable-fs.js";
 import type { WorkflowEntrypoint } from "./protocol.js";
-import { errorMessage, parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
-import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
+import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { findRepositoryRoot } from "./source.js";
 import type { OwnedWorktree } from "./worktree.js";
 

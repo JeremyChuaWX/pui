@@ -12,8 +12,8 @@ import {
     createEventBus,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { AbortableSemaphore } from "../extensions/shared/semaphore.js";
 import { registerSubagentExtension } from "../extensions/subagent/index.js";
-import { AbortableSemaphore } from "../extensions/subagent/semaphore.js";
 import { waitFor } from "../extensions/test-support/wait.js";
 import { PuiController } from "./controller.js";
 

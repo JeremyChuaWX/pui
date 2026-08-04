@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AbortableSemaphore } from "../subagent/semaphore.js";
+import type { AbortableSemaphore } from "../shared/semaphore.js";
 import type { ShellResult, WorkflowHostPolicy } from "./backend.js";
 import { MAX_WORKFLOW_ID, type WorkflowLimitsV1 } from "./protocol.js";
 import { MAX_FRAME_BYTES } from "./worker-protocol.js";

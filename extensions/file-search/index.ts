@@ -1,6 +1,14 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+    formatTruncationNotice,
+    MAX_RETAINED_RESULT_BYTES,
+    MAX_RETAINED_SESSION_BYTES,
+    RetainedOutputQuota,
+    type RetainedOutputQuotaOptions,
+    truncateUtf8,
+} from "../shared/retained-output.js";
 import { buildFdArgs, buildRgArgs, type FdArgs, type RgArgs } from "./args.js";
 import { resolveFdBinary, resolveRgBinary, type SystemBinary } from "./binaries.js";
 import { type FileSearchProcessResult, type RunFileSearchOptions, runFileSearch } from "./process.js";
@@ -16,6 +24,22 @@ export interface FileSearchExtensionDependencies {
     resolveFd?: () => SystemBinary;
     resolveRg?: () => SystemBinary;
     run?: (options: RunFileSearchOptions) => Promise<FileSearchProcessResult>;
+    retainedOutput?: RetainedOutputQuotaOptions;
+}
+
+/** Production collaborators for either the pui composition root or plain Pi loading. */
+export function createDefaultFileSearchDependencies(
+    overrides: FileSearchExtensionDependencies = {},
+): Required<FileSearchExtensionDependencies> {
+    return {
+        resolveFd: overrides.resolveFd ?? resolveFdBinary,
+        resolveRg: overrides.resolveRg ?? resolveRgBinary,
+        run: overrides.run ?? runFileSearch,
+        retainedOutput: overrides.retainedOutput ?? {
+            maxResultBytes: MAX_RETAINED_RESULT_BYTES,
+            maxSessionBytes: MAX_RETAINED_SESSION_BYTES,
+        },
+    };
 }
 
 const FdParams = Type.Object({
@@ -66,12 +90,35 @@ function result(binary: SystemBinary, execution: FileSearchProcessResult) {
     }
     let text = execution.output || "No matches found.";
     if (execution.truncated) {
-        const notice = `\n\n[Output truncated. Complete output: ${execution.fullOutputPath}]`;
-        const visible = truncateHead(text, {
-            maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8")),
-            maxLines: DEFAULT_MAX_LINES - 2,
-        });
-        text = `${visible.content}${notice}`;
+        const totalLines = execution.count;
+        const noticeFor = (outputBytes: number, outputLines: number) =>
+            formatTruncationNotice({
+                outputBytes,
+                totalBytes: execution.totalBytes,
+                outputLines,
+                totalLines,
+                ...(execution.fullOutputPath
+                    ? { retainedPath: execution.fullOutputPath }
+                    : { nonRetentionReason: "the file-search retention quota was unavailable" }),
+            });
+        let notice = noticeFor(0, 0);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            if (Buffer.byteLength(notice, "utf8") > DEFAULT_MAX_BYTES || DEFAULT_MAX_LINES < 3) {
+                text = truncateUtf8(notice, DEFAULT_MAX_BYTES).content;
+                break;
+            }
+            const visible = truncateHead(execution.output, {
+                maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8") - 2,
+                maxLines: DEFAULT_MAX_LINES - 2,
+            });
+            const next = noticeFor(visible.outputBytes, visible.outputLines);
+            if (next === notice) {
+                text = visible.content ? `${visible.content}\n\n${notice}` : notice;
+                break;
+            }
+            notice = next;
+            if (attempt === 2) text = truncateUtf8(notice, DEFAULT_MAX_BYTES).content;
+        }
     }
     return {
         content: [{ type: "text" as const, text }],
@@ -89,25 +136,19 @@ export function registerFileSearchExtension(
     pi: ExtensionAPI,
     dependencies: FileSearchExtensionDependencies = {},
 ): void {
-    const run = dependencies.run ?? runFileSearch;
-    const retainedOutputCleanups = new Set<() => Promise<void>>();
+    const resolved = createDefaultFileSearchDependencies(dependencies);
+    const retainedOutput = new RetainedOutputQuota(resolved.retainedOutput);
     let fdBinary: SystemBinary | undefined;
     let rgBinary: SystemBinary | undefined;
-    let shuttingDown = false;
-    const retainOutput = async (execution: FileSearchProcessResult) => {
-        if (!execution.cleanup) return;
-        if (!shuttingDown) {
-            retainedOutputCleanups.add(execution.cleanup);
-            return;
-        }
-        await execution.cleanup().catch(() => {});
+    const retainOutput = async (execution: FileSearchProcessResult): Promise<FileSearchProcessResult> => {
+        if (!execution.cleanup) return execution;
+        if (await retainedOutput.retain(execution.totalBytes, execution.cleanup)) return execution;
+        return { ...execution, fullOutputPath: undefined, cleanup: undefined };
     };
 
+    pi.on("session_start", () => retainedOutput.startSession());
     pi.on("session_shutdown", async () => {
-        shuttingDown = true;
-        const cleanups = [...retainedOutputCleanups];
-        retainedOutputCleanups.clear();
-        await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
+        await retainedOutput.cleanup();
     });
 
     pi.registerTool({
@@ -118,16 +159,15 @@ export function registerFileSearchExtension(
         promptGuidelines: ["Prefer fd for discovering files by name, extension, or glob."],
         parameters: FdParams,
         async execute(_id, params, signal, _onUpdate, ctx) {
-            if (!fdBinary) fdBinary = (dependencies.resolveFd ?? resolveFdBinary)();
-            const execution = await run({
+            if (!fdBinary) fdBinary = resolved.resolveFd();
+            const execution = await resolved.run({
                 command: fdBinary.command,
                 args: buildFdArgs(params as FdArgs),
                 tool: "fd",
                 cwd: ctx.cwd,
                 signal,
             });
-            await retainOutput(execution);
-            return result(fdBinary, execution);
+            return result(fdBinary, await retainOutput(execution));
         },
     });
     pi.registerTool({
@@ -143,18 +183,19 @@ export function registerFileSearchExtension(
         ],
         parameters: RgParams,
         async execute(_id, params, signal, _onUpdate, ctx) {
-            if (!rgBinary) rgBinary = (dependencies.resolveRg ?? resolveRgBinary)();
-            const execution = await run({
+            if (!rgBinary) rgBinary = resolved.resolveRg();
+            const execution = await resolved.run({
                 command: rgBinary.command,
                 args: buildRgArgs(params as RgArgs),
                 tool: "rg",
                 cwd: ctx.cwd,
                 signal,
             });
-            await retainOutput(execution);
-            return result(rgBinary, execution);
+            return result(rgBinary, await retainOutput(execution));
         },
     });
 }
 
-export default registerFileSearchExtension;
+export default function fileSearchExtension(pi: ExtensionAPI): void {
+    registerFileSearchExtension(pi, createDefaultFileSearchDependencies());
+}

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { killProcessTree } from "../shared/bounded-process.js";
+import { errorMessage, isRecord } from "../shared/validate.js";
 import { JsonLineParser } from "./json-events.js";
 import {
     aggregateSubagentUsage,
@@ -13,6 +14,7 @@ import {
     isSubagentDetailsV1,
     type SubagentActiveToolV1,
     type SubagentDetailsV1,
+    type SubagentPhase,
     type SubagentTerminalStatus,
     truncateUtf8,
     updateSubagentDetails,
@@ -80,10 +82,6 @@ export interface SubagentRunResult {
 interface JsonEvent {
     type: string;
     [key: string]: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isJsonEvent(value: unknown): value is JsonEvent {
@@ -173,6 +171,10 @@ function boundedDiagnostic(prefix: string, candidate: string): string {
     return diagnostic ? `${prefix}\n\n${diagnostic}` : prefix;
 }
 
+function phaseFor(activeToolCount: number): Extract<SubagentPhase, "thinking" | "tool"> {
+    return activeToolCount > 0 ? "tool" : "thinking";
+}
+
 function spawnDefault(
     command: string,
     args: readonly string[],
@@ -211,35 +213,24 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     const finalizedMessages = new Set<string>();
     const activeTools = new Map<string, SubagentActiveToolV1>();
 
-    const notifySnapshot = () => {
-        if (!options.onSnapshot) return;
+    const emit = (force = false) => {
+        if ((settled && !force) || !options.onSnapshot) return;
+        const wait = throttleMs - (now() - lastEmission);
+        if (!force && wait > 0) {
+            if (!updateTimer)
+                updateTimer = setTimeout(() => {
+                    updateTimer = undefined;
+                    emit(true);
+                }, wait);
+            return;
+        }
+        if (updateTimer) clearTimeout(updateTimer);
+        updateTimer = undefined;
+        lastEmission = now();
         try {
             options.onSnapshot(snapshot(details));
         } catch {
             // Renderer progress must never be able to strand the child process.
-        }
-    };
-
-    const deliver = () => {
-        if (settled || !options.onSnapshot) return;
-        lastEmission = now();
-        notifySnapshot();
-    };
-
-    const emit = (force = false) => {
-        if (settled || !options.onSnapshot) return;
-        const wait = throttleMs - (now() - lastEmission);
-        if (force || wait <= 0) {
-            if (updateTimer) clearTimeout(updateTimer);
-            updateTimer = undefined;
-            deliver();
-            return;
-        }
-        if (!updateTimer) {
-            updateTimer = setTimeout(() => {
-                updateTimer = undefined;
-                deliver();
-            }, wait);
         }
     };
 
@@ -273,18 +264,15 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             details,
             {
                 activeTools: [...activeTools.values()],
-                phase: phase ?? (activeTools.size > 0 ? "tool" : "thinking"),
+                phase: phase ?? phaseFor(activeTools.size),
             },
             now(),
         );
     };
 
-    const processEvent = (eventValue: unknown) => {
-        if (settled || !isJsonEvent(eventValue)) return;
-        const event = eventValue;
-        const timestamp = numberOrUndefined(event.timestamp) ?? now();
-
-        if (event.type === "turn_start") {
+    type EventHandler = (event: JsonEvent, timestamp: number) => void;
+    const dispatch: Record<string, EventHandler> = {
+        turn_start: (event, timestamp) => {
             const index = numberOrUndefined(event.turnIndex);
             addActivity(
                 "turn",
@@ -292,12 +280,10 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 undefined,
                 timestamp,
             );
-            details = updateSubagentDetails(details, { phase: activeTools.size > 0 ? "tool" : "thinking" }, timestamp);
+            details = updateSubagentDetails(details, { phase: phaseFor(activeTools.size) }, timestamp);
             emit();
-            return;
-        }
-
-        if (event.type === "turn_end") {
+        },
+        turn_end: (event, timestamp) => {
             const index = numberOrUndefined(event.turnIndex);
             addActivity(
                 "turn",
@@ -305,12 +291,10 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 undefined,
                 timestamp,
             );
-            details = updateSubagentDetails(details, { phase: activeTools.size > 0 ? "tool" : "thinking" }, timestamp);
+            details = updateSubagentDetails(details, { phase: phaseFor(activeTools.size) }, timestamp);
             emit();
-            return;
-        }
-
-        if (event.type === "tool_execution_start") {
+        },
+        tool_execution_start: (event, timestamp) => {
             const id = stringOrUndefined(event.toolCallId);
             const name = stringOrUndefined(event.toolName);
             if (!id || !name) {
@@ -322,21 +306,16 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             addActivity("tool_start", title, undefined, timestamp);
             syncActiveTools("tool");
             emit(true);
-            return;
-        }
-
-        if (event.type === "tool_execution_update") {
+        },
+        tool_execution_update: (event) => {
             const id = stringOrUndefined(event.toolCallId);
             const active = id ? activeTools.get(id) : undefined;
-            if (id && active) {
-                activeTools.set(id, { ...active, title: compactToolTitle(active.name, event.args) });
-                syncActiveTools("tool");
-                emit();
-            }
-            return;
-        }
-
-        if (event.type === "tool_execution_end") {
+            if (!id || !active) return;
+            activeTools.set(id, { ...active, title: compactToolTitle(active.name, event.args) });
+            syncActiveTools("tool");
+            emit();
+        },
+        tool_execution_end: (event, timestamp) => {
             const id = stringOrUndefined(event.toolCallId);
             const name = stringOrUndefined(event.toolName) ?? "tool";
             const active = id ? activeTools.get(id) : undefined;
@@ -345,10 +324,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             addActivity("tool_end", title, event.isError === true, timestamp);
             syncActiveTools();
             emit(true);
-            return;
-        }
-
-        if (event.type === "message_update") {
+        },
+        message_update: (event, timestamp) => {
             if (!isRecord(event.message) || event.message.role !== "assistant") return;
             const preview = assistantText(event.message);
             const model = resolveSubagentModelLabel(
@@ -361,15 +338,13 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 {
                     ...(preview ? { outputPreview: truncateUtf8(preview, OUTPUT_PREVIEW_BYTES).content } : {}),
                     model,
-                    phase: activeTools.size > 0 ? "tool" : "thinking",
+                    phase: phaseFor(activeTools.size),
                 },
                 timestamp,
             );
             emit();
-            return;
-        }
-
-        if (event.type === "message_end") {
+        },
+        message_end: (event, timestamp) => {
             if (!isRecord(event.message) || event.message.role !== "assistant") return;
             if (
                 !Array.isArray(event.message.content) ||
@@ -409,18 +384,25 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 {
                     model,
                     ...(preview ? { outputPreview: preview } : {}),
-                    phase: activeTools.size > 0 ? "tool" : "thinking",
+                    phase: phaseFor(activeTools.size),
                 },
                 timestamp,
             );
             emit();
-            return;
-        }
-
-        if (event.type === "agent_end" || event.type === "agent_settled") {
+        },
+        agent_end: (_event, timestamp) => {
             details = updateSubagentDetails(details, { phase: "exiting" }, timestamp);
             emit();
-        }
+        },
+        agent_settled: (_event, timestamp) => {
+            details = updateSubagentDetails(details, { phase: "exiting" }, timestamp);
+            emit();
+        },
+    };
+
+    const processEvent = (eventValue: unknown) => {
+        if (settled || !isJsonEvent(eventValue)) return;
+        dispatch[eventValue.type]?.(eventValue, numberOrUndefined(eventValue.timestamp) ?? now());
     };
 
     const parser = new JsonLineParser({
@@ -520,7 +502,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             now(),
         );
         settled = true;
-        notifySnapshot();
+        emit(true);
 
         if (child) {
             child.stdout.removeAllListeners();
@@ -571,9 +553,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             try {
                 parser.write(chunk);
             } catch (error) {
-                addDiagnostic(
-                    `Unable to process child output: ${error instanceof Error ? error.message : String(error)}`,
-                );
+                addDiagnostic(`Unable to process child output: ${errorMessage(error)}`);
             }
         });
         runningChild.stdout.on("error", (error) => addDiagnostic(`Child stdout failed: ${error.message}`));

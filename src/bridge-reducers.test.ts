@@ -85,19 +85,19 @@ describe("background subagent host protocol", () => {
     });
 
     test("reduces ready, upsert, remove, and reset", () => {
-        let state: BackgroundSubagentState = { jobs: new Map() };
+        let state: BackgroundSubagentState = { runs: new Map() };
         state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
         state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
-        expect(state.jobs.get("job-a")?.title).toBe("Inspect target");
+        expect(state.runs.get("job-a")?.title).toBe("Inspect target");
         state = reduceBackgroundSubagentEvent(state, parse(event("remove")), "session-a");
-        expect(state.jobs.size).toBe(0);
+        expect(state.runs.size).toBe(0);
         state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
         state = reduceBackgroundSubagentEvent(state, parse(event("reset")), "session-a");
-        expect(state).toEqual({ jobs: new Map() });
+        expect(state).toEqual({ instanceId: "instance-a", acceptingInstance: true, runs: new Map() });
     });
 
     test("ignores stale sessions and instances", () => {
-        const state = reduceBackgroundSubagentEvent({ jobs: new Map() }, parse(event("ready")), "session-a");
+        const state = reduceBackgroundSubagentEvent({ runs: new Map() }, parse(event("ready")), "session-a");
         const current = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
         expect(reduceBackgroundSubagentEvent(current, parse(event("upsert", { sessionId: "old" })), "session-a")).toBe(
             current,
@@ -117,7 +117,7 @@ describe("background subagent host protocol", () => {
     });
 
     test("bounds the host to 64 complete job snapshots", () => {
-        let state: BackgroundSubagentState = { jobs: new Map() };
+        let state: BackgroundSubagentState = { runs: new Map() };
         state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
         for (let index = 0; index < 65; index++) {
             const payload = event("upsert");
@@ -126,6 +126,108 @@ describe("background subagent host protocol", () => {
             job.run.id = job.id;
             state = reduceBackgroundSubagentEvent(state, parse(payload), "session-a");
         }
-        expect(state.jobs.size).toBe(64);
+        expect(state.runs.size).toBe(64);
+    });
+});
+
+import { parseBackgroundWorkflowEvent } from "../extensions/workflow/protocol.js";
+import { reduceWorkflowEvent, type WorkflowState } from "./workflow-bridge.js";
+
+const route = { sessionId: "session-1", cwd: "/canonical/repo" };
+function payload(type: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const value: Record<string, unknown> = {
+        schema: "pi.workflow.background",
+        version: 1,
+        sessionId: route.sessionId,
+        instanceId: "instance-1",
+        cwd: route.cwd,
+        type,
+        ...overrides,
+    };
+    if (type === "upsert" && value.run === undefined) value.run = run();
+    return value;
+}
+function run(): Record<string, unknown> {
+    return {
+        schema: "pi.workflow",
+        version: 1,
+        id: "run-1",
+        name: "Review",
+        sessionId: route.sessionId,
+        cwd: route.cwd,
+        status: "running",
+        phases: [],
+        agents: [],
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 },
+        limits: { maxConcurrency: 4, maxAgents: 1_000, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
+        recentActivity: [],
+        updatedAt: 1,
+    };
+}
+function parseWorkflow(value: unknown) {
+    const event = parseBackgroundWorkflowEvent(value, route);
+    if (!event) throw new Error("expected event");
+    return event;
+}
+
+describe("workflow host protocol", () => {
+    test("unknown protocol versions remain generic-fallback-friendly", () => {
+        expect(parseBackgroundWorkflowEvent(payload("ready", { version: 2 }), route)).toBeUndefined();
+        expect(
+            parseBackgroundWorkflowEvent(payload("upsert", { run: { ...run(), version: 2 } }), route),
+        ).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(null, route)).toBeUndefined();
+    });
+
+    test("immutably reduces ready, upsert, and reset", () => {
+        const initial: WorkflowState = { runs: new Map() };
+        const ready = reduceWorkflowEvent(initial, parseWorkflow(payload("ready")), route);
+        const upsert = reduceWorkflowEvent(ready, parseWorkflow(payload("upsert")), route);
+        expect(initial.runs.size).toBe(0);
+        expect(ready.runs.size).toBe(0);
+        expect(upsert.runs.get("run-1")?.name).toBe("Review");
+        expect(upsert.runs).not.toBe(ready.runs);
+        const reset = reduceWorkflowEvent(upsert, parseWorkflow(payload("reset")), route);
+        expect(reset).toEqual({ instanceId: "instance-1", acceptingInstance: true, runs: new Map() });
+    });
+
+    test("rejects stale mutations after reset until ready establishes replacement authority", () => {
+        const ready = reduceWorkflowEvent({ runs: new Map() }, parseWorkflow(payload("ready")), route);
+        const populated = reduceWorkflowEvent(ready, parseWorkflow(payload("upsert")), route);
+        const reset = reduceWorkflowEvent(populated, parseWorkflow(payload("reset")), route);
+
+        expect(reduceWorkflowEvent(reset, parseWorkflow(payload("upsert")), route)).toBe(reset);
+
+        const replacement = reduceWorkflowEvent(
+            reset,
+            parseWorkflow(payload("ready", { instanceId: "instance-2" })),
+            route,
+        );
+        const upsert = reduceWorkflowEvent(
+            replacement,
+            parseWorkflow(payload("upsert", { instanceId: "instance-2" })),
+            route,
+        );
+        expect(replacement).toEqual({ instanceId: "instance-2", runs: new Map() });
+        expect(upsert.instanceId).toBe("instance-2");
+        expect(upsert.runs.get("run-1")?.name).toBe("Review");
+    });
+
+    test("returns the same state for stale routes and instances", () => {
+        const ready = reduceWorkflowEvent({ runs: new Map() }, parseWorkflow(payload("ready")), route);
+        expect(reduceWorkflowEvent(ready, parseWorkflow(payload("upsert", { instanceId: "old" })), route)).toBe(ready);
+        const staleSession = parseBackgroundWorkflowEvent(
+            payload("upsert", { sessionId: "old", run: { ...run(), sessionId: "old" } }),
+        );
+        expect(reduceWorkflowEvent(ready, staleSession!, route)).toBe(ready);
+        const staleCwd = parseBackgroundWorkflowEvent(
+            payload("upsert", { cwd: "/other", run: { ...run(), cwd: "/other" } }),
+        );
+        expect(reduceWorkflowEvent(ready, staleCwd!, route)).toBe(ready);
+    });
+
+    test("does not let a stale ready replace the authoritative instance", () => {
+        const ready = reduceWorkflowEvent({ runs: new Map() }, parseWorkflow(payload("ready")), route);
+        expect(reduceWorkflowEvent(ready, parseWorkflow(payload("ready", { instanceId: "new" })), route)).toBe(ready);
     });
 });

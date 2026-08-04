@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
     type AgentSessionRuntime,
     createAgentSessionFromServices,
@@ -14,7 +15,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { resolveFdBinary } from "../extensions/file-search/binaries.js";
-import { BUNDLED_EXTENSION_FACTORIES, BUNDLED_SUBAGENT_SOURCE_PATH } from "./bundled-extensions.js";
+import { createExtensionApiHarness } from "../extensions/test-support/extension-api.js";
+import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./bundled-extensions.js";
 import { createPuiRuntimeFactory } from "./controller.js";
 
 const bundledTools = {
@@ -44,15 +46,81 @@ function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): 
 }
 
 describe("bundled extensions", () => {
-    test("exposes application-owned tools as named inline factories with the subagent source intact", async () => {
+    test("exposes application-owned tools as named inline factories", () => {
         expect(BUNDLED_EXTENSION_FACTORIES.map(({ name }) => name)).toEqual([
             "pui-file-search",
             "pui-subagent",
             "pui-workflow",
             "pui-web",
         ]);
-        expect(path.isAbsolute(BUNDLED_SUBAGENT_SOURCE_PATH)).toBe(true);
-        expect((await fs.promises.stat(BUNDLED_SUBAGENT_SOURCE_PATH)).isFile()).toBe(true);
+    });
+
+    test("resolves injected factory collaborators without calling production binary resolution", async () => {
+        const host = createExtensionApiHarness();
+        const resolutions: string[] = [];
+        const runs: string[] = [];
+        const factories = createBundledExtensionFactories({
+            fileSearch: {
+                resolveFd: () => {
+                    resolutions.push("fd");
+                    return { command: "/injected/fd", source: "system" };
+                },
+                resolveRg: () => {
+                    resolutions.push("rg");
+                    return { command: "/injected/rg", source: "system" };
+                },
+                run: async ({ command }) => {
+                    runs.push(command);
+                    return {
+                        status: "succeeded",
+                        output: "",
+                        count: 0,
+                        totalBytes: 0,
+                        truncated: false,
+                        stderr: "",
+                        exitCode: 1,
+                        signal: null,
+                    };
+                },
+            },
+        });
+        const fileSearchFactory = factories.find(({ name }) => name === "pui-file-search");
+        if (!fileSearchFactory || !("factory" in fileSearchFactory)) throw new Error("Missing file-search factory");
+        fileSearchFactory.factory(host.api);
+        const signal = new AbortController().signal;
+        await host.tool("fd").execute("fd", {}, signal, undefined, { cwd: "/repo" });
+        await host.tool("rg").execute("rg", { pattern: "fixture" }, signal, undefined, { cwd: "/repo" });
+
+        expect(resolutions).toEqual(["fd", "rg"]);
+        expect(runs).toEqual(["/injected/fd", "/injected/rg"]);
+    });
+
+    test("the installable subagent source loads with shared packaged modules", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-loader-test-"));
+        try {
+            const loader = new DefaultResourceLoader({
+                cwd: temp,
+                agentDir: temp,
+                settingsManager: SettingsManager.inMemory(),
+                additionalExtensionPaths: [fileURLToPath(new URL("../extensions/subagent/index.ts", import.meta.url))],
+                noSkills: true,
+                noPromptTemplates: true,
+                noThemes: true,
+                noContextFiles: true,
+            });
+            await loader.reload();
+            expect(loader.getExtensions().errors).toEqual([]);
+            expect(loader.getExtensions().extensions).toHaveLength(1);
+            for (const relativePath of ["presets.ts", "semaphore.ts"]) {
+                expect(
+                    (
+                        await fs.promises.stat(path.resolve(import.meta.dir, "../extensions/shared", relativePath))
+                    ).isFile(),
+                ).toBe(true);
+            }
+        } finally {
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
     });
 
     test("the controller runtime factory preserves one of each bundled tool across session replacement", async () => {
@@ -279,7 +347,7 @@ export default function (pi: any) {
                 expect(commandNames).toContain("project-fixture");
             }
 
-            const extensionDir = path.dirname(BUNDLED_SUBAGENT_SOURCE_PATH);
+            const extensionDir = path.resolve(import.meta.dir, "../extensions/subagent");
             for (const relativePath of [
                 "protocol.ts",
                 "runner.ts",

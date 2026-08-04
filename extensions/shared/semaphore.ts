@@ -13,7 +13,7 @@ export function createAbortError(message = "Operation cancelled while queued."):
     return error;
 }
 
-/** A small abort-aware FIFO semaphore shared by all subagent tool executions. */
+/** A small abort-aware FIFO semaphore for shared concurrency limits. */
 export class AbortableSemaphore {
     private activeCount = 0;
     private readonly waiters: Waiter[] = [];

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { BoundedProcessError, runBoundedProcess } from "../shared/bounded-process.js";
-import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
+import { inferDirectoryBoundary, safeDirectory } from "./durable-fs.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const OWNED_REF = /^refs\/pui\/workflows\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$/;

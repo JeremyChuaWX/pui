@@ -1,29 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFile, stat } from "node:fs/promises";
-import { dirname } from "node:path";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { createExtensionApiHarness, type ExtensionApiHarness } from "../test-support/extension-api.ts";
 import { registerWebExtension } from "./index.ts";
 
-const shutdownHandlers = new Set<() => Promise<void>>();
+const shutdownHosts = new Set<ExtensionApiHarness>();
 
 function host(dependencies: Parameters<typeof registerWebExtension>[1]) {
-    const tools = new Map<string, any>();
-    const handlers = new Map<string, () => Promise<void>>();
-    registerWebExtension(
-        {
-            registerTool(tool: any) {
-                tools.set(tool.name, tool);
-            },
-            on(event: string, handler: () => Promise<void>) {
-                handlers.set(event, handler);
-                if (event === "session_shutdown") shutdownHandlers.add(handler);
-            },
-        } as any,
-        dependencies,
-    );
-    const registeredTool = (name: string) => tools.get(name);
-    registeredTool.handler = (event: string) => handlers.get(event);
-    return registeredTool;
+    const harness = createExtensionApiHarness();
+    registerWebExtension(harness.api, dependencies);
+    shutdownHosts.add(harness);
+    return (name: string) => harness.tool(name);
 }
 
 function context(model: any, apiKey = "secret") {
@@ -45,9 +30,13 @@ function run(tool: any, params: any, ctx: any = {}, signal?: AbortSignal) {
 }
 
 afterEach(async () => {
-    const handlers = [...shutdownHandlers];
-    shutdownHandlers.clear();
-    await Promise.allSettled(handlers.map((handler) => handler()));
+    const hosts = [...shutdownHosts];
+    shutdownHosts.clear();
+    await Promise.allSettled(
+        hosts.map((host) =>
+            host.handler("session_shutdown")({ type: "session_shutdown", reason: "quit" }, {} as never),
+        ),
+    );
 });
 
 const openai = { provider: "openai", api: "openai-responses", id: "gpt-5", baseUrl: "https://api.openai.test/v1" };
@@ -137,8 +126,6 @@ describe("web_search", () => {
                 "1. Source title\n   https://source.test",
             ].join("\n"),
         );
-        expect(result.details.truncated).toBe(false);
-        expect("fullOutputPath" in result.details).toBe(false);
     });
 
     test("supports configured Codex models and SSE responses", async () => {
@@ -192,48 +179,6 @@ describe("web_search", () => {
             "web_search failed: Search cancelled.",
         );
     });
-
-    test("truncates oversized answers and retains the exact complete formatted output", async () => {
-        const answer = "x".repeat(60_000);
-        const tool = host({
-            environment: {},
-            fetch: async () =>
-                new Response(
-                    JSON.stringify({
-                        output: [
-                            {
-                                type: "message",
-                                content: [
-                                    {
-                                        type: "output_text",
-                                        text: answer,
-                                        annotations: [
-                                            { type: "url_citation", title: "Large source", url: "https://large.test" },
-                                        ],
-                                    },
-                                ],
-                            },
-                        ],
-                    }),
-                ),
-        })("web_search");
-        const result = await run(tool, { query: "large" }, context(openai));
-        const expected = [
-            'Web search findings for "large":',
-            "Provider: openai; model: openai/gpt-5",
-            "",
-            answer,
-            "",
-            "Sources:",
-            "1. Large source\n   https://large.test",
-        ].join("\n");
-
-        expect(result.details.truncated).toBe(true);
-        expect(result.details.fullOutputPath).toEndWith("result.md");
-        expect(result.content[0].text).toContain("Output truncated");
-        expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-        expect(await readFile(result.details.fullOutputPath, "utf8")).toBe(expected);
-    });
 });
 
 describe("web_crawl", () => {
@@ -280,7 +225,8 @@ describe("web_crawl", () => {
                 ),
         })("web_crawl");
 
-        const result = await run(tool, { url: "https://example.test/complete" });
+        const result = await run(tool, { url: "https://example.test/complete", max_bytes: 1_000 });
+        expect(result.details.maxBytes).toBe(1_000);
         expect(result.content[0].text).toBe(
             [
                 "Web crawl result for https://example.test/complete:",
@@ -292,8 +238,6 @@ describe("web_crawl", () => {
                 "# Complete page",
             ].join("\n"),
         );
-        expect(result.details.truncated).toBe(false);
-        expect("fullOutputPath" in result.details).toBe(false);
     });
 
     test("validates URL and required configuration without calling the API", async () => {
@@ -313,7 +257,7 @@ describe("web_crawl", () => {
         expect(calls).toBe(0);
     });
 
-    test("surfaces Firecrawl errors, cancellation, and truncates to max_bytes", async () => {
+    test("surfaces Firecrawl errors and cancellation", async () => {
         const failed = host({
             environment: { FIRECRAWL_API_KEY: "x" },
             fetch: async () => new Response(JSON.stringify({ success: false, error: "blocked" }), { status: 403 }),
@@ -325,95 +269,5 @@ describe("web_crawl", () => {
         await expect(run(failed, { url: "https://example.test" }, {}, controller.signal)).rejects.toThrow(
             "web_crawl failed: Crawl cancelled.",
         );
-
-        const content = "content ".repeat(100);
-        const large = host({
-            environment: { FIRECRAWL_API_KEY: "x" },
-            fetch: async () =>
-                new Response(
-                    JSON.stringify({
-                        data: {
-                            markdown: content,
-                            metadata: { title: "Large page", sourceURL: "https://canonical.test/large" },
-                        },
-                    }),
-                ),
-        })("web_crawl");
-        const result = await run(large, { url: "https://example.test", max_bytes: 100 });
-        expect(result.details.maxBytes).toBe(100);
-        expect(result.details.truncated).toBe(true);
-        expect(result.content[0].text).toContain("Output truncated");
-        expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(100);
-        expect(result.content[0].text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
-        expect(await readFile(result.details.fullOutputPath, "utf8")).toBe(
-            [
-                "Web crawl result for https://example.test/:",
-                "Provider: Firecrawl",
-                "Title: Large page",
-                "Source URL: https://canonical.test/large",
-                "",
-                "Content:",
-                content.trim(),
-            ].join("\n"),
-        );
-    });
-});
-
-describe("web output retention integration", () => {
-    test("shares one session quota owner between search and crawl", async () => {
-        const answer = "s".repeat(60_000);
-        const expectedSearchOutput = [
-            'Web search findings for "quota":',
-            "Provider: openai; model: openai/gpt-5",
-            "",
-            answer,
-            "",
-            "Sources: none returned by provider",
-        ].join("\n");
-        const registered = host({
-            outputRetention: {
-                maxRetainedResultBytes: 70_000,
-                maxRetainedSessionBytes: Buffer.byteLength(expectedSearchOutput),
-            },
-            environment: { FIRECRAWL_API_KEY: "fire" },
-            fetch: async (url) =>
-                String(url).includes("/responses")
-                    ? new Response(JSON.stringify({ output_text: answer }))
-                    : new Response(JSON.stringify({ data: { markdown: "crawl ".repeat(200) } })),
-        });
-
-        const search = await run(registered("web_search"), { query: "quota" }, context(openai));
-        const crawl = await run(registered("web_crawl"), { url: "https://example.test", max_bytes: 100 });
-
-        expect(search.details.fullOutputPath).toBeString();
-        expect(crawl.details.status).toBe("complete");
-        expect(crawl.details.truncated).toBe(true);
-        expect("fullOutputPath" in crawl.details).toBe(false);
-        expect(crawl.content[0].text).toContain("Output truncated");
-    });
-
-    test("session shutdown removes retained output and creates a fresh configured owner", async () => {
-        const registered = host({
-            outputRetention: {},
-            environment: { FIRECRAWL_API_KEY: "fire" },
-            fetch: async (url) =>
-                String(url).includes("/responses")
-                    ? new Response(JSON.stringify({ output_text: "s".repeat(60_000) }))
-                    : new Response(JSON.stringify({ data: { markdown: "crawl ".repeat(200) } })),
-        });
-        const search = await run(registered("web_search"), { query: "cleanup" }, context(openai));
-        const crawl = await run(registered("web_crawl"), { url: "https://example.test", max_bytes: 100 });
-        const paths = [search.details.fullOutputPath, crawl.details.fullOutputPath] as string[];
-
-        for (const path of paths) expect(await stat(path)).toBeDefined();
-        expect(dirname(paths[0])).not.toBe(dirname(paths[1]));
-        await registered.handler("session_shutdown")!();
-        for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
-
-        await registered.handler("session_start")!();
-        const nextSession = await run(registered("web_search"), { query: "after shutdown" }, context(openai));
-        expect(nextSession.details.truncated).toBe(true);
-        expect(nextSession.details.fullOutputPath).toBeString();
-        expect(await stat(nextSession.details.fullOutputPath)).toBeDefined();
     });
 });

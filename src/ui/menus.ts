@@ -1,3 +1,4 @@
+import { errorMessage } from "../../extensions/shared/validate.js";
 import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
 import type { PuiController } from "../controller.js";
 import { formatCount, formatWorkflowSummary, workflowStatusPresentation } from "../format.js";
@@ -119,7 +120,7 @@ export function createMenus(host: MenuHost) {
                 host.closeDialog();
                 void action().then(
                     (linked) => controller.notify(linked ? `${success} New run: ${linked}.` : success, "success"),
-                    (error) => controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                    (error) => controller.notify(errorMessage(error), "error"),
                 );
             },
         });
@@ -130,7 +131,7 @@ export function createMenus(host: MenuHost) {
             host.closeDialog();
             void controller.controlWorkflow(runId, action).then(
                 () => controller.notify(success, "success"),
-                (error) => controller.notify(error instanceof Error ? error.message : String(error), "error"),
+                (error) => controller.notify(errorMessage(error), "error"),
             );
         };
     }
@@ -334,5 +335,3 @@ export function createMenus(host: MenuHost) {
 
     return { openModels, openSessions, openSubagents, openWorkflows, openWorkflowRun, openCommands };
 }
-
-export type Menus = ReturnType<typeof createMenus>;

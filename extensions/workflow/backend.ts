@@ -4,16 +4,16 @@ import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { BoundedProcessError, killProcessTree, runBoundedProcess } from "../shared/bounded-process.js";
-import { AbortableSemaphore } from "../subagent/semaphore.js";
+import { AbortableSemaphore } from "../shared/semaphore.js";
+import { errorMessage } from "../shared/validate.js";
 import { maskLiterals } from "./js-scan.js";
-import {
-    errorMessage,
-    type WorkflowActivityV1,
-    type WorkflowAgentSummaryV1,
-    type WorkflowEntrypoint,
-    type WorkflowLimitsV1,
-    type WorkflowRunSummaryV1,
-    type WorkflowUsageV1,
+import type {
+    WorkflowActivityV1,
+    WorkflowAgentSummaryV1,
+    WorkflowEntrypoint,
+    WorkflowLimitsV1,
+    WorkflowRunSummaryV1,
+    WorkflowUsageV1,
 } from "./protocol.js";
 import {
     boundedJson,
@@ -30,8 +30,7 @@ import {
 } from "./rpc-operations.js";
 import type { ImmutableRunLaunch, StoredRun } from "./run-storage.js";
 import { executableWorkflowScript } from "./source.js";
-import { parseWorkerFrame, WorkerFrameDecoder } from "./worker-protocol.js";
-import { WORKER_SOURCE } from "./worker-source.js";
+import { parseWorkerFrame, WORKER_SOURCE, WorkerFrameDecoder } from "./worker-protocol.js";
 import { type OwnedWorktree, WorkflowWorktreeManager } from "./worktree.js";
 
 export { DEFAULT_WORKFLOW_LIMITS };

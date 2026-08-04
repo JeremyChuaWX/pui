@@ -3,12 +3,75 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** Maximum complete-output bytes retained for a single result. */
-const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
+export const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
 /** Maximum complete-output bytes retained by one session owner. */
-const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
+export const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
 
 export type RetentionFailure = "closed" | "result-quota" | "session-quota" | "storage";
 export type RetainedSaveResult = { path: string } | { failure: RetentionFailure };
+
+export interface Utf8Truncation {
+    content: string;
+    truncated: boolean;
+    outputBytes: number;
+    totalBytes: number;
+}
+
+function truncateUtf8Direction(text: string, maxBytes: number, tail: boolean): Utf8Truncation {
+    const totalBytes = Buffer.byteLength(text, "utf8");
+    const cap = normalizedLimit(maxBytes);
+    if (totalBytes <= cap) return { content: text, truncated: false, outputBytes: totalBytes, totalBytes };
+    let outputBytes = 0;
+    const kept: string[] = [];
+    const characters = Array.from(text);
+    if (tail) characters.reverse();
+    for (const character of characters) {
+        const bytes = Buffer.byteLength(character, "utf8");
+        if (outputBytes + bytes > cap) break;
+        kept.push(character);
+        outputBytes += bytes;
+    }
+    if (tail) kept.reverse();
+    return { content: kept.join(""), truncated: true, outputBytes, totalBytes };
+}
+
+/** Truncate at a Unicode code-point boundary, retaining the beginning. */
+export function truncateUtf8(text: string, maxBytes: number): Utf8Truncation {
+    return truncateUtf8Direction(text, maxBytes, false);
+}
+
+/** Truncate at a Unicode code-point boundary, retaining the end. */
+export function truncateUtf8Tail(text: string, maxBytes: number): Utf8Truncation {
+    return truncateUtf8Direction(text, maxBytes, true);
+}
+
+/** Append text while retaining at most maxBytes of the newest complete code points. */
+export function appendBoundedUtf8(current: string, addition: string, maxBytes: number): string {
+    return truncateUtf8Tail(current + addition, maxBytes).content;
+}
+
+export interface TruncationNoticeOptions {
+    outputBytes: number;
+    totalBytes: number;
+    outputLines?: number;
+    totalLines?: number;
+    retainedPath?: string;
+    nonRetentionReason?: string;
+    maxBytes?: number;
+}
+
+/** Format the single retained-output notice policy, optionally bounded without splitting code points. */
+export function formatTruncationNotice(options: TruncationNoticeOptions): string {
+    const lines =
+        options.outputLines === undefined || options.totalLines === undefined
+            ? ""
+            : `, ${options.outputLines} of ${options.totalLines} lines`;
+    const retention = options.retainedPath
+        ? ` Complete output retained at: ${JSON.stringify(options.retainedPath)}.`
+        : ` Complete output was not retained: ${options.nonRetentionReason ?? "retention was unavailable"}.`;
+    const notice = `[Output truncated: ${options.outputBytes} of ${options.totalBytes} bytes${lines}.${retention}]`;
+    return options.maxBytes === undefined ? notice : truncateUtf8(notice, options.maxBytes).content;
+}
 
 /** Injectable filesystem operations used to create and remove private retained-output files. */
 export interface RetainedOutputFileSystem {
@@ -40,6 +103,72 @@ export interface RetainedOutputStoreOptions {
 
 function normalizedLimit(value: number): number {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+export interface RetainedOutputQuotaOptions {
+    maxResultBytes?: number;
+    maxSessionBytes?: number;
+}
+
+/** Owns cleanup callbacks for already-streamed output files under the shared retention policy. */
+export class RetainedOutputQuota {
+    private readonly maxResultBytes: number;
+    private readonly maxSessionBytes: number;
+    private readonly cleanups = new Set<{ run: () => Promise<void> }>();
+    private retainedBytes = 0;
+    private closed = false;
+    private cleanupPromise: Promise<boolean> | undefined;
+
+    constructor(options: RetainedOutputQuotaOptions = {}) {
+        this.maxResultBytes = normalizedLimit(options.maxResultBytes ?? MAX_RETAINED_RESULT_BYTES);
+        this.maxSessionBytes = normalizedLimit(options.maxSessionBytes ?? MAX_RETAINED_SESSION_BYTES);
+    }
+
+    /** Reopens this owner for a new session after the previous session shut down. */
+    startSession(): void {
+        this.closed = false;
+        this.cleanupPromise = undefined;
+    }
+
+    /** Accepts ownership, or immediately cleans a file rejected by result/session quota or shutdown. */
+    async retain(bytes: number, cleanup: () => Promise<void>): Promise<boolean> {
+        const size = normalizedLimit(bytes);
+        const accepted =
+            !this.closed && size <= this.maxResultBytes && this.retainedBytes + size <= this.maxSessionBytes;
+        if (accepted) {
+            this.retainedBytes += size;
+            this.cleanups.add({ run: cleanup });
+            return true;
+        }
+        const owned = { run: cleanup };
+        this.cleanups.add(owned);
+        try {
+            await cleanup();
+            this.cleanups.delete(owned);
+        } catch {
+            // Failed immediate cleanup remains owned so session cleanup can retry it.
+        }
+        return false;
+    }
+
+    /** Concurrent calls share cleanup work; failed callbacks remain owned for a later retry. */
+    cleanup(): Promise<boolean> {
+        if (this.cleanupPromise) return this.cleanupPromise;
+        this.closed = true;
+        this.retainedBytes = 0;
+        const owned = [...this.cleanups];
+        this.cleanupPromise = Promise.allSettled(
+            owned.map(async (cleanup) => {
+                await cleanup.run();
+                this.cleanups.delete(cleanup);
+            }),
+        ).then(() => {
+            const complete = this.cleanups.size === 0;
+            if (!complete) this.cleanupPromise = undefined;
+            return complete;
+        });
+        return this.cleanupPromise;
+    }
 }
 
 /**

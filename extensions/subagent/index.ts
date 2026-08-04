@@ -1,8 +1,20 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { RetainedOutputStore } from "../shared/retained-output.js";
+import { createBackgroundChannel } from "../shared/background-channel.js";
+import {
+    AGENT_NAMES,
+    AGENT_SUMMARY,
+    AGENTS,
+    type ResolvedAgentName,
+    resolveModel,
+    resolveWorkingDirectory,
+    workingDirectoryCandidate,
+} from "../shared/presets.js";
+import { formatTruncationNotice, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
+import { AbortableSemaphore, configuredSubagentConcurrency } from "../shared/semaphore.js";
+import { errorMessage } from "../shared/validate.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
@@ -12,24 +24,9 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "./background-protocol.js";
-import {
-    AGENT_NAMES,
-    AGENT_SUMMARY,
-    AGENTS,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-    workingDirectoryCandidate,
-} from "./presets.js";
-import {
-    createInitialSubagentDetails,
-    type SubagentDetailsV1,
-    truncateUtf8,
-    updateSubagentDetails,
-} from "./protocol.js";
+import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.js";
 import { runSubagentJob, synthesizeSubagentFailure } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 
@@ -80,6 +77,19 @@ export interface SubagentExtensionDependencies {
     environment?: NodeJS.ProcessEnv;
 }
 
+/** Production collaborators, including the one process-wide concurrency owner. */
+export function createDefaultSubagentDependencies(
+    overrides: SubagentExtensionDependencies = {},
+): Required<SubagentExtensionDependencies> {
+    return {
+        semaphore: overrides.semaphore ?? PROCESS_SEMAPHORE,
+        run: overrides.run ?? runSubagent,
+        invocation: overrides.invocation ?? getPiInvocation,
+        now: overrides.now ?? Date.now,
+        environment: overrides.environment ?? process.env,
+    };
+}
+
 function lifecycleText(details: SubagentDetailsV1): string {
     const { run } = details;
     if (run.status === "queued") return `${run.agent} subagent is queued...`;
@@ -93,16 +103,50 @@ function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal
     return first ? AbortSignal.any([first, second]) : second;
 }
 
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+function presentTruncated(
+    fullText: string,
+    limits: { maxBytes: number; maxLines: number },
+    retainedPath?: string,
+    nonRetentionReason = "complete output retention was unavailable",
+): string {
+    const totalBytes = Buffer.byteLength(fullText, "utf8");
+    const totalLines = fullText.length === 0 ? 0 : fullText.split("\n").length - (fullText.endsWith("\n") ? 1 : 0);
+    let notice = formatTruncationNotice({
+        outputBytes: 0,
+        totalBytes,
+        outputLines: 0,
+        totalLines,
+        ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
+    });
+    let preview = truncateHead(fullText, { maxBytes: 0, maxLines: 0 });
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const noticeBytes = Buffer.byteLength(notice, "utf8");
+        if (limits.maxLines < 3 || noticeBytes > limits.maxBytes) return truncateUtf8(notice, limits.maxBytes).content;
+        preview = truncateHead(fullText, {
+            maxBytes: Math.max(0, limits.maxBytes - noticeBytes - 2),
+            maxLines: limits.maxLines - 2,
+        });
+        const next = formatTruncationNotice({
+            outputBytes: preview.outputBytes,
+            totalBytes,
+            outputLines: preview.outputLines,
+            totalLines,
+            ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
+        });
+        if (next === notice) return preview.content ? `${preview.content}\n\n${notice}` : notice;
+        notice = next;
+    }
+    return truncateUtf8(notice, limits.maxBytes).content;
 }
 
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
-    const semaphore = dependencies.semaphore ?? PROCESS_SEMAPHORE;
-    const run = dependencies.run ?? runSubagent;
-    const resolveInvocation = dependencies.invocation ?? getPiInvocation;
-    const now = dependencies.now ?? Date.now;
-    const environment = dependencies.environment ?? process.env;
+    const {
+        semaphore,
+        run,
+        invocation: resolveInvocation,
+        now,
+        environment,
+    } = createDefaultSubagentDependencies(dependencies);
     const shutdownController = new AbortController();
     const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     const failedDetails = new Map<string, SubagentDetailsV1>();
@@ -110,17 +154,27 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     let sessionId = "unbound";
     const instanceId = crypto.randomUUID();
     let idle = true;
-    const emitBus = (payload: object) => pi.events?.emit(BACKGROUND_SUBAGENT_CHANNEL, payload);
-    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") => {
-        emitBus({
+    let background: BackgroundSubagentManager;
+    const route = () => ({ sessionId, instanceId });
+    const channel = createBackgroundChannel({
+        events: pi.events,
+        eventChannel: BACKGROUND_SUBAGENT_CHANNEL,
+        controlChannel: BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+        parseControl: parseBackgroundSubagentControl,
+        controlRoute: (control) => ({ sessionId: control.sessionId, instanceId: control.instanceId }),
+        envelope: (type, target, extra) => ({
             schema: BACKGROUND_SUBAGENT_SCHEMA,
             version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
+            ...target,
             type,
-            job,
-        });
-    };
+            ...extra,
+        }),
+        onControl: (control) => {
+            if (!shuttingDown) void background.cancel([control.jobId]).catch(() => {});
+        },
+    });
+    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") =>
+        channel.emit(type, { job }, route());
     const deliver = (result: BackgroundTerminalResult) => {
         if (shuttingDown) return;
         const pathNote = result.fullOutputPath ? `\n\nFull output: ${result.fullOutputPath}` : "";
@@ -134,7 +188,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             { deliverAs: "followUp", triggerTurn: true },
         );
     };
-    const background = new BackgroundSubagentManager({
+    background = new BackgroundSubagentManager({
         semaphore,
         run,
         invocation: resolveInvocation,
@@ -145,25 +199,11 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         isIdle: () => idle,
         outputStore,
     });
-    let unsubscribeControl: (() => void) | undefined;
-
     pi.on("session_start", (_event, ctx) => {
         sessionId = ctx.sessionManager.getSessionId();
         idle = ctx.isIdle();
-        unsubscribeControl?.();
-        unsubscribeControl = pi.events?.on(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, (payload) => {
-            const control = parseBackgroundSubagentControl(payload);
-            if (!control || shuttingDown || control.sessionId !== sessionId || control.instanceId !== instanceId)
-                return;
-            void background.cancel([control.jobId]).catch(() => {});
-        });
-        emitBus({
-            schema: BACKGROUND_SUBAGENT_SCHEMA,
-            version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
-            type: "ready",
-        });
+        channel.bind(route());
+        channel.ready();
     });
     pi.on("agent_start", () => {
         idle = false;
@@ -182,17 +222,11 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
 
     pi.on("session_shutdown", async () => {
         shuttingDown = true;
-        unsubscribeControl?.();
         shutdownController.abort();
         failedDetails.clear();
-        await background.shutdown();
-        await outputStore.cleanup();
-        emitBus({
-            schema: BACKGROUND_SUBAGENT_SCHEMA,
-            version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
-            type: "reset",
+        await channel.shutdown(async () => {
+            await background.shutdown();
+            await outputStore.cleanup();
         });
     });
 
@@ -203,13 +237,15 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                     `[${item.id}] ${item.title} — ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
             )
             .join("\n\n");
-        const notice =
-            "\n\n[Combined wait output truncated; use the per-job full output paths above or in result details.]";
-        const truncation = truncateHead(content, {
-            maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8"),
-            maxLines: DEFAULT_MAX_LINES - 2,
-        });
-        return truncation.truncated ? `${truncation.content}${notice}` : content;
+        const truncation = truncateHead(content, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+        return truncation.truncated
+            ? presentTruncated(
+                  content,
+                  { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+                  undefined,
+                  "the combined wait presentation is not retained; use each job's retained path when available",
+              )
+            : content;
     };
     pi.registerTool({
         name: "subagent_spawn",
@@ -368,12 +404,13 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             }
 
             const { truncation } = outcome;
-            let resultText = truncation.content;
-            if (truncation.truncated) {
-                resultText += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
-                if (outcome.fullOutputPath) resultText += ` Full output saved to: ${outcome.fullOutputPath}`;
-                resultText += "]";
-            }
+            const resultText = truncation.truncated
+                ? presentTruncated(
+                      outcome.delivered,
+                      { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+                      outcome.fullOutputPath,
+                  )
+                : truncation.content;
             details = updateSubagentDetails(
                 details,
                 { outputPreview: truncateUtf8(outcome.delivered, 4 * 1024).content },
@@ -389,5 +426,5 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-    registerSubagentExtension(pi);
+    registerSubagentExtension(pi, createDefaultSubagentDependencies());
 }

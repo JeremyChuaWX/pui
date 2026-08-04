@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import explorePrompt from "./agents/explore.md" with { type: "text" };
-import workerPrompt from "./agents/worker.md" with { type: "text" };
+import explorePrompt from "../subagent/agents/explore.md" with { type: "text" };
+import workerPrompt from "../subagent/agents/worker.md" with { type: "text" };
 
 export const AGENT_NAMES = ["worker", "explore"] as const;
 export type AgentName = (typeof AGENT_NAMES)[number];

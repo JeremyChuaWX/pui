@@ -1,5 +1,8 @@
 # Simplification pass 3 — consolidation plan
 
+**Status:** Implemented for Phases A–D. Phase E remains a separate effort; the optional UI/format
+merges and repository-wide import normalization were deliberately skipped.
+
 Read `docs/ARCHITECTURE.md` and `docs/refactor-handoff.md` first. Passes 1–2 trended toward
 extraction (deep modules, DI seams); this pass trends toward consolidation.
 
@@ -117,13 +120,10 @@ Same as pass 2: `bunx tsc --noEmit` + targeted `bun test <dir>` while iterating;
 `bun run check` before each commit (Node ≥ 22.19 on PATH); one commit per item, conventional
 messages; behavior parity everywhere, state deliberate divergences in the commit message.
 
-## Unresolved questions
+## Resolved implementation choices
 
-1. Trust policy: OK to have `src/` import extension parsers everywhere (workflow's current
-   policy), or apply the stricter no-import policy to workflow instead?
-2. Test-count vs isolation: OK merging the 3 workflow delivery-machine test files into one
-   ~650-line file?
-3. Phase E in scope for this branch, or separate branch after this PR lands?
-4. Commit the two already-deleted planning docs sitting in the working tree
-   (`docs/adr/0001-*.md`, `docs/shared-agent-execution-plan.md`)?
-5. Normalize import specifiers (`./x.ts` vs `./x.js`, currently 31/112 split) in this pass?
+1. Host code imports extension-owned parsers and bounds strings again at the view-model boundary.
+2. The three workflow delivery-machine test files were merged with their assertions retained.
+3. Phase E remains a separate effort.
+4. Unrelated planning-document deletions were not included.
+5. Import specifiers were not normalized in this pass.

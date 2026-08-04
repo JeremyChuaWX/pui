@@ -7,6 +7,8 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createBackgroundChannel } from "../shared/background-channel.js";
+import { errorMessage } from "../shared/validate.js";
 import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 import {
@@ -15,6 +17,7 @@ import {
     type WorkflowBackend,
     type WorkflowBackendOptions,
 } from "./backend.js";
+import { WorkflowRunManager } from "./manager.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
@@ -22,9 +25,7 @@ import {
     BACKGROUND_WORKFLOW_SCHEMA,
     BACKGROUND_WORKFLOW_VERSION,
     parseBackgroundWorkflowControl,
-} from "./background-protocol.js";
-import { WorkflowRunManager } from "./manager.js";
-import { errorMessage } from "./protocol.js";
+} from "./protocol.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 import { SessionLifecycle } from "./session-lifecycle.js";
 import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
@@ -83,38 +84,88 @@ export interface WorkflowExtensionDependencies {
     approvalStore?: WorkflowApprovalStore;
 }
 
+/** Constructs the resource-owning production workflow backend and its host collaborators. */
+export function createDefaultWorkflowDependencies(
+    overrides: WorkflowExtensionDependencies = {},
+): Required<Pick<WorkflowExtensionDependencies, "backend" | "environment" | "instanceId" | "approvalStore">> {
+    const environment = overrides.environment ?? process.env;
+    const backendOptions = overrides.backendOptions;
+    return {
+        environment,
+        instanceId: overrides.instanceId ?? crypto.randomUUID(),
+        approvalStore: overrides.approvalStore ?? new FileWorkflowApprovalStore(),
+        backend:
+            overrides.backend ??
+            createWorkflowBackend({
+                ...backendOptions,
+                agentExecutor: backendOptions?.agentExecutor ?? createWorkflowAgentExecutor(environment),
+                cooperativeExecutor: backendOptions?.agentExecutor ? backendOptions.cooperativeExecutor : true,
+                storage: backendOptions?.storage ?? new WorkflowRunStorage(),
+                policy: backendOptions?.policy ?? defaultWorkflowPolicy(environment),
+            }),
+    };
+}
+
 export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: WorkflowExtensionDependencies = {}): void {
-    const environment = dependencies.environment ?? process.env;
-    const instanceId = dependencies.instanceId ?? crypto.randomUUID();
-    const approvalStore = dependencies.approvalStore ?? new FileWorkflowApprovalStore();
-    const defaultExecutor = createWorkflowAgentExecutor(environment);
-    const backend =
-        dependencies.backend ??
-        createWorkflowBackend({
-            ...dependencies.backendOptions,
-            agentExecutor: dependencies.backendOptions?.agentExecutor ?? defaultExecutor,
-            cooperativeExecutor: dependencies.backendOptions?.agentExecutor
-                ? dependencies.backendOptions.cooperativeExecutor
-                : true,
-            storage: dependencies.backendOptions?.storage ?? new WorkflowRunStorage(),
-            policy: dependencies.backendOptions?.policy ?? defaultWorkflowPolicy(environment),
-        });
+    const { instanceId, approvalStore, backend } = createDefaultWorkflowDependencies(dependencies);
     const lifecycle = new SessionLifecycle();
+    let activeEpoch: ReturnType<SessionLifecycle["beginEpoch"]> | undefined;
+    let manager: WorkflowRunManager;
+    const channel = createBackgroundChannel({
+        events: pi.events,
+        eventChannel: BACKGROUND_WORKFLOW_CHANNEL,
+        controlChannel: BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+        parseControl: (payload) => parseBackgroundWorkflowControl(payload),
+        controlRoute: (control) => ({
+            sessionId: control.sessionId,
+            instanceId: control.instanceId,
+            cwd: control.cwd,
+        }),
+        envelope: (type, route, extra) => ({
+            schema: BACKGROUND_WORKFLOW_SCHEMA,
+            version: BACKGROUND_WORKFLOW_VERSION,
+            ...route,
+            type,
+            ...extra,
+        }),
+        onControl: (control) => {
+            const epoch = activeEpoch;
+            if (!epoch || epoch.stale()) return;
+            const route = { sessionId: control.sessionId, cwd: control.cwd };
+            void (async () => {
+                try {
+                    const result = await manager.control(control.runId, control.action, control.agentId);
+                    if (epoch.stale()) return;
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        ...route,
+                        instanceId,
+                        requestId: control.requestId,
+                        ok: true,
+                        ...(result?.runId ? { linkedRunId: result.runId } : {}),
+                    });
+                } catch (error) {
+                    if (epoch.stale()) return;
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        ...route,
+                        instanceId,
+                        requestId: control.requestId,
+                        ok: false,
+                        error: errorMessage(error).slice(0, 2_000),
+                    });
+                }
+            })();
+        },
+    });
     const emitEnvelope = (
         type: "ready" | "reset" | "upsert",
         extra: object = {},
         route = { sessionId: lifecycle.sessionId, cwd: lifecycle.cwd },
-    ) =>
-        pi.events?.emit(BACKGROUND_WORKFLOW_CHANNEL, {
-            schema: BACKGROUND_WORKFLOW_SCHEMA,
-            version: BACKGROUND_WORKFLOW_VERSION,
-            sessionId: route.sessionId,
-            instanceId,
-            cwd: route.cwd,
-            type,
-            ...extra,
-        });
-    const manager = new WorkflowRunManager({
+    ) => channel.emit(type, extra, { ...route, instanceId });
+    manager = new WorkflowRunManager({
         backend,
         emit: (run) => emitEnvelope("upsert", { run }, { sessionId: run.sessionId, cwd: run.cwd }),
         shouldDeliver: (run) => !isHeadlessWorkflowSession(run.sessionId),
@@ -137,52 +188,21 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     });
     pi.on("session_start", async (_event, ctx) => {
         const epoch = lifecycle.beginEpoch();
+        activeEpoch = epoch;
         const route = {
             sessionId: ctx.sessionManager.getSessionId(),
             cwd: await fs.promises.realpath(ctx.cwd),
         };
         if (epoch.stale()) return;
         lifecycle.bind(route);
-        lifecycle.setControlSubscription(
-            pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
-                if (epoch.stale()) return;
-                const control = parseBackgroundWorkflowControl(payload, { ...route, instanceId });
-                if (!control) return;
-                void (async () => {
-                    try {
-                        const result = await manager.control(control.runId, control.action, control.agentId);
-                        if (epoch.stale()) return;
-                        pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
-                            schema: "pi.workflow.background.control.result",
-                            version: 1,
-                            ...route,
-                            instanceId,
-                            requestId: control.requestId,
-                            ok: true,
-                            ...(result?.runId ? { linkedRunId: result.runId } : {}),
-                        });
-                    } catch (error) {
-                        if (epoch.stale()) return;
-                        pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
-                            schema: "pi.workflow.background.control.result",
-                            version: 1,
-                            ...route,
-                            instanceId,
-                            requestId: control.requestId,
-                            ok: false,
-                            error: errorMessage(error).slice(0, 2_000),
-                        });
-                    }
-                })();
-            }),
-        );
+        channel.bind({ ...route, instanceId });
         let recovered: Awaited<ReturnType<WorkflowRunManager["initialize"]>> | undefined;
         await lifecycle.enqueue(async () => {
             if (epoch.stale()) return;
             recovered = await manager.initialize(route.cwd);
         });
         if (epoch.stale() || !recovered) return;
-        emitEnvelope("ready", {}, route);
+        channel.ready({ ...route, instanceId });
         for (const run of recovered.filter(
             (item) =>
                 !isHeadlessWorkflowSession(item.sessionId) &&
@@ -210,9 +230,11 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     });
     pi.on("session_shutdown", async () => {
         const epoch = lifecycle.endEpoch();
-        const route = { sessionId: lifecycle.sessionId, cwd: lifecycle.cwd };
-        await lifecycle.enqueue(() => manager.shutdown());
-        if (!epoch.stale()) emitEnvelope("reset", {}, route);
+        activeEpoch = undefined;
+        await channel.shutdown(
+            () => lifecycle.enqueue(() => manager.shutdown()),
+            () => !epoch.stale(),
+        );
     });
     const authorize = async (key: string, title: string, body: string, ui: Partial<ExtensionUIContext>) => {
         if (await approvalStore.has(key)) return;
@@ -327,5 +349,5 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     });
 }
 export default function workflowExtension(pi: ExtensionAPI): void {
-    registerWorkflowExtension(pi);
+    registerWorkflowExtension(pi, createDefaultWorkflowDependencies());
 }

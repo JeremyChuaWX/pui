@@ -1,5 +1,6 @@
+import { errorMessage } from "../shared/validate.js";
 import type { WorkflowBackend, WorkflowLaunch } from "./backend.js";
-import { errorMessage, type WorkflowRunSummaryV1 } from "./protocol.js";
+import type { WorkflowRunSummaryV1 } from "./protocol.js";
 
 export interface WorkflowManagerOptions {
     backend: WorkflowBackend;

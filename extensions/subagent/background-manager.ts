@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { RetainedOutputStore } from "../shared/retained-output.js";
+import {
+    AGENTS,
+    type AgentName,
+    type ResolvedAgentName,
+    resolveModel,
+    resolveWorkingDirectory,
+} from "../shared/presets.js";
+import { formatTruncationNotice, RetainedOutputStore } from "../shared/retained-output.js";
+import type { AbortableSemaphore } from "../shared/semaphore.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
-import { AGENTS, type AgentName, type ResolvedAgentName, resolveModel, resolveWorkingDirectory } from "./presets.js";
 import {
     createInitialSubagentDetails,
     SUBAGENT_PROTOCOL_VERSION,
@@ -13,7 +20,6 @@ import {
 import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import type { AbortableSemaphore } from "./semaphore.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
@@ -68,48 +74,52 @@ function titleFor(input: SpawnInput): string {
     return truncateUtf8(candidate.replace(/\s+/g, " "), TITLE_BYTES).content;
 }
 function copyJob(job: Job): BackgroundSubagentJobV1 {
-    const snapshot = structuredClone(job.snapshot);
-    snapshot.title = truncateUtf8(snapshot.title, TITLE_BYTES).content;
-    if (snapshot.prompt) snapshot.prompt = truncateUtf8(snapshot.prompt, PROMPT_BYTES).content;
-    snapshot.run.agent = truncateUtf8(snapshot.run.agent, 128).content;
-    snapshot.run.model = truncateUtf8(snapshot.run.model, 256).content;
-    snapshot.run.cwd = truncateUtf8(snapshot.run.cwd, 2 * 1024).content;
-    if (snapshot.run.outputPreview)
-        snapshot.run.outputPreview = truncateUtf8(snapshot.run.outputPreview, 4 * 1024).content;
-    if (snapshot.run.error) snapshot.run.error = truncateUtf8(snapshot.run.error, 8 * 1024).content;
-    if (snapshot.run.fullOutputPath)
-        snapshot.run.fullOutputPath = truncateUtf8(snapshot.run.fullOutputPath, 2 * 1024).content;
-    snapshot.run.activeTools = snapshot.run.activeTools.map((tool) => ({
-        ...tool,
-        id: truncateUtf8(tool.id, 256).content,
-        name: truncateUtf8(tool.name, 128).content,
-        title: truncateUtf8(tool.title, 512).content,
-    }));
-    snapshot.run.recentActivity = snapshot.run.recentActivity.map((activity) => ({
-        ...activity,
-        title: truncateUtf8(activity.title, 512).content,
-    }));
-    return snapshot;
+    return structuredClone(job.snapshot);
 }
 function boundedResult(result: BackgroundTerminalResult, bytes: number): BackgroundTerminalResult {
     const cap = Math.max(0, bytes);
     const truncation = truncateUtf8(result.text, cap);
     if (!truncation.truncated) return result;
-    const notice = result.fullOutputPath
-        ? `\n\n[Output truncated for delivery. Full output: ${result.fullOutputPath}]`
-        : "\n\n[Output truncated for delivery.]";
+    const noticeFor = (outputBytes: number) =>
+        formatTruncationNotice({
+            outputBytes,
+            totalBytes: truncation.totalBytes,
+            ...(result.fullOutputPath
+                ? { retainedPath: result.fullOutputPath }
+                : { nonRetentionReason: "complete output was not retained by the subagent" }),
+        });
+    let notice = noticeFor(0);
+    let body = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const separator = cap >= Buffer.byteLength(notice, "utf8") + 2 ? "\n\n" : "";
+        const bodyBudget = Math.max(0, cap - Buffer.byteLength(separator + notice, "utf8"));
+        body = truncateUtf8(result.text, bodyBudget).content;
+        const next = noticeFor(Buffer.byteLength(body, "utf8"));
+        if (next === notice) return { ...result, text: `${body}${separator}${notice}` };
+        notice = next;
+    }
     const boundedNotice = truncateUtf8(notice, cap).content;
-    const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8"));
-    return { ...result, text: `${truncateUtf8(result.text, bodyBudget).content}${boundedNotice}` };
+    const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8") - 2);
+    body = truncateUtf8(result.text, bodyBudget).content;
+    return { ...result, text: body ? `${body}\n\n${boundedNotice}` : boundedNotice };
 }
 
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
+    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore">>;
     private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
-    constructor(private readonly options: BackgroundManagerOptions) {
+    constructor(options: BackgroundManagerOptions) {
+        this.options = {
+            ...options,
+            run: options.run ?? runSubagent,
+            invocation: options.invocation ?? getPiInvocation,
+            environment: options.environment ?? process.env,
+            now: options.now ?? Date.now,
+            isIdle: options.isIdle ?? (() => false),
+        };
         this.outputStore =
             options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     }
@@ -126,9 +136,9 @@ export class BackgroundSubagentManager {
         }
         const agentName: ResolvedAgentName = input.agent ?? "generic";
         const agent = AGENTS[agentName];
-        const model = resolveModel(agent, input.model, this.options.environment ?? process.env);
+        const model = resolveModel(agent, input.model, this.options.environment);
         const id = randomUUID();
-        const now = (this.options.now ?? Date.now)();
+        const now = this.options.now();
         const details = createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now });
         const controller = new AbortController();
         const job: Job = {
@@ -200,7 +210,7 @@ export class BackgroundSubagentManager {
                 if (count > 0) this.waitInterest.set(job.snapshot.id, count);
                 else {
                     this.waitInterest.delete(job.snapshot.id);
-                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle?.()) {
+                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle()) {
                         this.deferred.delete(job.snapshot.id);
                         this.consumeAndDeliver(job);
                     }
@@ -286,9 +296,9 @@ export class BackgroundSubagentManager {
         const outcome = await runSubagentJob(
             {
                 semaphore: this.options.semaphore,
-                run: this.options.run ?? runSubagent,
-                invocation: this.options.invocation ?? getPiInvocation,
-                now: this.options.now ?? Date.now,
+                run: this.options.run,
+                invocation: this.options.invocation,
+                now: this.options.now,
             },
             {
                 details,
@@ -313,7 +323,7 @@ export class BackgroundSubagentManager {
         });
         if (!this.shuttingDown) {
             if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
-            else if (this.options.isIdle?.()) this.consumeAndDeliver(job);
+            else if (this.options.isIdle()) this.consumeAndDeliver(job);
             else this.deferred.set(job.snapshot.id, job.terminal);
         }
         this.prune();

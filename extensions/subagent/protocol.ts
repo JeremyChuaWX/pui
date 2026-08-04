@@ -1,3 +1,9 @@
+import { appendBoundedUtf8, truncateUtf8, truncateUtf8Tail } from "../shared/retained-output.js";
+import { isRecord } from "../shared/validate.js";
+
+// Producer protocol compatibility: existing consumers may continue importing these helpers here.
+export { appendBoundedUtf8, truncateUtf8, truncateUtf8Tail };
+
 export const SUBAGENT_SCHEMA = "pi.subagent" as const;
 export const SUBAGENT_PROTOCOL_VERSION = 1 as const;
 export const MAX_RECENT_ACTIVITY = 20;
@@ -80,13 +86,6 @@ interface SubagentTerminalPatch {
     outputPreview?: string;
     fullOutputPath?: string;
     model?: string;
-}
-
-interface Utf8Truncation {
-    content: string;
-    truncated: boolean;
-    outputBytes: number;
-    totalBytes: number;
 }
 
 const STATUSES = new Set<SubagentStatus>([
@@ -233,45 +232,6 @@ export function aggregateSubagentUsage(current: SubagentUsageV1, assistantUsage:
         cost: current.cost + usageCost(assistantUsage),
         turns: current.turns + Math.max(0, Math.floor(nonNegativeNumber(turns))),
     };
-}
-
-function truncateUtf8Direction(text: string, maxBytes: number, tail: boolean): Utf8Truncation {
-    const totalBytes = Buffer.byteLength(text, "utf8");
-    const cap = Math.max(0, Math.floor(Number.isFinite(maxBytes) ? maxBytes : 0));
-    if (totalBytes <= cap) return { content: text, truncated: false, outputBytes: totalBytes, totalBytes };
-    if (cap === 0) return { content: "", truncated: true, outputBytes: 0, totalBytes };
-
-    const characters = Array.from(text);
-    const kept: string[] = [];
-    let outputBytes = 0;
-    if (tail) characters.reverse();
-    for (const character of characters) {
-        const bytes = Buffer.byteLength(character, "utf8");
-        if (outputBytes + bytes > cap) break;
-        kept.push(character);
-        outputBytes += bytes;
-    }
-    if (tail) kept.reverse();
-    return { content: kept.join(""), truncated: true, outputBytes, totalBytes };
-}
-
-/** Truncate at a Unicode code-point boundary, retaining the beginning of the text. */
-export function truncateUtf8(text: string, maxBytes: number): Utf8Truncation {
-    return truncateUtf8Direction(text, maxBytes, false);
-}
-
-/** Truncate at a Unicode code-point boundary, retaining the end of the text. */
-export function truncateUtf8Tail(text: string, maxBytes: number): Utf8Truncation {
-    return truncateUtf8Direction(text, maxBytes, true);
-}
-
-/** Append text while retaining at most maxBytes of the newest valid UTF-8 content. */
-export function appendBoundedUtf8(current: string, addition: string, maxBytes: number): string {
-    return truncateUtf8Tail(current + addition, maxBytes).content;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isFiniteNonNegative(value: unknown): value is number {

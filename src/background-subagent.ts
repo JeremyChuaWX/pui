@@ -1,15 +1,19 @@
+import type { EventBusController } from "@earendil-works/pi-coding-agent";
+import { boundedString } from "../extensions/shared/validate.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
-    BACKGROUND_SUBAGENT_SCHEMA,
+    type BackgroundSubagentEventV1,
+    parseBackgroundSubagentEvent as parseWireEvent,
 } from "../extensions/subagent/background-protocol.js";
+import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
 import type { SubagentViewModel } from "./subagent.js";
-import { normalizeSubagentDetails } from "./subagent.js";
+import { isTerminalSubagentStatus, normalizeSubagentDetails } from "./subagent.js";
 
 export { BACKGROUND_SUBAGENT_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_SCHEMA };
 
-const MAX_ID = 256;
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;
 const MAX_JOBS = 64;
@@ -22,51 +26,76 @@ type BackgroundSubagentEvent =
     | { type: "ready" | "reset"; sessionId: string; instanceId: string }
     | { type: "upsert" | "remove"; sessionId: string; instanceId: string; job: BackgroundSubagentViewModel };
 
-function record(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function identity(value: unknown): value is string {
-    return typeof value === "string" && value.length > 0 && value.length <= MAX_ID;
-}
-
-function bounded(value: string, max: number): string {
-    return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
-}
-
-/** Parse the extension wire format without trusting or importing extension runtime code. */
+/** Parse the extension-owned wire format, then bound all host view-model strings. */
 export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagentEvent | undefined {
-    if (!record(value) || value.schema !== BACKGROUND_SUBAGENT_SCHEMA || value.version !== 1) return undefined;
-    if (!identity(value.sessionId) || !identity(value.instanceId)) return undefined;
-    if (value.type === "ready" || value.type === "reset") {
-        if (value.job !== undefined) return undefined;
-        return { type: value.type, sessionId: value.sessionId, instanceId: value.instanceId };
-    }
-    if ((value.type !== "upsert" && value.type !== "remove") || !record(value.job)) return undefined;
-    const job = value.job;
-    if (!identity(job.id) || typeof job.title !== "string" || job.title.length === 0 || !record(job.run))
-        return undefined;
-    if (job.prompt !== undefined && typeof job.prompt !== "string") return undefined;
+    const event = parseWireEvent(value);
+    if (!event) return undefined;
+    if (event.type === "ready" || event.type === "reset")
+        return { type: event.type, sessionId: event.sessionId, instanceId: event.instanceId };
+    const job = event.job as NonNullable<BackgroundSubagentEventV1["job"]>;
     const run = normalizeSubagentDetails(
         { schema: "pi.subagent", version: 1, run: job.run },
         { args: job.prompt === undefined ? undefined : { prompt: job.prompt } },
     );
-    if (!run || run.id !== job.id) return undefined;
+    if (!run) return undefined;
     return {
-        type: value.type,
-        sessionId: value.sessionId,
-        instanceId: value.instanceId,
+        type: event.type,
+        sessionId: event.sessionId,
+        instanceId: event.instanceId,
         job: {
             ...run,
-            title: bounded(job.title, MAX_TITLE),
-            ...(job.prompt === undefined ? {} : { prompt: bounded(job.prompt, MAX_PROMPT) }),
+            title: boundedString(job.title, MAX_TITLE),
+            ...(job.prompt === undefined ? {} : { prompt: boundedString(job.prompt, MAX_PROMPT) }),
         },
     };
 }
 
-export interface BackgroundSubagentState {
-    instanceId?: string;
-    jobs: ReadonlyMap<string, BackgroundSubagentViewModel>;
+export type BackgroundSubagentState = InstanceScopedRuns<BackgroundSubagentViewModel>;
+
+export class BackgroundSubagentBridge {
+    private state: BackgroundSubagentState = { runs: new Map() };
+    private sessionId = "";
+    private unsubscribe?: () => void;
+
+    constructor(private readonly options: { eventBus: EventBusController; onChange: () => void }) {}
+
+    bind(sessionId: string): void {
+        this.unsubscribe?.();
+        this.state = { runs: new Map() };
+        this.sessionId = sessionId;
+        this.unsubscribe = this.options.eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
+            const event = parseBackgroundSubagentEvent(payload);
+            if (!event) return;
+            const next = reduceBackgroundSubagentEvent(this.state, event, this.sessionId);
+            if (next === this.state) return;
+            this.state = next;
+            this.options.onChange();
+        });
+    }
+
+    jobs(): BackgroundSubagentViewModel[] {
+        return [...this.state.runs.values()];
+    }
+
+    cancel(id: string): boolean {
+        const job = this.state.runs.get(id);
+        if (!job || !this.state.instanceId || isTerminalSubagentStatus(job.status)) return false;
+        this.options.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
+            schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+            version: 1,
+            sessionId: this.sessionId,
+            instanceId: this.state.instanceId,
+            type: "cancel",
+            jobId: id,
+        });
+        return true;
+    }
+
+    dispose(): void {
+        this.unsubscribe?.();
+        this.unsubscribe = undefined;
+        this.state = { runs: new Map() };
+    }
 }
 
 export function reduceBackgroundSubagentEvent(
@@ -74,17 +103,11 @@ export function reduceBackgroundSubagentEvent(
     event: BackgroundSubagentEvent,
     sessionId: string,
 ): BackgroundSubagentState {
-    if (event.sessionId !== sessionId) return state;
-    if (event.type === "ready") {
-        if (state.instanceId !== undefined && state.instanceId !== event.instanceId) return state;
-        return state.instanceId === event.instanceId ? state : { instanceId: event.instanceId, jobs: new Map() };
-    }
-    if (event.instanceId !== state.instanceId) return state;
-    if (event.type === "reset") return { jobs: new Map() };
-    const jobs = new Map(state.jobs);
-    if (event.type === "upsert") {
-        if (!jobs.has(event.job.id) && jobs.size >= MAX_JOBS) return state;
-        jobs.set(event.job.id, event.job);
-    } else if (event.type === "remove") jobs.delete(event.job.id);
-    return { instanceId: state.instanceId, jobs };
+    return reduceInstanceScopedRuns(
+        state,
+        event.type === "upsert" || event.type === "remove"
+            ? { type: event.type, instanceId: event.instanceId, run: event.job }
+            : { type: event.type, instanceId: event.instanceId },
+        { routeMatches: event.sessionId === sessionId, maxRuns: MAX_JOBS, id: (job) => job.id },
+    );
 }

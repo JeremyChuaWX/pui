@@ -2,12 +2,10 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
+import { errorMessage } from "../extensions/shared/validate.js";
+import { copyCurrentSelection, editPromptInNvim, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
 import type { PuiController } from "./controller.js";
-import { editPromptInNvim } from "./external-editor.js";
-import { trapFocus } from "./focus-trap.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
-import { PromptHistory } from "./prompt-history.js";
-import { copyCurrentSelection, isCopyShortcut } from "./selection-copy.js";
 import { isTerminalSubagentStatus } from "./subagent.js";
 import { theme } from "./theme.js";
 import type { PromptCompletions, PuiSnapshot } from "./types.js";
@@ -337,10 +335,7 @@ export function App(props: { controller: PuiController }) {
         }
 
         if (failure) {
-            props.controller.notify(
-                `Could not open nvim: ${failure instanceof Error ? failure.message : String(failure)}`,
-                "error",
-            );
+            props.controller.notify(`Could not open nvim: ${errorMessage(failure)}`, "error");
         }
     }
 
@@ -370,7 +365,7 @@ export function App(props: { controller: PuiController }) {
         } catch (error) {
             if (request !== dialogRequest) return;
             setDialog(undefined);
-            props.controller.notify(error instanceof Error ? error.message : String(error), "error");
+            props.controller.notify(errorMessage(error), "error");
         }
     }
 
@@ -413,9 +408,7 @@ export function App(props: { controller: PuiController }) {
                 .then((copied) => {
                     if (copied) props.controller.notify("Copied highlighted text", "success");
                 })
-                .catch((error: unknown) =>
-                    props.controller.notify(error instanceof Error ? error.message : String(error), "error"),
-                );
+                .catch((error: unknown) => props.controller.notify(errorMessage(error), "error"));
             return;
         }
         const confirmation = extensionConfirm();

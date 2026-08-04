@@ -1,3 +1,7 @@
+import { isRecord } from "../shared/validate.js";
+
+export { boundedString as truncateWorkflowText, errorMessage } from "../shared/validate.js";
+
 export const WORKFLOW_SCHEMA = "pi.workflow" as const;
 export const WORKFLOW_PROTOCOL_VERSION = 1 as const;
 export const MAX_WORKFLOW_PHASES = 100;
@@ -10,7 +14,6 @@ export const MAX_WORKFLOW_PROMPT = 8_000;
 export const MAX_WORKFLOW_DIAGNOSTIC = 2_000;
 
 export type WorkflowEntrypoint = "script" | "function";
-export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 export type WorkflowRunStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled";
 export type WorkflowPhaseStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type WorkflowAgentStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
@@ -99,19 +102,6 @@ export interface WorkflowRunDetailsV1 {
     result?: string;
 }
 
-/** Bound producer text by UTF-16 length without splitting a Unicode code point. */
-export function truncateWorkflowText(value: string, maximum: number): string {
-    const limit = Number.isFinite(maximum) ? Math.floor(maximum) : maximum;
-    if (!limit || limit < 0) return "";
-    if (value.length <= limit) return value;
-    let result = "";
-    for (const character of value) {
-        if (result.length + character.length > limit - 1) break;
-        result += character;
-    }
-    return `${result}…`;
-}
-
 const RUN_STATUSES = new Set<WorkflowRunStatus>(["queued", "running", "paused", "succeeded", "failed", "cancelled"]);
 const PHASE_STATUSES = new Set<WorkflowPhaseStatus>(["queued", "running", "succeeded", "failed", "cancelled"]);
 const AGENT_STATUSES = new Set<WorkflowAgentStatus>([
@@ -124,9 +114,6 @@ const AGENT_STATUSES = new Set<WorkflowAgentStatus>([
 ]);
 const ACTIVITY_KINDS = new Set<WorkflowActivityKind>(["agent", "tool", "log", "diagnostic"]);
 
-function record(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function finite(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
@@ -144,13 +131,13 @@ function timestamp(value: unknown): boolean {
 }
 
 function usage(value: unknown): value is WorkflowUsageV1 {
-    if (!record(value)) return false;
+    if (!isRecord(value)) return false;
     return ["input", "output", "cacheRead", "cacheWrite", "totalTokens", "cost", "turns"].every((key) =>
         finite(value[key]),
     );
 }
 function limits(value: unknown): value is WorkflowLimitsV1 {
-    if (!record(value)) return false;
+    if (!isRecord(value)) return false;
     return (
         integer(value.maxConcurrency, 16) &&
         (value.maxConcurrency as number) > 0 &&
@@ -166,7 +153,7 @@ function activities(value: unknown): value is WorkflowActivityV1[] {
     let sequence = -1;
     return value.every((item) => {
         if (
-            !record(item) ||
+            !isRecord(item) ||
             !integer(item.sequence) ||
             (item.sequence as number) <= sequence ||
             !finite(item.timestamp) ||
@@ -181,7 +168,7 @@ function activities(value: unknown): value is WorkflowActivityV1[] {
     });
 }
 function agent(value: unknown): value is WorkflowAgentSummaryV1 {
-    if (!record(value)) return false;
+    if (!isRecord(value)) return false;
     return (
         string(value.id, MAX_WORKFLOW_ID) &&
         string(value.label, MAX_WORKFLOW_NAME) &&
@@ -197,14 +184,14 @@ function agent(value: unknown): value is WorkflowAgentSummaryV1 {
         optionalString(value.prompt, MAX_WORKFLOW_PROMPT) &&
         optionalString(value.error, MAX_WORKFLOW_DETAIL) &&
         (value.worktree === undefined ||
-            (record(value.worktree) &&
+            (isRecord(value.worktree) &&
                 string(value.worktree.cwd, MAX_WORKFLOW_DETAIL) &&
                 string(value.worktree.branch, MAX_WORKFLOW_DETAIL))) &&
         activities(value.recentActivity)
     );
 }
 function phase(value: unknown): value is WorkflowPhaseSummaryV1 {
-    if (!record(value)) return false;
+    if (!isRecord(value)) return false;
     return (
         string(value.id, MAX_WORKFLOW_ID) &&
         string(value.name, MAX_WORKFLOW_NAME) &&
@@ -222,7 +209,7 @@ function phase(value: unknown): value is WorkflowPhaseSummaryV1 {
 
 /** Strict wire parser. Unknown versions return undefined so callers retain generic rendering. */
 export function parseWorkflowRunV1(value: unknown): WorkflowRunSummaryV1 | undefined {
-    if (!record(value) || value.schema !== WORKFLOW_SCHEMA || value.version !== WORKFLOW_PROTOCOL_VERSION)
+    if (!isRecord(value) || value.schema !== WORKFLOW_SCHEMA || value.version !== WORKFLOW_PROTOCOL_VERSION)
         return undefined;
     if (
         !string(value.id, MAX_WORKFLOW_ID) ||
@@ -256,7 +243,7 @@ export function parseWorkflowRunV1(value: unknown): WorkflowRunSummaryV1 | undef
 }
 
 export function parseWorkflowDetailsV1(value: unknown): WorkflowRunDetailsV1 | undefined {
-    if (!record(value) || value.schema !== WORKFLOW_SCHEMA || value.version !== WORKFLOW_PROTOCOL_VERSION)
+    if (!isRecord(value) || value.schema !== WORKFLOW_SCHEMA || value.version !== WORKFLOW_PROTOCOL_VERSION)
         return undefined;
     const run = parseWorkflowRunV1(value.run);
     if (
@@ -272,4 +259,141 @@ export function parseWorkflowDetailsV1(value: unknown): WorkflowRunDetailsV1 | u
         ...(value.script === undefined ? {} : { script: value.script as string }),
         ...(value.result === undefined ? {} : { result: value.result as string }),
     };
+}
+
+export const BACKGROUND_WORKFLOW_CHANNEL = "pui.workflow.background" as const;
+export const BACKGROUND_WORKFLOW_CONTROL_CHANNEL = "pui.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL = "pui.workflow.background.control.result" as const;
+export const BACKGROUND_WORKFLOW_SCHEMA = "pi.workflow.background" as const;
+export const BACKGROUND_WORKFLOW_CONTROL_SCHEMA = "pi.workflow.background.control" as const;
+export const BACKGROUND_WORKFLOW_VERSION = 1 as const;
+const MAX_ID = 256;
+const MAX_CWD = 4_000;
+
+export type WorkflowControlAction = "pause" | "resume" | "stop" | "restart-agent" | "retry";
+const WORKFLOW_CONTROL_ACTIONS: ReadonlySet<WorkflowControlAction> = new Set([
+    "pause",
+    "resume",
+    "stop",
+    "restart-agent",
+    "retry",
+]);
+
+export interface BackgroundWorkflowEventV1 {
+    schema: typeof BACKGROUND_WORKFLOW_SCHEMA;
+    version: typeof BACKGROUND_WORKFLOW_VERSION;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    type: "ready" | "reset" | "upsert";
+    run?: WorkflowRunSummaryV1;
+}
+
+export interface BackgroundWorkflowControlV1 {
+    schema: typeof BACKGROUND_WORKFLOW_CONTROL_SCHEMA;
+    version: typeof BACKGROUND_WORKFLOW_VERSION;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    runId: string;
+    action: WorkflowControlAction;
+    agentId?: string;
+}
+export interface BackgroundWorkflowControlResultV1 {
+    schema: "pi.workflow.background.control.result";
+    version: 1;
+    sessionId: string;
+    instanceId: string;
+    cwd: string;
+    requestId: string;
+    ok: boolean;
+    linkedRunId?: string;
+    error?: string;
+}
+
+export interface WorkflowRoute {
+    sessionId: string;
+    instanceId?: string;
+    /** Already-canonical cwd. Protocol parsing deliberately performs exact routing only. */
+    cwd: string;
+}
+
+function identity(value: unknown, maximum = MAX_ID): value is string {
+    return typeof value === "string" && value.length > 0 && value.length <= maximum;
+}
+function routed(value: Record<string, unknown>, route?: WorkflowRoute): boolean {
+    if (!identity(value.sessionId) || !identity(value.instanceId) || !identity(value.cwd, MAX_CWD)) return false;
+    return (
+        !route ||
+        (value.sessionId === route.sessionId &&
+            value.cwd === route.cwd &&
+            (route.instanceId === undefined || value.instanceId === route.instanceId))
+    );
+}
+
+export function parseBackgroundWorkflowEvent(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowEventV1 | undefined {
+    if (
+        !isRecord(value) ||
+        value.schema !== BACKGROUND_WORKFLOW_SCHEMA ||
+        value.version !== BACKGROUND_WORKFLOW_VERSION ||
+        !routed(value, route)
+    )
+        return undefined;
+    if (value.type === "ready" || value.type === "reset") {
+        if (value.run !== undefined || value.runId !== undefined) return undefined;
+        return value as unknown as BackgroundWorkflowEventV1;
+    }
+    if (value.type === "upsert") {
+        if (value.runId !== undefined) return undefined;
+        const run = parseWorkflowRunV1(value.run);
+        if (!run || run.sessionId !== value.sessionId || run.cwd !== value.cwd) return undefined;
+        return { ...(value as unknown as BackgroundWorkflowEventV1), run };
+    }
+    return undefined;
+}
+
+export function parseBackgroundWorkflowControl(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowControlV1 | undefined {
+    if (
+        !isRecord(value) ||
+        value.schema !== BACKGROUND_WORKFLOW_CONTROL_SCHEMA ||
+        value.version !== BACKGROUND_WORKFLOW_VERSION ||
+        !routed(value, route) ||
+        !identity(value.requestId) ||
+        !identity(value.runId) ||
+        !WORKFLOW_CONTROL_ACTIONS.has(value.action as WorkflowControlAction)
+    )
+        return undefined;
+    if (value.action === "restart-agent") {
+        if (!identity(value.agentId)) return undefined;
+    } else if (value.agentId !== undefined) return undefined;
+    return value as unknown as BackgroundWorkflowControlV1;
+}
+
+export function parseBackgroundWorkflowControlResult(
+    value: unknown,
+    route?: WorkflowRoute,
+): BackgroundWorkflowControlResultV1 | undefined {
+    if (
+        !isRecord(value) ||
+        value.schema !== "pi.workflow.background.control.result" ||
+        value.version !== 1 ||
+        !routed(value, route) ||
+        !identity(value.requestId) ||
+        typeof value.ok !== "boolean"
+    )
+        return undefined;
+    if (
+        value.ok
+            ? value.error !== undefined || (value.linkedRunId !== undefined && !identity(value.linkedRunId))
+            : !identity(value.error, 2_000) || value.linkedRunId !== undefined
+    )
+        return undefined;
+    return value as unknown as BackgroundWorkflowControlResultV1;
 }

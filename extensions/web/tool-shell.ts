@@ -1,4 +1,5 @@
 import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
+import { errorMessage } from "../shared/validate.js";
 import type { WebOutputRetention } from "./output-retention.ts";
 
 /** Provider dependencies shared by the web search and crawl tools. */
@@ -48,11 +49,7 @@ export async function executeWebTool<Details, ProviderDetails extends object>(op
             },
         };
     } catch (error) {
-        const message = signal?.aborted
-            ? options.cancelledMessage
-            : error instanceof Error
-              ? error.message
-              : String(error);
+        const message = signal?.aborted ? options.cancelledMessage : errorMessage(error);
         throw new Error(`${options.toolName} failed: ${message}`, { cause: error });
     }
 }

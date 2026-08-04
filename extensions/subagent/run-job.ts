@@ -1,5 +1,7 @@
 import { DEFAULT_MAX_BYTES, truncateHead } from "@earendil-works/pi-coding-agent";
-import { type AgentPreset, childArgs } from "./presets.js";
+import { type AgentPreset, childArgs } from "../shared/presets.js";
+import type { AbortableSemaphore, SemaphoreRelease } from "../shared/semaphore.js";
+import { errorMessage } from "../shared/validate.js";
 import {
     appendSubagentActivity,
     createTerminalSubagentDetails,
@@ -10,7 +12,6 @@ import {
     updateSubagentDetails,
 } from "./protocol.js";
 import type { getPiInvocation, RunSubagentOptions, SubagentRunResult } from "./runner.js";
-import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
 
 const ERROR_PREVIEW_BYTES = 8 * 1024;
 const FAILURE_ACTIVITY_TITLE_BYTES = 512;
@@ -150,7 +151,7 @@ export async function runSubagentJob(
             details = synthesizeSubagentFailure(
                 details,
                 request.signal.aborted ? "cancelled" : "failed",
-                error instanceof Error ? error.message : String(error),
+                errorMessage(error),
                 now(),
             );
             request.publish(details);

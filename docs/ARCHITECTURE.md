@@ -11,9 +11,8 @@ src/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smo
 src/controller.ts (PuiController) ──────────── deep module: embeds Pi, owns all state
       │  collaborators (each injectable):
       │    src/workflow-bridge.ts     WorkflowBridge      run map + control round-trips
-      │    src/extension-dialogs.ts   ExtensionDialogQueue bounded dialog queue
-      │    src/toasts.ts              ToastQueue          self-expiring notifications
-      │    src/commands.ts            LOCAL_COMMANDS      one table: autocomplete + dispatch
+      │    src/background-subagent.ts BackgroundSubagentBridge + bounded view models
+      │    src/controller-queues.ts   ExtensionDialogQueue / ToastQueue
       │
       ▼  immutable PuiSnapshot via subscribe()
 src/app.tsx (App shell) + src/ui/* ─────────── view layer, renders snapshots only
@@ -47,10 +46,13 @@ The controller delegates to focused collaborators rather than owning every conce
 
 | Module | Interface | Hides |
 |---|---|---|
-| `src/workflow-bridge.ts` | `bind / runs / inspect / control / dispose` | background-event parsing, the instance-authority reducer, control request/result correlation and timeout |
-| `src/extension-dialogs.ts` | `request / resolve / current / dismissAll / close` | bounds on untrusted dialog content, abort signals, timeouts, FIFO queueing, kind-checked resolution |
-| `src/toasts.ts` | `push / list / dispose` | TTL timers and the visible-toast cap |
-| `src/commands.ts` | `LOCAL_COMMANDS`, `findLocalCommand` | the entire local slash-command surface — one entry per command drives autocomplete, aliases, and dispatch |
+| `src/workflow-bridge.ts` | `bind / runs / inspect / control / dispose` | workflow background-event parsing and control correlation |
+| `src/background-subagent.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
+| `src/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
+| `src/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
+
+The controller's local command table is the single source for slash-command autocomplete, aliases,
+and dispatch.
 
 ### View — `src/app.tsx` and `src/ui/`
 
@@ -70,14 +72,20 @@ handling) and renders snapshots. Rendering and menu construction live in `src/ui
 
 Supporting view-adjacent modules stay in `src/`: `format.ts` (message → `DisplayItem` projection
 with identity-preserving reconciliation), `tool-executions.ts` (tool lifecycle reducer),
-`prompt-history.ts`, `prompt-autocomplete.ts` (text-position math), `selection-copy.ts`,
-`focus-trap.ts`, `external-editor.ts`, `theme.ts`.
+`app-support.ts` (prompt history, selection copy, focus trapping, external editor),
+`prompt-autocomplete.ts` (text-position math), and `theme.ts`.
 
 ### Extensions — `extensions/`
 
-Bundled, application-owned Pi extensions registered through `src/bundled-extensions.ts`. Each
-`register*Extension(pi, dependencies = {})` takes an optional dependency bag with production
-defaults — the same DI convention as the controller.
+The shared ambient declarations for bundled text/Markdown assets live in `extensions/assets.d.ts`.
+
+Bundled, application-owned Pi extensions are wired by the real composition root in
+`src/bundled-extensions.ts`. `createBundledExtensionFactories(options?)` explicitly supplies every
+production collaborator (including resource owners), while accepting per-extension fake bags for
+boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result. Each
+`register*Extension(pi, dependencies = {})` retains options-bag DI, and each extension's default
+export calls a small `createDefault*Dependencies` helper so the source remains directly loadable by
+plain Pi with equivalent production wiring.
 
 - `extensions/file-search/` — `fd`/`rg` tools. `process.ts` is the deep module: `runFileSearch`
   hides shell-free spawning, process-group kill, timeouts, and bounded output capture with
@@ -87,25 +95,26 @@ defaults — the same DI convention as the controller.
   format (types, transitions, validator); `runner.ts` spawns and supervises one child;
   `run-job.ts` is the single run pipeline (queueing, semaphore, spawn, terminal synthesis, output
   spill) shared by the blocking tool and the background manager; `background-manager.ts` owns
-  background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes;
-  `presets.ts`/`semaphore.ts` are shared with the workflow extension.
+  background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes.
 - `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle + sandboxed worker
   supervision; collaborators are injectable through an options bag, including a `WorkflowPlatform`
   seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
-  `worker-protocol.ts` (untrusted worker-frame validation and NDJSON decoding),
-  `worker-source.ts` + `worker/*.js.txt` (the sandboxed worker and bootstrap sources as text
-  imports), `rpc-operations.ts` (pure request/result validators and the one durable-operation
-  pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories),
-  `durable-fs.ts` (shared atomic-write/fsync and the cross-process directory-lock protocol with
+  `worker-protocol.ts` + `worker/*.js.txt` (untrusted worker-frame validation, NDJSON decoding,
+  and sandboxed worker source), `rpc-operations.ts` (pure request/result validators and the one
+  durable-operation pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories),
+  `durable-fs.ts` (safe-directory traversal, atomic-write/fsync, and the cross-process directory-lock protocol with
   per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
   tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
   `session-lifecycle.ts` (session epoch/generation guards for `index.ts`), `worktree.ts`,
-  `manager.ts`, `protocol.ts` + `background-protocol.ts` (wire formats). `agent-executor.ts`
+  `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts`
   provides the default child-Pi agent executor and the shared production backend wiring used by
   the extension, the headless CLI, and the smoke harness.
-- `extensions/shared/` — cross-extension primitives: `bounded-process.ts` (`runBoundedProcess`
-  spawn/timeout/kill with bounded output; `killProcessTree` group signaling used by every child
-  supervisor).
+- `extensions/shared/` — cross-extension primitives: `background-channel.ts` (producer-side
+  ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
+  `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
+  `killProcessTree` group signaling used by every child supervisor), `retained-output.ts` (quota-bounded spill storage), `presets.ts` (child-agent presets
+  used by subagents and workflows), `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
+  (record, error-message, and Unicode-safe bounded-string helpers).
 - `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
   previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
   shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
@@ -118,27 +127,28 @@ Wire formats have exactly one implementation, owned by the producing extension:
   validates with the extension's `isSubagentDetailsV1` and then bounds every string into a
   `SubagentViewModel` safe for rendering and reconciliation.
 - `extensions/subagent/background-protocol.ts` — background-subagent bus channels.
-  `src/background-subagent.ts` re-exports the channel constants and reduces events into the
-  snapshot's job map.
-- `extensions/workflow/protocol.ts` + `background-protocol.ts` — workflow summaries, background
-  events, and control envelopes. `src/workflow-bridge.ts` consumes the parsers and owns only the
-  host-side reducer (instance authority, run cap) and control correlation.
+  `src/background-subagent.ts` consumes its parser, bounds strings into host view models, and exposes
+  a bridge that owns instance authority, subscription lifecycle, cancellation, and the job map.
+- `extensions/workflow/protocol.ts` — workflow summaries, background events, and control envelopes. `src/workflow-bridge.ts` consumes the parsers and owns control correlation.
+  Both host bridges delegate instance authority, routed copy-on-write updates, reset/replacement gating,
+  and run caps to `src/instance-scoped-runs.ts`.
 
 The host still treats extension payloads as untrusted input: parsers validate shape and routing,
 and the view models bound every string.
 
 ## Dependency injection conventions
 
-- Dependencies are passed as an options object with production defaults; there are no
-  module-level singletons that construct resources at import time.
+- Dependencies are passed as an options object with production defaults. The application
+  composition root resolves them explicitly; directly loaded extension wrappers construct the
+  equivalent defaults. There are no module-level resource owners created as import side effects.
 - Constructors are public. Tests build real objects with fake collaborators (fake
   `AgentSessionRuntime`, private `EventBus`, fake `MenuHost`, fake filesystem) instead of casting
   through private APIs.
 - Narrow seams are preferred over mocks: `MenuController` is a `Pick<>` of the controller, the web
   retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, the workflow
   extension accepts a whole `backend`.
-- One deliberate exception: the subagent extension caches its process-wide concurrency semaphore on
-  `globalThis` so a duplicated module instance still shares one limit.
+- One deliberate exception: the subagent extension caches its process-wide shared semaphore on
+  `globalThis` so a duplicated module instance still shares one concurrency limit.
 
 ## Testing strategy
 

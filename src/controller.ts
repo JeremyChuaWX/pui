@@ -19,21 +19,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { resolveFdBinary } from "../extensions/file-search/binaries.js";
-import {
-    BACKGROUND_SUBAGENT_CHANNEL,
-    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
-    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
-    type BackgroundSubagentState,
-    parseBackgroundSubagentEvent,
-    reduceBackgroundSubagentEvent,
-} from "./background-subagent.js";
+import { errorMessage } from "../extensions/shared/validate.js";
+import { BackgroundSubagentBridge } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
-import { findLocalCommand, LOCAL_COMMANDS } from "./commands.js";
-import { ExtensionDialogQueue } from "./extension-dialogs.js";
-import { buildDisplayItems, formatToolTitle, reconcileDisplayItems } from "./format.js";
+import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
+import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
-import { isTerminalSubagentStatus } from "./subagent.js";
-import { ToastQueue } from "./toasts.js";
 import {
     reconcileToolExecutions,
     reduceToolExecutions,
@@ -109,6 +100,105 @@ interface RunningBash {
     excluded: boolean;
 }
 
+/** One entry drives autocomplete, dispatch, and the command's behavior. */
+interface LocalCommand {
+    name: string;
+    description: string;
+    argumentHint?: string;
+    /** Dispatch-only aliases, hidden from autocomplete. */
+    aliases?: readonly string[];
+    /** Dispatchable but omitted from autocomplete (e.g. shadowed extension commands). */
+    hidden?: boolean;
+    run: (controller: PuiController, args: string) => PromptAction;
+}
+
+const LOCAL_COMMANDS: readonly LocalCommand[] = [
+    {
+        name: "model",
+        description: "Select the active model",
+        argumentHint: "<provider/model>",
+        aliases: ["models"],
+        run: (controller, args) => {
+            if (!args) return "models";
+            void controller.selectModelBySpec(args);
+            return "sent";
+        },
+    },
+    { name: "resume", description: "Resume a previous session", aliases: ["sessions"], run: () => "sessions" },
+    {
+        name: "new",
+        description: "Start a new session",
+        aliases: ["clear"],
+        run: (controller) => {
+            void controller.newSession();
+            return "sent";
+        },
+    },
+    {
+        name: "compact",
+        description: "Compact conversation context",
+        run: (controller, args) => {
+            void controller.compact(args || undefined);
+            return "sent";
+        },
+    },
+    {
+        name: "name",
+        description: "Set the session name",
+        argumentHint: "<name>",
+        run: (controller, args) => {
+            if (!args) controller.notify("Usage: /name <session name>", "warning");
+            else controller.session.setSessionName(args);
+            return "sent";
+        },
+    },
+    {
+        name: "reload",
+        description: "Reload extensions, skills, prompts, and context",
+        run: (controller) => {
+            void controller.reload();
+            return "sent";
+        },
+    },
+    {
+        name: "session",
+        description: "Show session information",
+        run: (controller) => {
+            const session = controller.session;
+            controller.notify(
+                `${session.sessionName ?? session.sessionId.slice(0, 8)} · ${formatCount(session.getContextUsage()?.tokens)} context tokens`,
+            );
+            return "sent";
+        },
+    },
+    { name: "commands", description: "Open the command palette", aliases: ["palette"], run: () => "commands" },
+    { name: "subagents", description: "Inspect or cancel background subagents", run: () => "subagents" },
+    { name: "workflows", description: "Inspect and control workflow runs", hidden: true, run: () => "workflows" },
+    {
+        name: "thinking",
+        description: "Cycle the thinking level",
+        run: (controller) => {
+            controller.cycleThinking();
+            return "sent";
+        },
+    },
+    { name: "help", description: "Show keyboard shortcuts", run: () => "help" },
+    { name: "hotkeys", description: "Show keyboard shortcuts", run: () => "help" },
+    {
+        name: "quit",
+        description: "Quit",
+        aliases: ["exit", "q"],
+        run: (controller) => {
+            controller.requestExit();
+            return "sent";
+        },
+    },
+];
+
+function findLocalCommand(name: string): LocalCommand | undefined {
+    return LOCAL_COMMANDS.find((command) => command.name === name || command.aliases?.includes(name));
+}
+
 function compactPath(cwd: string): string {
     const home = os.homedir();
     if (cwd === home) return "~";
@@ -151,27 +241,23 @@ export class PuiController {
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
-    private backgroundState: BackgroundSubagentState = { jobs: new Map() };
     private readonly readGitBranch: (cwd: string) => string | undefined;
     private readonly toasts = new ToastQueue(() => this.refresh());
     private readonly extensionDialogs = new ExtensionDialogQueue(() => this.refresh());
     private readonly workflows: WorkflowBridge;
+    private readonly backgroundSubagents: BackgroundSubagentBridge;
     private readonly eventBus: EventBusController;
-    private readonly unsubscribeBackground: () => void;
 
     constructor(runtime: AgentSessionRuntime, dependencies: ControllerDependencies = {}) {
         this.runtime = runtime;
         this.eventBus = dependencies.eventBus ?? createEventBus();
         this.readGitBranch = dependencies.readGitBranch ?? readGitBranch;
         this.workflows = new WorkflowBridge({ eventBus: this.eventBus, onChange: () => this.scheduleRefresh() });
-        this.unsubscribeBackground = this.eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
-            const event = parseBackgroundSubagentEvent(payload);
-            if (!event || this.disposed) return;
-            const next = reduceBackgroundSubagentEvent(this.backgroundState, event, this.runtime.session.sessionId);
-            if (next === this.backgroundState) return;
-            this.backgroundState = next;
-            this.scheduleRefresh();
+        this.backgroundSubagents = new BackgroundSubagentBridge({
+            eventBus: this.eventBus,
+            onChange: () => this.scheduleRefresh(),
         });
+        this.backgroundSubagents.bind(runtime.session.sessionId);
         this.gitBranch = this.readGitBranch(runtime.cwd);
         this.currentSnapshot = this.buildSnapshot();
     }
@@ -246,7 +332,7 @@ export class PuiController {
     async bindSession(session: AgentSession): Promise<void> {
         const generation = ++this.bindGeneration;
         this.extensionDialogs.dismissAll();
-        this.backgroundState = { jobs: new Map() };
+        this.backgroundSubagents.bind(session.sessionId);
         this.workflows.bind(session.sessionId, canonicalPath(this.runtime.cwd));
         this.unsubscribeSession?.();
         this.toolExecutions = new Map();
@@ -382,7 +468,7 @@ export class PuiController {
             queuedFollowUp: [...session.getFollowUpMessages()],
             display: stableDisplay,
             activeTools,
-            backgroundSubagents: [...this.backgroundState.jobs.values()],
+            backgroundSubagents: this.backgroundSubagents.jobs(),
             workflows,
             extensionDialog: this.extensionDialogs.current(),
             toasts: this.toasts.list(),
@@ -543,7 +629,7 @@ export class PuiController {
                     if (!accepted) this.notify("Prompt was not accepted", "warning");
                 },
             })
-            .catch((error: unknown) => this.notify(error instanceof Error ? error.message : String(error), "error"));
+            .catch((error: unknown) => this.notify(errorMessage(error), "error"));
         return command === "/workflow" && args ? "workflow" : "sent";
     }
 
@@ -565,7 +651,7 @@ export class PuiController {
                 { excludeFromContext: excluded },
             );
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         } finally {
             this.runningBash = undefined;
             this.refresh();
@@ -617,7 +703,7 @@ export class PuiController {
             this.notify(`Model: ${choice.model.name || choice.model.id}`, "success");
             this.refresh();
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -643,7 +729,7 @@ export class PuiController {
             const result = await this.runtime.switchSession(sessionPath);
             if (!result.cancelled) this.notify("Session resumed", "success");
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -652,7 +738,7 @@ export class PuiController {
             const result = await this.runtime.newSession();
             if (!result.cancelled) this.notify("New session", "success");
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -661,7 +747,7 @@ export class PuiController {
             await this.session.compact(instructions);
             this.notify("Context compacted", "success");
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -672,7 +758,7 @@ export class PuiController {
             this.notify("Pi resources reloaded", "success");
             this.refresh();
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -682,7 +768,7 @@ export class PuiController {
             if (result) this.notify(`Model: ${result.model.name || result.model.id}`, "success");
             this.refresh();
         } catch (error) {
-            this.notify(error instanceof Error ? error.message : String(error), "error");
+            this.notify(errorMessage(error), "error");
         }
     }
 
@@ -694,18 +780,7 @@ export class PuiController {
     }
 
     cancelBackgroundSubagent(id: string): boolean {
-        const job = this.backgroundState.jobs.get(id);
-        const instanceId = this.backgroundState.instanceId;
-        if (!job || !instanceId || isTerminalSubagentStatus(job.status)) return false;
-        this.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
-            schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
-            version: 1,
-            sessionId: this.runtime.session.sessionId,
-            instanceId,
-            type: "cancel",
-            jobId: id,
-        });
-        return true;
+        return this.backgroundSubagents.cancel(id);
     }
 
     inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
@@ -738,10 +813,9 @@ export class PuiController {
         this.disposed = true;
         this.extensionDialogs.close();
         this.workflows.dispose();
+        this.backgroundSubagents.dispose();
         this.unsubscribeSession?.();
-        this.unsubscribeBackground();
         this.eventBus.clear();
-        this.backgroundState = { jobs: new Map() };
         this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { waitFor } from "../test-support/wait.ts";
 import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
-import { waitUntil } from "./test-utils.ts";
 
 const stores: WebOutputRetention[] = [];
 
@@ -200,7 +200,7 @@ describe("WebOutputRetention", () => {
         });
         const retention = store({ fileSystem });
         const retained = retention.retain("pending output", { maxBytes: 4, maxLines: 10 });
-        await waitUntil(() => calls.writeFile.length === 1);
+        await waitFor(() => calls.writeFile.length === 1);
 
         let cleaned = false;
         const cleanup = retention.cleanup().then(() => {

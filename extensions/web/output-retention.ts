@@ -1,8 +1,10 @@
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import {
+    formatTruncationNotice,
     type RetainedOutputFileSystem,
     RetainedOutputStore,
     type RetentionFailure,
+    truncateUtf8,
 } from "../shared/retained-output.js";
 
 /** A bounded tool result and, when retained successfully, its complete-output file. */
@@ -30,14 +32,6 @@ export interface WebOutputRetentionDependencies {
 
 function normalizedLimit(value: number): number {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
-}
-
-function truncateUtf8(text: string, maxBytes: number): string {
-    const bytes = Buffer.from(text, "utf8");
-    if (bytes.length <= maxBytes) return text;
-    let end = Math.min(bytes.length, maxBytes);
-    while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
-    return bytes.subarray(0, end).toString("utf8");
 }
 
 /** Owns bounded previews and private complete-output files for one web-extension session at a time. */
@@ -106,11 +100,17 @@ export class WebOutputRetention {
     ): RetainedWebOutput {
         const totalBytes = Buffer.byteLength(fullText, "utf8");
         const totalLines = fullText.length === 0 ? 0 : fullText.split("\n").length - (fullText.endsWith("\n") ? 1 : 0);
-        const summary = `complete result is ${formatSize(totalBytes)} across ${totalLines} ${totalLines === 1 ? "line" : "lines"}`;
-        const notice = fullOutputPath
-            ? `[Output truncated: ${summary}. Complete output retained at: ${JSON.stringify(fullOutputPath)}]`
-            : `[Output truncated: ${summary}. Complete output was not retained: ${this.failureReason(failure ?? "storage")}.]`;
-        const noticeText = truncateUtf8(notice, limits.maxBytes);
+        const initial = truncateHead(fullText, limits);
+        const notice = formatTruncationNotice({
+            outputBytes: initial.outputBytes,
+            totalBytes,
+            outputLines: initial.outputLines,
+            totalLines,
+            ...(fullOutputPath
+                ? { retainedPath: fullOutputPath }
+                : { nonRetentionReason: this.failureReason(failure ?? "storage") }),
+        });
+        const noticeText = truncateUtf8(notice, limits.maxBytes).content;
 
         if (limits.maxLines < 1 || limits.maxBytes < 1) {
             return { text: "", truncated: true, ...(fullOutputPath && { fullOutputPath }) };

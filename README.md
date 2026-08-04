@@ -168,9 +168,9 @@ ownership, dependency-injection conventions, and the testing strategy. The short
 - `src/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
-  production defaults: `src/workflow-bridge.ts` (workflow run map and control round-trips),
-  `src/extension-dialogs.ts` (bounded extension dialog queue), `src/toasts.ts`, and
-  `src/commands.ts` (one table driving slash-command autocomplete and dispatch).
+  production defaults: `src/workflow-bridge.ts` (workflow run map and control round-trips) and
+  `src/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
+  drives slash-command autocomplete and dispatch.
 - `src/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in `src/ui/`
   (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns all keyboard
   predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).

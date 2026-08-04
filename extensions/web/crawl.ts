@@ -32,7 +32,6 @@ type CrawlDetails =
           requestedUrl: string;
           sourceUrl: string;
           title?: string;
-          metadata?: FirecrawlMetadata;
           maxBytes: number;
           contentBytes: number;
           truncated: boolean;
@@ -190,7 +189,6 @@ export default function webCrawlExtension(
                             requestedUrl: result.requestedUrl,
                             sourceUrl: result.sourceUrl,
                             title: result.title,
-                            metadata: result.metadata,
                             maxBytes,
                             contentBytes: Buffer.byteLength(result.content, "utf8"),
                         },

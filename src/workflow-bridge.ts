@@ -1,4 +1,5 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
+import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
@@ -10,20 +11,16 @@ import {
     parseBackgroundWorkflowControlResult,
     parseBackgroundWorkflowEvent,
     type WorkflowControlAction,
-} from "../extensions/workflow/background-protocol.js";
-import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
+} from "../extensions/workflow/protocol.js";
+import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
 
 export type { WorkflowControlAction, WorkflowRunSummaryV1 };
 
 const MAX_WORKFLOW_RUNS = 100;
 const CONTROL_TIMEOUT_MS = 5_000;
 
-export interface WorkflowState {
-    instanceId?: string;
-    /** A validated reset permits the producer's replacement instance to establish authority. */
-    acceptingInstance?: true;
-    runs: ReadonlyMap<string, WorkflowRunSummaryV1>;
-}
+export type WorkflowState = InstanceScopedRuns<WorkflowRunSummaryV1>;
 
 /** Reduce authoritative snapshots without mutating the prior map or accepted runs. */
 export function reduceWorkflowEvent(
@@ -31,29 +28,20 @@ export function reduceWorkflowEvent(
     event: BackgroundWorkflowEventV1,
     route: { sessionId: string; cwd: string },
 ): WorkflowState {
-    if (event.sessionId !== route.sessionId || event.cwd !== route.cwd) return state;
-    if (event.type === "ready") {
-        if (state.instanceId !== undefined && state.instanceId !== event.instanceId && !state.acceptingInstance)
-            return state;
-        return state.instanceId === event.instanceId && !state.acceptingInstance
-            ? state
-            : { instanceId: event.instanceId, runs: new Map() };
-    }
-    if (event.type === "reset") {
-        if (event.instanceId !== state.instanceId) return state;
-        return { instanceId: state.instanceId, acceptingInstance: true, runs: new Map() };
-    }
-    if (state.acceptingInstance || event.instanceId !== state.instanceId) return state;
-    const runs = new Map(state.runs);
-    if (event.type === "upsert" && event.run) {
-        if (!runs.has(event.run.id) && runs.size >= MAX_WORKFLOW_RUNS) return state;
-        runs.set(event.run.id, event.run);
-    }
-    return {
-        instanceId: event.instanceId,
-        ...(state.acceptingInstance ? { acceptingInstance: true as const } : {}),
-        runs,
+    const options = {
+        routeMatches: event.sessionId === route.sessionId && event.cwd === route.cwd,
+        maxRuns: MAX_WORKFLOW_RUNS,
+        id: (run: WorkflowRunSummaryV1) => run.id,
     };
+    if (event.type === "upsert") {
+        if (!event.run) return state;
+        return reduceInstanceScopedRuns(
+            state,
+            { type: event.type, instanceId: event.instanceId, run: event.run },
+            options,
+        );
+    }
+    return reduceInstanceScopedRuns(state, { type: event.type, instanceId: event.instanceId }, options);
 }
 
 export interface WorkflowBridgeOptions {
