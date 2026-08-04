@@ -37,12 +37,3 @@ export function parseBackgroundSubagentControl(value: unknown): BackgroundSubage
         return undefined;
     return control as unknown as BackgroundSubagentControlV1;
 }
-
-export interface BackgroundSubagentEventV1 {
-    schema: typeof BACKGROUND_SUBAGENT_SCHEMA;
-    version: typeof BACKGROUND_SUBAGENT_VERSION;
-    sessionId: string;
-    instanceId: string;
-    type: "ready" | "upsert" | "remove" | "reset";
-    job?: BackgroundSubagentJobV1;
-}

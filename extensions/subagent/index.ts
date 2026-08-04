@@ -16,24 +16,20 @@ import {
     AGENT_NAMES,
     AGENT_SUMMARY,
     AGENTS,
-    childArgs,
     type ResolvedAgentName,
     resolveModel,
     resolveWorkingDirectory,
     workingDirectoryCandidate,
 } from "./presets.js";
 import {
-    appendSubagentActivity,
     createInitialSubagentDetails,
-    createTerminalSubagentDetails,
-    isTerminalSubagentStatus,
     type SubagentDetailsV1,
-    type SubagentStatus,
     truncateUtf8,
     updateSubagentDetails,
 } from "./protocol.js";
+import { runSubagentJob, synthesizeSubagentFailure } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import { AbortableSemaphore, configuredSubagentConcurrency, type SemaphoreRelease } from "./semaphore.js";
+import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 
@@ -75,7 +71,6 @@ const processState = globalThis as typeof globalThis & {
 const PROCESS_SEMAPHORE =
     processState.__piSubagentSemaphoreV1 ?? new AbortableSemaphore(configuredSubagentConcurrency());
 if (!processState.__piSubagentSemaphoreV1) processState.__piSubagentSemaphoreV1 = PROCESS_SEMAPHORE;
-const ERROR_PREVIEW_BYTES = 8 * 1024;
 
 export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
@@ -101,8 +96,6 @@ function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
-
-export { getPiInvocation } from "./runner.js";
 
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
     const semaphore = dependencies.semaphore ?? PROCESS_SEMAPHORE;
@@ -150,6 +143,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         emit,
         deliver,
         isIdle: () => idle,
+        outputStore,
     });
     let unsubscribeControl: (() => void) | undefined;
 
@@ -328,7 +322,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 now: now(),
             });
             const combinedSignal = combineAbortSignals(signal, shutdownController.signal);
-            let release: SemaphoreRelease | undefined;
 
             const publish = (next: SubagentDetailsV1) => {
                 details = next;
@@ -342,113 +335,55 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 }
             };
 
-            const settleSetupFailure = (status: Extract<SubagentStatus, "failed" | "cancelled">, message: string) => {
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: now(), kind: "diagnostic", title: truncateUtf8(message, 512).content, isError: true },
-                    now(),
-                );
-                publish(
-                    createTerminalSubagentDetails(
-                        details,
-                        { status, error: truncateUtf8(message, ERROR_PREVIEW_BYTES).content },
-                        now(),
-                    ),
-                );
-            };
-
+            let cwd: string;
             try {
-                let cwd: string;
-                try {
-                    cwd = await resolveWorkingDirectory(params.cwd, ctx.cwd);
-                } catch (error) {
-                    settleSetupFailure("failed", errorMessage(error));
-                    throw error;
-                }
-                details = updateSubagentDetails(details, { cwd }, now());
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: now(), kind: "diagnostic", title: "Queued for a child Pi process" },
-                    now(),
-                );
-                publish(details);
-
-                try {
-                    release = await semaphore.acquire(combinedSignal);
-                } catch (error) {
-                    settleSetupFailure("cancelled", "Subagent was cancelled while queued.");
-                    throw error;
-                }
-                if (combinedSignal.aborted) {
-                    settleSetupFailure("cancelled", "Subagent was cancelled before it started.");
-                    throw new Error("Subagent was cancelled before it started.");
-                }
-
-                const startedAt = now();
-                details = updateSubagentDetails(
-                    details,
-                    { status: "starting", phase: "spawning", startedAt },
-                    startedAt,
-                );
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
-                    startedAt,
-                );
-                publish(details);
-
-                const invocation = resolveInvocation(childArgs(agent, model, params.prompt));
-                const execution = await run({
-                    details,
-                    command: invocation.command,
-                    args: invocation.args,
-                    cwd,
-                    timeoutMs: agent.timeoutMs,
-                    signal: combinedSignal,
-                    onSnapshot: publish,
-                });
-                details = execution.details;
-
-                if (details.run.status !== "succeeded") {
-                    if (!shuttingDown) failedDetails.set(toolCallId, details);
-                    throw new Error(details.run.error || `Subagent ${details.run.status}.`);
-                }
-
-                const visibleOutput = execution.output || "(no output)";
-                const truncation = truncateHead(visibleOutput, {
-                    maxLines: DEFAULT_MAX_LINES,
-                    maxBytes: DEFAULT_MAX_BYTES,
-                });
-                const fullOutputPath = truncation.truncated ? await outputStore.save(visibleOutput) : undefined;
-                let resultText = truncation.content;
-                if (truncation.truncated) {
-                    resultText += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
-                    if (fullOutputPath) resultText += ` Full output saved to: ${fullOutputPath}`;
-                    resultText += "]";
-                }
-                details = updateSubagentDetails(
-                    details,
-                    {
-                        outputPreview: truncateUtf8(visibleOutput, 4 * 1024).content,
-                        ...(fullOutputPath ? { fullOutputPath } : {}),
-                    },
-                    now(),
-                );
-
-                return {
-                    content: [{ type: "text", text: resultText }],
-                    details,
-                };
+                cwd = await resolveWorkingDirectory(params.cwd, ctx.cwd);
             } catch (error) {
-                if (!isTerminalSubagentStatus(details.run.status)) {
-                    const cancelled = combinedSignal.aborted;
-                    settleSetupFailure(cancelled ? "cancelled" : "failed", errorMessage(error));
-                }
+                publish(synthesizeSubagentFailure(details, "failed", errorMessage(error), now()));
                 if (!shuttingDown) failedDetails.set(toolCallId, details);
                 throw new Error(details.run.error || errorMessage(error), { cause: error });
-            } finally {
-                release?.();
             }
+            details = updateSubagentDetails(details, { cwd }, now());
+
+            const outcome = await runSubagentJob(
+                { semaphore, run, invocation: resolveInvocation, now },
+                {
+                    details,
+                    agent,
+                    model,
+                    prompt: params.prompt,
+                    cwd,
+                    signal: combinedSignal,
+                    publish,
+                    spill: { store: outputStore, maxLines: DEFAULT_MAX_LINES },
+                },
+            );
+            details = outcome.details;
+
+            if (details.run.status !== "succeeded") {
+                if (!shuttingDown) failedDetails.set(toolCallId, details);
+                throw new Error(details.run.error || `Subagent ${details.run.status}.`, {
+                    cause: outcome.failure,
+                });
+            }
+
+            const { truncation } = outcome;
+            let resultText = truncation.content;
+            if (truncation.truncated) {
+                resultText += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
+                if (outcome.fullOutputPath) resultText += ` Full output saved to: ${outcome.fullOutputPath}`;
+                resultText += "]";
+            }
+            details = updateSubagentDetails(
+                details,
+                { outputPreview: truncateUtf8(outcome.delivered, 4 * 1024).content },
+                now(),
+            );
+
+            return {
+                content: [{ type: "text", text: resultText }],
+                details,
+            };
         },
     });
 }

@@ -1,26 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import { SessionOutputStore } from "./output-store.js";
+import { AGENTS, type AgentName, type ResolvedAgentName, resolveModel, resolveWorkingDirectory } from "./presets.js";
 import {
-    AGENTS,
-    type AgentName,
-    childArgs,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-} from "./presets.js";
-import {
-    appendSubagentActivity,
     createInitialSubagentDetails,
-    createTerminalSubagentDetails,
-    isTerminalSubagentStatus,
+    SUBAGENT_PROTOCOL_VERSION,
+    SUBAGENT_SCHEMA,
     type SubagentDetailsV1,
     truncateUtf8,
-    updateSubagentDetails,
 } from "./protocol.js";
+import { runSubagentJob } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
+import type { AbortableSemaphore } from "./semaphore.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
@@ -30,14 +22,14 @@ const WAIT_JOB_BYTES = 24 * 1024;
 const WAIT_TOTAL_BYTES = 48 * 1024;
 const DELIVERY_MAX_LINES = DEFAULT_MAX_LINES - 8;
 
-export interface SpawnInput {
+interface SpawnInput {
     prompt: string;
     cwd: string;
     agent?: AgentName;
     model?: string;
     name?: string;
 }
-export interface BackgroundManagerOptions {
+interface BackgroundManagerOptions {
     semaphore: AbortableSemaphore;
     run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
     invocation?: typeof getPiInvocation;
@@ -135,11 +127,7 @@ export class BackgroundSubagentManager {
         const model = resolveModel(agent, input.model, this.options.environment ?? process.env);
         const id = randomUUID();
         const now = (this.options.now ?? Date.now)();
-        const details = appendSubagentActivity(
-            createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now }),
-            { timestamp: now, kind: "diagnostic", title: "Queued for a child Pi process" },
-            now,
-        );
+        const details = createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now });
         const controller = new AbortController();
         const job: Job = {
             snapshot: {
@@ -288,65 +276,38 @@ export class BackgroundSubagentManager {
         model: string | undefined,
         cwd: string,
     ): Promise<void> {
-        let release: SemaphoreRelease | undefined;
-        let details: SubagentDetailsV1 = { schema: "pi.subagent", version: 1, run: job.snapshot.run };
-        try {
-            release = await this.options.semaphore.acquire(job.controller.signal);
-            if (job.controller.signal.aborted) throw new Error("Subagent was cancelled before it started.");
-            const startedAt = (this.options.now ?? Date.now)();
-            details = appendSubagentActivity(
-                updateSubagentDetails(details, { status: "starting", phase: "spawning", startedAt }, startedAt),
-                { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
-                startedAt,
-            );
-            this.publish(job, details);
-            const invocation = (this.options.invocation ?? getPiInvocation)(
-                childArgs(AGENTS[agentName], model, prompt),
-            );
-            const execution = await (this.options.run ?? runSubagent)({
+        const details: SubagentDetailsV1 = {
+            schema: SUBAGENT_SCHEMA,
+            version: SUBAGENT_PROTOCOL_VERSION,
+            run: job.snapshot.run,
+        };
+        const outcome = await runSubagentJob(
+            {
+                semaphore: this.options.semaphore,
+                run: this.options.run ?? runSubagent,
+                invocation: this.options.invocation ?? getPiInvocation,
+                now: this.options.now ?? Date.now,
+            },
+            {
                 details,
-                command: invocation.command,
-                args: invocation.args,
+                agent: AGENTS[agentName],
+                model,
+                prompt,
                 cwd,
-                timeoutMs: AGENTS[agentName].timeoutMs,
                 signal: job.controller.signal,
-                onSnapshot: (next) => {
-                    details = next;
-                    this.publish(job, next);
-                },
-            });
-            details = execution.details;
-            job.output = execution.output;
-            this.publish(job, details);
-        } catch (error) {
-            if (!isTerminalSubagentStatus(details.run.status))
-                details = createTerminalSubagentDetails(
-                    details,
-                    {
-                        status: job.controller.signal.aborted ? "cancelled" : "failed",
-                        error: truncateUtf8(error instanceof Error ? error.message : String(error), 8 * 1024).content,
-                    },
-                    (this.options.now ?? Date.now)(),
-                );
-            this.publish(job, details);
-        } finally {
-            release?.();
-        }
-        const output = job.output || details.run.error || "(no output)";
-        const hard = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DELIVERY_MAX_LINES });
-        const needsDeliverySpill = hard.truncated || truncateUtf8(output, AUTO_RESULT_BYTES).truncated;
-        const fullOutputPath =
-            (needsDeliverySpill ? await this.outputStore.save(output) : undefined) ?? details.run.fullOutputPath;
-        if (fullOutputPath) {
-            details = updateSubagentDetails(details, { fullOutputPath }, (this.options.now ?? Date.now)());
-            this.publish(job, details);
-        }
+                publish: (next) => this.publish(job, next),
+                onSettled: (settled) => this.publish(job, settled),
+                spill: { store: this.outputStore, maxLines: DELIVERY_MAX_LINES, spillOverBytes: AUTO_RESULT_BYTES },
+            },
+        );
+        job.output = outcome.output;
+        if (outcome.fullOutputPath) this.publish(job, outcome.details);
         job.terminal = Object.freeze({
             id: job.snapshot.id,
             title: job.snapshot.title,
-            status: details.run.status,
-            text: hard.content,
-            ...(fullOutputPath ? { fullOutputPath } : {}),
+            status: outcome.details.run.status,
+            text: outcome.truncation.content,
+            ...(outcome.fullOutputPath ? { fullOutputPath: outcome.fullOutputPath } : {}),
         });
         if (!this.shuttingDown) {
             if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);

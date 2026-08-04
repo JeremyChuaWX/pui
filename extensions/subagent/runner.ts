@@ -27,7 +27,7 @@ const ASSISTANT_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "a
 const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
 
 /** Resolve a stable, canonical model label from a child assistant event. */
-export function resolveSubagentModelLabel(current: string, provider?: string, model?: string): string {
+function resolveSubagentModelLabel(current: string, provider?: string, model?: string): string {
     const childProvider = provider?.trim();
     const childModel = model?.trim();
     if (!childProvider || !childModel) return current;
@@ -42,8 +42,8 @@ export function resolveSubagentModelLabel(current: string, provider?: string, mo
     return `${canonicalBase}${currentBase === canonicalBase ? currentSuffix || reportedSuffix : reportedSuffix}`;
 }
 
-export type SpawnedChild = ChildProcessByStdio<null, Readable, Readable>;
-export type SpawnChild = (
+type SpawnedChild = ChildProcessByStdio<null, Readable, Readable>;
+type SpawnChild = (
     command: string,
     args: readonly string[],
     options: {
@@ -112,7 +112,7 @@ function shorten(value: unknown, fallback = "..."): string {
     return truncateUtf8(text.replace(/\s+/g, " ").trim() || fallback, 240).content;
 }
 
-export function compactToolTitle(toolName: string, input: unknown): string {
+function compactToolTitle(toolName: string, input: unknown): string {
     const args = isRecord(input) ? input : {};
     let title: string;
     if (toolName === "read") title = `read ${shorten(args.path ?? args.file_path)}`;

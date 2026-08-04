@@ -58,7 +58,7 @@ export interface SubagentDetailsV1 {
     run: SubagentRunV1;
 }
 
-export interface CreateSubagentDetailsInput {
+interface CreateSubagentDetailsInput {
     id: string;
     agent: string;
     model: string;
@@ -66,7 +66,7 @@ export interface CreateSubagentDetailsInput {
     now?: number;
 }
 
-export type SubagentRunPatch = Partial<
+type SubagentRunPatch = Partial<
     Omit<SubagentRunV1, "id" | "updatedAt" | "activeTools" | "recentActivity" | "usage">
 > & {
     activeTools?: SubagentActiveToolV1[];
@@ -74,7 +74,7 @@ export type SubagentRunPatch = Partial<
     usage?: SubagentUsageV1;
 };
 
-export interface SubagentTerminalPatch {
+interface SubagentTerminalPatch {
     status: SubagentTerminalStatus;
     error?: string;
     outputPreview?: string;
@@ -82,7 +82,7 @@ export interface SubagentTerminalPatch {
     model?: string;
 }
 
-export interface Utf8Truncation {
+interface Utf8Truncation {
     content: string;
     truncated: boolean;
     outputBytes: number;

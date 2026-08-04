@@ -5,6 +5,7 @@ import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
+import { maskLiterals } from "./js-scan.js";
 import {
     MAX_WORKFLOW_ID,
     type WorkflowActivityV1,
@@ -175,145 +176,8 @@ const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {})
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
-function regexLiteralStartsAt(
-    script: string,
-    index: number,
-    previousWord: string | undefined,
-    followsStatement: boolean,
-): boolean {
-    const rawPrefix = script.slice(0, index),
-        prefix = rawPrefix.trimEnd();
-    if (!prefix || followsStatement) return true;
-    if (/(?:\+\+|--)\s*$/.test(prefix)) return false;
-    const previous = prefix.at(-1);
-    if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
-    if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
-    return (
-        previousWord !== undefined &&
-        /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord)
-    );
-}
-
-function executableCode(source: string): string {
-    const output = [...source];
-    let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code",
-        escaped = false;
-    const templates: number[] = [];
-    for (let i = 0; i < source.length; i++) {
-        const c = source[i],
-            next = source[i + 1];
-        if (mode === "code") {
-            if (c === "'" || c === '"' || c === "`") {
-                mode = c === "'" ? "single" : c === '"' ? "double" : "template";
-                output[i] = " ";
-                continue;
-            } else if (c === "/" && next === "/") mode = "line";
-            else if (c === "/" && next === "*") mode = "block";
-            else if (templates.length && c === "{") templates[templates.length - 1]++;
-            else if (templates.length && c === "}" && --templates[templates.length - 1] === 0) {
-                templates.pop();
-                mode = "template";
-            } else continue;
-        } else if (mode === "template" && c === "$" && next === "{" && !escaped) {
-            output[i] = output[i + 1] = " ";
-            templates.push(1);
-            i++;
-            mode = "code";
-            continue;
-        } else if (mode === "line" && (c === "\n" || c === "\r")) {
-            mode = "code";
-            continue;
-        } else if (mode === "block" && c === "*" && next === "/") {
-            output[i] = output[i + 1] = " ";
-            i++;
-            mode = "code";
-            continue;
-        } else if (
-            (mode === "single" && c === "'") ||
-            (mode === "double" && c === '"') ||
-            (mode === "template" && c === "`")
-        ) {
-            if (!escaped) mode = "code";
-        }
-        output[i] = c === "\n" || c === "\r" ? c : " ";
-        escaped = c === "\\" && !escaped;
-        if (c !== "\\") escaped = false;
-    }
-    return output.join("");
-}
-
-/** Mask regex literals after comments, strings, and static template text have already been removed. */
-function maskRegexLiterals(source: string): string {
-    const output = [...source],
-        controlParens: boolean[] = [],
-        declarationParens: boolean[] = [],
-        blockBraces: boolean[] = [];
-    let previousWord: string | undefined;
-    let functionDeclarationPending = false;
-    let declarationBlockPending = false;
-    let followsControlCondition = false;
-    for (let index = 0; index < source.length; index++) {
-        const character = source[index];
-        if (character === "/" && regexLiteralStartsAt(source, index, previousWord, followsControlCondition)) {
-            const start = index;
-            let characterClass = false;
-            for (index++; index < source.length; index++) {
-                if (source[index] === "\\") index++;
-                else if (source[index] === "[") characterClass = true;
-                else if (source[index] === "]") characterClass = false;
-                else if (source[index] === "/" && !characterClass) break;
-            }
-            while (/[a-z]/i.test(source[index + 1] ?? "")) index++;
-            for (let masked = start; masked <= index && masked < output.length; masked++)
-                if (output[masked] !== "\n" && output[masked] !== "\r") output[masked] = " ";
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (/[A-Za-z_$]/.test(character)) {
-            const end = /^[\w$]*/.exec(source.slice(index + 1))?.[0].length ?? 0;
-            previousWord = source.slice(index, index + end + 1);
-            if (previousWord === "function" || previousWord === "class") {
-                const prefix = source.slice(0, index).trimEnd(),
-                    declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
-                if (previousWord === "function")
-                    functionDeclarationPending =
-                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
-                else declarationBlockPending = declarationPrefix.test(prefix);
-            }
-            followsControlCondition = false;
-            index += end;
-        } else if (character === "(") {
-            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
-            declarationParens.push(functionDeclarationPending);
-            functionDeclarationPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "{") {
-            blockBraces.push(
-                declarationBlockPending ||
-                    followsControlCondition ||
-                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
-                    !source.slice(0, index).trim(),
-            );
-            declarationBlockPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === ")") {
-            followsControlCondition = controlParens.pop() ?? false;
-            declarationBlockPending ||= declarationParens.pop() ?? false;
-            previousWord = undefined;
-        } else if (character === "}") {
-            previousWord = undefined;
-            followsControlCondition = blockBraces.pop() ?? false;
-        } else if (!/\s/.test(character)) {
-            previousWord = undefined;
-            followsControlCondition = false;
-        }
-    }
-    return output.join("");
-}
-
 function eraseTypeOnlyNamespaces(source: string): string {
-    const code = maskRegexLiterals(executableCode(source)),
+    const code = maskLiterals(source, { preserveTemplateInterpolations: true }),
         output = [...source];
     for (const match of code.matchAll(/\bnamespace\s+[A-Za-z_$][\w$]*\s*\{/g)) {
         const start = match.index,
@@ -343,7 +207,7 @@ export function preflightWorkflow(
     const executable = executableWorkflowScript(script, entrypoint),
         erasableExecutable = eraseTypeOnlyNamespaces(executable);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
-    const sourceCode = maskRegexLiterals(executableCode(executable));
+    const sourceCode = maskLiterals(executable, { preserveTemplateInterpolations: true });
     if (
         /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
         /\bmodule\s+[A-Za-z_$]/.test(sourceCode) ||
@@ -356,8 +220,11 @@ export function preflightWorkflow(
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
     // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
-    const code = maskRegexLiterals(
-        executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`)),
+    const code = maskLiterals(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`),
+        {
+            preserveTemplateInterpolations: true,
+        },
     );
     if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {

@@ -8,7 +8,7 @@ import {
     type SubagentDetailsV1,
     updateSubagentDetails,
 } from "./protocol.ts";
-import { compactToolTitle, getPiInvocation, resolveSubagentModelLabel, runSubagent } from "./runner.ts";
+import { getPiInvocation, runSubagent } from "./runner.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
@@ -39,39 +39,6 @@ async function runFixture(scenario: string, options: Partial<Parameters<typeof r
     });
     return { result, snapshots };
 }
-
-describe("compactToolTitle", () => {
-    test("summarizes write-capable worker activity", () => {
-        expect(compactToolTitle("bash", { command: "bun test src" })).toBe("$ bun test src");
-        expect(compactToolTitle("edit", { path: "src/controller.ts" })).toBe("edit src/controller.ts");
-        expect(compactToolTitle("write", { path: "src/new-file.ts" })).toBe("write src/new-file.ts");
-    });
-});
-
-describe("resolveSubagentModelLabel", () => {
-    test("keeps long labels and valid thinking suffixes when short events arrive", () => {
-        expect(resolveSubagentModelLabel("openai-codex/gpt-5.4-mini:off", undefined, "gpt-5.4-mini")).toBe(
-            "openai-codex/gpt-5.4-mini:off",
-        );
-        expect(resolveSubagentModelLabel("openai-codex/gpt-5.4-mini:high", "openai-codex", "gpt-5.4-mini")).toBe(
-            "openai-codex/gpt-5.4-mini:high",
-        );
-    });
-
-    test("preserves every supported thinking suffix for the same canonical model", () => {
-        for (const suffix of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
-            const current = `openai-codex/gpt-5.4-mini:${suffix}`;
-            expect(resolveSubagentModelLabel(current, "openai-codex", "gpt-5.4-mini")).toBe(current);
-        }
-    });
-
-    test("promotes default and canonicalizes genuine model changes", () => {
-        expect(resolveSubagentModelLabel("default", "openai-codex", "gpt-5.4-mini")).toBe("openai-codex/gpt-5.4-mini");
-        expect(resolveSubagentModelLabel("openai/old:low", "anthropic", "claude-sonnet-4")).toBe(
-            "anthropic/claude-sonnet-4",
-        );
-    });
-});
 
 describe("runSubagent", () => {
     test("streams fragmented JSONL, tracks parallel tools, and aggregates each assistant once", async () => {

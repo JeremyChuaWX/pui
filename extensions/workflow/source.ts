@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { CodeScanState, maskLiterals, regexLiteralStartsAt, skipRegexLiteral, skipStringLiteral } from "./js-scan.js";
 
 export const MAX_WORKFLOW_SOURCE_BYTES = 64 * 1024;
 export const WORKFLOW_NAME_PATTERN = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -52,46 +53,20 @@ function parseStaticString(literal: string, source: string): string {
     return result;
 }
 
-function regexLiteralStartsAt(
-    script: string,
-    index: number,
-    previousWord: string | undefined,
-    followsStatement: boolean,
-): boolean {
-    const rawPrefix = script.slice(0, index);
-    const prefix = rawPrefix.trimEnd();
-    if (!prefix || followsStatement) return true;
-    const previous = prefix.at(-1);
-    if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
-    if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
-    return (
-        previousWord !== undefined &&
-        /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord)
-    );
-}
-
 function metadataDeclarations(script: string): RegExpExecArray[] {
     const declarations: RegExpExecArray[] = [];
     const declarationPattern = /\bexport\s+const\s+meta\s*=/y;
-    const controlParens: boolean[] = [];
-    const declarationParens: boolean[] = [];
-    const blockBraces: boolean[] = [];
-    let depth = 0;
-    let previousWord: string | undefined;
-    let functionDeclarationPending = false;
-    let declarationBlockPending = false;
-    let followsControlCondition = false;
+    const state = new CodeScanState();
     for (let index = 0; index < script.length; index++) {
         const character = script[index];
         const next = script[index + 1];
-        if (depth === 0) {
+        if (state.depth === 0) {
             declarationPattern.lastIndex = index;
             const declaration = declarationPattern.exec(script);
             if (declaration) {
                 declarations.push(declaration);
                 index = declarationPattern.lastIndex - 1;
-                previousWord = undefined;
-                followsControlCondition = false;
+                state.resetWord();
                 continue;
             }
         }
@@ -103,76 +78,15 @@ function metadataDeclarations(script: string): RegExpExecArray[] {
             if (end === -1) break;
             index = end + 1;
         } else if (character === '"' || character === "'" || character === "`") {
-            const quote = character;
-            for (index++; index < script.length; index++) {
-                if (script[index] === "\\") index++;
-                else if (script[index] === quote) break;
-            }
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "/" && regexLiteralStartsAt(script, index, previousWord, followsControlCondition)) {
-            let characterClass = false;
-            for (index++; index < script.length; index++) {
-                if (script[index] === "\\") index++;
-                else if (script[index] === "[") characterClass = true;
-                else if (script[index] === "]") characterClass = false;
-                else if (script[index] === "/" && !characterClass) break;
-            }
-            while (/[a-z]/i.test(script[index + 1] ?? "")) index++;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (/[A-Za-z_$]/.test(character)) {
-            const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
-            previousWord = script.slice(index, index + end + 1);
-            if (previousWord === "function" || previousWord === "class") {
-                const prefix = script.slice(0, index).trimEnd();
-                const declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
-                if (previousWord === "function")
-                    functionDeclarationPending =
-                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
-                else declarationBlockPending = declarationPrefix.test(prefix);
-            }
-            followsControlCondition = false;
-            index += end;
-        } else if (character === "(") {
-            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
-            declarationParens.push(functionDeclarationPending);
-            functionDeclarationPending = false;
-            depth++;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "{") {
-            blockBraces.push(
-                declarationBlockPending ||
-                    followsControlCondition ||
-                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
-                    !script.slice(0, index).trim(),
-            );
-            declarationBlockPending = false;
-            depth++;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "[") {
-            depth++;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === ")") {
-            depth = Math.max(0, depth - 1);
-            followsControlCondition = controlParens.pop() ?? false;
-            declarationBlockPending ||= declarationParens.pop() ?? false;
-            previousWord = undefined;
-        } else if (character === "}") {
-            depth = Math.max(0, depth - 1);
-            previousWord = undefined;
-            followsControlCondition = blockBraces.pop() ?? false;
-        } else if (character === "]") {
-            depth = Math.max(0, depth - 1);
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (!/\s/.test(character)) {
-            previousWord = undefined;
-            followsControlCondition = false;
-        }
+            index = skipStringLiteral(script, index);
+            state.resetWord();
+        } else if (
+            character === "/" &&
+            regexLiteralStartsAt(script, index, state.previousWord, state.followsControlCondition)
+        ) {
+            index = skipRegexLiteral(script, index);
+            state.resetWord();
+        } else index = state.step(script, index);
     }
     return declarations;
 }
@@ -233,7 +147,7 @@ function workflowTypeImports(script: string, code: string): { start: number; end
 
 /** Find and validate the sole default-exported workflow function without evaluating the file. */
 export function parseWorkflowEntrypoint(script: string, source = "workflow"): WorkflowEntrypoint {
-    const code = executableCode(script);
+    const code = maskLiterals(script);
     const exports = [...code.matchAll(/\bexport\b/g)].filter((match) => topLevel(code, match.index ?? 0));
     const entries = [...code.matchAll(/\bexport\s+default\s+async\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g)].filter(
         (match) => exports.some((candidate) => candidate.index === match.index),
@@ -262,97 +176,6 @@ export function parseWorkflowEntrypoint(script: string, source = "workflow"): Wo
         exportEnd: entry.index + exportText[0].length,
         typeImports,
     };
-}
-
-/** Mask comments, literals, and regexes while retaining source offsets. */
-function executableCode(script: string): string {
-    const output = [...script];
-    const mask = (start: number, end: number) => {
-        for (let index = start; index <= end && index < output.length; index++)
-            if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
-    };
-    const controlParens: boolean[] = [];
-    const declarationParens: boolean[] = [];
-    const blockBraces: boolean[] = [];
-    let previousWord: string | undefined;
-    let functionDeclarationPending = false;
-    let declarationBlockPending = false;
-    let followsControlCondition = false;
-    for (let index = 0; index < script.length; index++) {
-        const start = index,
-            character = script[index],
-            next = script[index + 1];
-        if (character === "/" && next === "/") {
-            const newline = script.indexOf("\n", index + 2);
-            index = newline === -1 ? script.length - 1 : newline - 1;
-            mask(start, index);
-        } else if (character === "/" && next === "*") {
-            const end = script.indexOf("*/", index + 2);
-            index = end === -1 ? script.length - 1 : end + 1;
-            mask(start, index);
-        } else if (character === '"' || character === "'" || character === "`") {
-            const quote = character;
-            for (index++; index < script.length; index++) {
-                if (script[index] === "\\") index++;
-                else if (script[index] === quote) break;
-            }
-            mask(start, index);
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "/" && regexLiteralStartsAt(script, index, previousWord, followsControlCondition)) {
-            let characterClass = false;
-            for (index++; index < script.length; index++) {
-                if (script[index] === "\\") index++;
-                else if (script[index] === "[") characterClass = true;
-                else if (script[index] === "]") characterClass = false;
-                else if (script[index] === "/" && !characterClass) break;
-            }
-            while (/[a-z]/i.test(script[index + 1] ?? "")) index++;
-            mask(start, index);
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (/[A-Za-z_$]/.test(character)) {
-            const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
-            previousWord = script.slice(index, index + end + 1);
-            if (previousWord === "function" || previousWord === "class") {
-                const prefix = script.slice(0, index).trimEnd();
-                const declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
-                if (previousWord === "function")
-                    functionDeclarationPending =
-                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
-                else declarationBlockPending = declarationPrefix.test(prefix);
-            }
-            followsControlCondition = false;
-            index += end;
-        } else if (character === "(") {
-            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
-            declarationParens.push(functionDeclarationPending);
-            functionDeclarationPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "{") {
-            blockBraces.push(
-                declarationBlockPending ||
-                    followsControlCondition ||
-                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
-                    !script.slice(0, index).trim(),
-            );
-            declarationBlockPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === ")") {
-            followsControlCondition = controlParens.pop() ?? false;
-            declarationBlockPending ||= declarationParens.pop() ?? false;
-            previousWord = undefined;
-        } else if (character === "}") {
-            previousWord = undefined;
-            followsControlCondition = blockBraces.pop() ?? false;
-        } else if (!/\s/.test(character)) {
-            previousWord = undefined;
-            followsControlCondition = false;
-        }
-    }
-    return output.join("");
 }
 
 /** Convert approved file source to an invocation, or leave a legacy inline body executable. */
