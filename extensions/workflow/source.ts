@@ -120,7 +120,7 @@ export function parseWorkflowMetadata(script: string, source = "workflow"): Work
     return { name, description, declarationStart: start, declarationEnd: start + expression[0].length };
 }
 
-export interface WorkflowEntrypoint {
+export interface EntrypointDeclaration {
     name: string;
     declarationStart: number;
     exportEnd: number;
@@ -146,7 +146,7 @@ function workflowTypeImports(script: string, code: string): { start: number; end
 }
 
 /** Find and validate the sole default-exported workflow function without evaluating the file. */
-export function parseWorkflowEntrypoint(script: string, source = "workflow"): WorkflowEntrypoint {
+export function parseWorkflowEntrypoint(script: string, source = "workflow"): EntrypointDeclaration {
     const code = maskLiterals(script);
     const exports = [...code.matchAll(/\bexport\b/g)].filter((match) => topLevel(code, match.index ?? 0));
     const entries = [...code.matchAll(/\bexport\s+default\s+async\s+function\s+([A-Za-z_$][\w$]*)\s*\(/g)].filter(

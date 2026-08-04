@@ -10,6 +10,7 @@ import {
     MAX_WORKFLOW_ID,
     type WorkflowActivityV1,
     type WorkflowAgentSummaryV1,
+    type WorkflowEntrypoint,
     type WorkflowLimitsV1,
     type WorkflowRunSummaryV1,
     type WorkflowUsageV1,
@@ -66,7 +67,6 @@ export interface ShellResult {
     stderr: string;
 }
 export type ShellExecutor = (request: ShellRequest) => Promise<ShellResult>;
-export type WorkflowEntrypoint = "script" | "function";
 
 export interface WorkflowLaunch {
     name: string;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { WorkflowEntrypoint } from "./backend.js";
+import type { WorkflowEntrypoint } from "./protocol.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 import { findRepositoryRoot } from "./source.js";

@@ -9,6 +9,7 @@ export const MAX_WORKFLOW_DETAIL = 16_000;
 export const MAX_WORKFLOW_PROMPT = 8_000;
 export const MAX_WORKFLOW_DIAGNOSTIC = 2_000;
 
+export type WorkflowEntrypoint = "script" | "function";
 export type WorkflowRunStatus =
     | "awaiting_approval"
     | "queued"
