@@ -70,7 +70,6 @@ test("recovers from a durable completion without executing it twice", async () =
     await fs.promises.mkdir(project);
     await Bun.$`git init -q ${project}`;
 
-    const storage = new WorkflowRunStorage(path.join(temp, "runs"));
     const countsA = new Map<string, number>();
     const countsB = new Map<string, number>();
     let releaseHook!: () => void;
@@ -78,17 +77,23 @@ test("recovers from a durable completion without executing it twice", async () =
     const blocked = new Promise<void>((resolve) => (releaseHook = resolve));
     const firstDurable = new Promise<void>((resolve) => (durable = resolve));
     let completion = 0;
+    // Blocks the run after its first completion is durable but before the worker sees the reply,
+    // simulating a host that dies at exactly that point.
+    class FirstCompletionBlockingStorage extends WorkflowRunStorage {
+        override async complete(directory: string, operation: string, value: unknown, at?: number): Promise<void> {
+            await super.complete(directory, operation, value, at);
+            if (++completion === 1) {
+                durable();
+                await blocked;
+            }
+        }
+    }
+    const storage = new FirstCompletionBlockingStorage(path.join(temp, "runs"));
     const backendA = createWorkflowBackend({
         storage,
         agentExecutor: async ({ prompt }) => {
             increment(countsA, prompt);
             return { value: `${prompt}-result` };
-        },
-        afterDurableCompletion: async () => {
-            if (++completion === 1) {
-                durable();
-                await blocked;
-            }
         },
     });
     let backendB: ReturnType<typeof createWorkflowBackend> | undefined;
