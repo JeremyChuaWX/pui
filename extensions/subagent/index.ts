@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { RetainedOutputStore } from "../shared/retained-output.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
@@ -11,7 +12,6 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "./background-protocol.js";
-import { SessionOutputStore } from "./output-store.js";
 import {
     AGENT_NAMES,
     AGENT_SUMMARY,
@@ -104,7 +104,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     const now = dependencies.now ?? Date.now;
     const environment = dependencies.environment ?? process.env;
     const shutdownController = new AbortController();
-    const outputStore = new SessionOutputStore();
+    const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
     let sessionId = "unbound";

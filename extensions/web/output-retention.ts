@@ -1,12 +1,9 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
-
-/** Maximum complete-output bytes retained for a single result. */
-const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
-/** Maximum complete-output bytes retained by one session owner. */
-const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
+import {
+    type RetainedOutputFileSystem,
+    RetainedOutputStore,
+    type RetentionFailure,
+} from "../shared/retained-output.js";
 
 /** A bounded tool result and, when retained successfully, its complete-output file. */
 interface RetainedWebOutput {
@@ -19,12 +16,7 @@ interface RetainedWebOutput {
 }
 
 /** Injectable filesystem operations used to create and remove private retained-output files. */
-export interface WebOutputRetentionFileSystem {
-    mkdtemp(prefix: string): Promise<string>;
-    chmod(path: string, mode: number): Promise<void>;
-    writeFile(path: string, data: string, options: { encoding: "utf8"; mode: number }): Promise<void>;
-    rm(path: string, options: { recursive: true; force: true }): Promise<void>;
-}
+export type WebOutputRetentionFileSystem = RetainedOutputFileSystem;
 
 /** Optional storage and quota overrides for a session retention owner. */
 export interface WebOutputRetentionDependencies {
@@ -35,16 +27,6 @@ export interface WebOutputRetentionDependencies {
     /** Aggregate complete-output quota in UTF-8 bytes for this owner. */
     maxRetainedSessionBytes?: number;
 }
-
-type RetentionFailure = "closed" | "result-quota" | "session-quota" | "storage";
-type WriteResult = { path: string } | { failure: "closed" | "storage" };
-
-const defaultFileSystem: WebOutputRetentionFileSystem = {
-    mkdtemp,
-    chmod,
-    writeFile: (path, data, options) => writeFile(path, data, options),
-    rm,
-};
 
 function normalizedLimit(value: number): number {
     return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
@@ -60,22 +42,17 @@ function truncateUtf8(text: string, maxBytes: number): string {
 
 /** Owns bounded previews and private complete-output files for one web-extension session at a time. */
 export class WebOutputRetention {
-    private readonly fileSystem: WebOutputRetentionFileSystem;
-    private readonly maxRetainedResultBytes: number;
-    private readonly maxRetainedSessionBytes: number;
-    private readonly directories = new Set<string>();
-    private readonly pending = new Set<Promise<RetainedWebOutput>>();
-    private retainedBytes = 0;
-    private closed = false;
-    private cleanupPromise: Promise<boolean> | undefined;
+    private readonly store: RetainedOutputStore;
 
     /** Creates a retention owner whose files live until cleanup. */
     constructor(dependencies: WebOutputRetentionDependencies = {}) {
-        this.fileSystem = dependencies.fileSystem ?? defaultFileSystem;
-        this.maxRetainedResultBytes = normalizedLimit(dependencies.maxRetainedResultBytes ?? MAX_RETAINED_RESULT_BYTES);
-        this.maxRetainedSessionBytes = normalizedLimit(
-            dependencies.maxRetainedSessionBytes ?? MAX_RETAINED_SESSION_BYTES,
-        );
+        this.store = new RetainedOutputStore({
+            prefix: "pui-web-output-",
+            fileName: "result.md",
+            fileSystem: dependencies.fileSystem,
+            maxResultBytes: dependencies.maxRetainedResultBytes,
+            maxSessionBytes: dependencies.maxRetainedSessionBytes,
+        });
     }
 
     /**
@@ -84,8 +61,7 @@ export class WebOutputRetention {
      * Directories whose removal failed stay tracked, so the next cleanup retries them.
      */
     startSession(): void {
-        this.closed = false;
-        this.cleanupPromise = undefined;
+        this.store.startSession();
     }
 
     /**
@@ -98,49 +74,17 @@ export class WebOutputRetention {
      * @param limits - Maximum UTF-8 bytes and lines allowed in the returned `text`.
      * @returns A bounded result with `fullOutputPath` only when complete-output retention succeeds.
      */
-    retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput> {
+    async retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput> {
         const normalizedLimits = {
             maxBytes: normalizedLimit(limits.maxBytes),
             maxLines: normalizedLimit(limits.maxLines),
         };
         const truncation = truncateHead(fullText, normalizedLimits);
-        if (!truncation.truncated) {
-            return Promise.resolve({ text: fullText, truncated: false });
-        }
-
-        const retainedSize = truncation.totalBytes;
-        if (retainedSize > this.maxRetainedResultBytes) {
-            return Promise.resolve(this.boundedResult(fullText, normalizedLimits, undefined, "result-quota"));
-        }
-        if (this.closed) {
-            return Promise.resolve(this.boundedResult(fullText, normalizedLimits, undefined, "closed"));
-        }
-        if (this.retainedBytes + retainedSize > this.maxRetainedSessionBytes) {
-            return Promise.resolve(this.boundedResult(fullText, normalizedLimits, undefined, "session-quota"));
-        }
-
-        // This reservation happens before any asynchronous filesystem operation can begin.
-        this.retainedBytes += retainedSize;
-        let reservationActive = true;
-        const releaseReservation = () => {
-            if (!reservationActive) return;
-            reservationActive = false;
-            this.retainedBytes -= retainedSize;
-        };
-        let pending!: Promise<RetainedWebOutput>;
-        pending = this.write(fullText)
-            .then((result) => {
-                if ("path" in result) return this.boundedResult(fullText, normalizedLimits, result.path);
-                releaseReservation();
-                return this.boundedResult(fullText, normalizedLimits, undefined, result.failure);
-            })
-            .catch(() => {
-                releaseReservation();
-                return this.boundedResult(fullText, normalizedLimits, undefined, "storage");
-            })
-            .finally(() => this.pending.delete(pending));
-        this.pending.add(pending);
-        return pending;
+        if (!truncation.truncated) return { text: fullText, truncated: false };
+        const result = await this.store.save(fullText);
+        return "path" in result
+            ? this.boundedResult(fullText, normalizedLimits, result.path)
+            : this.boundedResult(fullText, normalizedLimits, undefined, result.failure);
     }
 
     /**
@@ -151,59 +95,7 @@ export class WebOutputRetention {
      * @returns Whether all session-owned directories were removed.
      */
     cleanup(): Promise<boolean> {
-        if (this.cleanupPromise) return this.cleanupPromise;
-        this.closed = true;
-        this.cleanupPromise = this.cleanupOwnedOutput().then((complete) => {
-            if (!complete) this.cleanupPromise = undefined;
-            return complete;
-        });
-        return this.cleanupPromise;
-    }
-
-    private async cleanupOwnedOutput(): Promise<boolean> {
-        await Promise.allSettled([...this.pending]);
-        const directories = [...this.directories];
-        await Promise.allSettled(directories.map((directory) => this.removeDirectory(directory)));
-        this.retainedBytes = 0;
-        return this.directories.size === 0;
-    }
-
-    private async write(output: string): Promise<WriteResult> {
-        let directory: string | undefined;
-        try {
-            directory = await this.fileSystem.mkdtemp(join(tmpdir(), "pui-web-output-"));
-            this.directories.add(directory);
-            if (this.closed) {
-                await this.removeDirectory(directory);
-                return { failure: "closed" };
-            }
-
-            await this.fileSystem.chmod(directory, 0o700);
-            if (this.closed) {
-                await this.removeDirectory(directory);
-                return { failure: "closed" };
-            }
-
-            const outputPath = join(directory, "result.md");
-            await this.fileSystem.writeFile(outputPath, output, { encoding: "utf8", mode: 0o600 });
-            await this.fileSystem.chmod(outputPath, 0o600);
-            if (!this.closed) return { path: outputPath };
-            await this.removeDirectory(directory);
-            return { failure: "closed" };
-        } catch {
-            if (directory) await this.removeDirectory(directory);
-            return { failure: this.closed ? "closed" : "storage" };
-        }
-    }
-
-    private async removeDirectory(directory: string): Promise<void> {
-        try {
-            await this.fileSystem.rm(directory, { recursive: true, force: true });
-            this.directories.delete(directory);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") this.directories.delete(directory);
-            // Other failures stay tracked so a later cleanup call can retry them.
-        }
+        return this.store.cleanup();
     }
 
     private boundedResult(
@@ -244,10 +136,10 @@ export class WebOutputRetention {
     private failureReason(failure: RetentionFailure): string {
         if (failure === "closed") return "the web-extension session is shutting down";
         if (failure === "result-quota") {
-            return `it exceeds the ${formatSize(this.maxRetainedResultBytes)} per-result retention quota`;
+            return `it exceeds the ${formatSize(this.store.maxResultBytes)} per-result retention quota`;
         }
         if (failure === "session-quota") {
-            return `the ${formatSize(this.maxRetainedSessionBytes)} session retention quota has insufficient capacity`;
+            return `the ${formatSize(this.store.maxSessionBytes)} session retention quota has insufficient capacity`;
         }
         return "temporary storage failed";
     }

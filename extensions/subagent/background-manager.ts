@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { RetainedOutputStore } from "../shared/retained-output.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
-import { SessionOutputStore } from "./output-store.js";
 import { AGENTS, type AgentName, type ResolvedAgentName, resolveModel, resolveWorkingDirectory } from "./presets.js";
 import {
     createInitialSubagentDetails,
@@ -10,6 +10,7 @@ import {
     type SubagentDetailsV1,
     truncateUtf8,
 } from "./protocol.js";
+import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
 import type { AbortableSemaphore } from "./semaphore.js";
@@ -38,7 +39,7 @@ interface BackgroundManagerOptions {
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
     deliver: (result: BackgroundTerminalResult) => void;
     isIdle?: () => boolean;
-    outputStore?: Pick<SessionOutputStore, "save" | "cleanup">;
+    outputStore?: SubagentOutputStore;
 }
 export interface BackgroundTerminalResult {
     id: string;
@@ -106,10 +107,11 @@ export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
-    private readonly outputStore: Pick<SessionOutputStore, "save" | "cleanup">;
+    private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
     constructor(private readonly options: BackgroundManagerOptions) {
-        this.outputStore = options.outputStore ?? new SessionOutputStore();
+        this.outputStore =
+            options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     }
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {

@@ -351,7 +351,7 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             outputStore: {
-                save: async () => {
+                savePath: async () => {
                     saveStarted = true;
                     await new Promise<void>((resolve) => (releaseSave = resolve));
                     return "/tmp/full-output";

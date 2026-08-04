@@ -1,5 +1,4 @@
 import { DEFAULT_MAX_BYTES, truncateHead } from "@earendil-works/pi-coding-agent";
-import type { SessionOutputStore } from "./output-store.js";
 import { type AgentPreset, childArgs } from "./presets.js";
 import {
     appendSubagentActivity,
@@ -23,8 +22,15 @@ export interface SubagentJobDependencies {
     now: () => number;
 }
 
+/** The complete-output store the subagent extension needs; RetainedOutputStore is the production implementation. */
+export interface SubagentOutputStore {
+    /** Retain one complete output; undefined when it was not retained (quota, shutdown, or storage). */
+    savePath(output: string): Promise<string | undefined>;
+    cleanup(): Promise<unknown>;
+}
+
 export interface SubagentJobSpillPolicy {
-    store: Pick<SessionOutputStore, "save">;
+    store: Pick<SubagentOutputStore, "savePath">;
     /** Line cap applied to the model-deliverable text. */
     maxLines: number;
     /** Also spill the full output when the delivered text exceeds this byte budget without hard truncation. */
@@ -160,7 +166,7 @@ export async function runSubagentJob(
         truncation.truncated ||
         (request.spill.spillOverBytes !== undefined && truncateUtf8(delivered, request.spill.spillOverBytes).truncated);
     const fullOutputPath =
-        (needsSpill ? await request.spill.store.save(delivered) : undefined) ?? details.run.fullOutputPath;
+        (needsSpill ? await request.spill.store.savePath(delivered) : undefined) ?? details.run.fullOutputPath;
     if (fullOutputPath && fullOutputPath !== details.run.fullOutputPath) {
         details = updateSubagentDetails(details, { fullOutputPath }, now());
     }
