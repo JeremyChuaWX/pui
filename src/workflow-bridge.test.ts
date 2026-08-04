@@ -14,7 +14,6 @@ function payload(type: string, overrides: Record<string, unknown> = {}): Record<
         ...overrides,
     };
     if (type === "upsert" && value.run === undefined) value.run = run();
-    if (type === "remove" && value.runId === undefined) value.runId = "run-1";
     return value;
 }
 function run(): Record<string, unknown> {
@@ -49,7 +48,7 @@ describe("workflow host protocol", () => {
         expect(parseBackgroundWorkflowEvent(null, route)).toBeUndefined();
     });
 
-    test("immutably reduces ready, upsert, remove, and reset", () => {
+    test("immutably reduces ready, upsert, and reset", () => {
         const initial: WorkflowState = { runs: new Map() };
         const ready = reduceWorkflowEvent(initial, parse(payload("ready")), route);
         const upsert = reduceWorkflowEvent(ready, parse(payload("upsert")), route);
@@ -57,9 +56,6 @@ describe("workflow host protocol", () => {
         expect(ready.runs.size).toBe(0);
         expect(upsert.runs.get("run-1")?.name).toBe("Review");
         expect(upsert.runs).not.toBe(ready.runs);
-        const removed = reduceWorkflowEvent(upsert, parse(payload("remove")), route);
-        expect(removed.runs.size).toBe(0);
-        expect(upsert.runs.size).toBe(1);
         const reset = reduceWorkflowEvent(upsert, parse(payload("reset")), route);
         expect(reset).toEqual({ instanceId: "instance-1", acceptingInstance: true, runs: new Map() });
     });
@@ -70,7 +66,6 @@ describe("workflow host protocol", () => {
         const reset = reduceWorkflowEvent(populated, parse(payload("reset")), route);
 
         expect(reduceWorkflowEvent(reset, parse(payload("upsert")), route)).toBe(reset);
-        expect(reduceWorkflowEvent(reset, parse(payload("remove")), route)).toBe(reset);
 
         const replacement = reduceWorkflowEvent(reset, parse(payload("ready", { instanceId: "instance-2" })), route);
         const upsert = reduceWorkflowEvent(replacement, parse(payload("upsert", { instanceId: "instance-2" })), route);

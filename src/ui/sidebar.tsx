@@ -40,9 +40,7 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
     const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
     const activeWorkflows = createMemo(() =>
-        props.snapshot.workflows.filter((run) =>
-            ["awaiting_approval", "queued", "running", "paused"].includes(run.status),
-        ),
+        props.snapshot.workflows.filter((run) => ["queued", "running", "paused"].includes(run.status)),
     );
 
     return (

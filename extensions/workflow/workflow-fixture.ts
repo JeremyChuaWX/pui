@@ -16,7 +16,7 @@ interface WorkflowFixtureAgent {
         turns: number;
     };
     recentActivity: unknown[];
-    output?: string;
+    error?: string;
     worktree?: unknown;
 }
 

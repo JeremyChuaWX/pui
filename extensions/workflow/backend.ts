@@ -5,13 +5,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AbortableSemaphore } from "../subagent/semaphore.js";
 import { maskLiterals } from "./js-scan.js";
-import type {
-    WorkflowActivityV1,
-    WorkflowAgentSummaryV1,
-    WorkflowEntrypoint,
-    WorkflowLimitsV1,
-    WorkflowRunSummaryV1,
-    WorkflowUsageV1,
+import {
+    errorMessage,
+    type WorkflowActivityV1,
+    type WorkflowAgentSummaryV1,
+    type WorkflowEntrypoint,
+    type WorkflowLimitsV1,
+    type WorkflowRunSummaryV1,
+    type WorkflowUsageV1,
 } from "./protocol.js";
 import {
     boundedJson,
@@ -192,7 +193,6 @@ const emptyUsage = (): WorkflowUsageV1 => ({
     cost: 0,
     turns: 0,
 });
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {}) => {
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };

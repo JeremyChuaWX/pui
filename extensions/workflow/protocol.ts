@@ -10,15 +10,9 @@ export const MAX_WORKFLOW_PROMPT = 8_000;
 export const MAX_WORKFLOW_DIAGNOSTIC = 2_000;
 
 export type WorkflowEntrypoint = "script" | "function";
-export type WorkflowRunStatus =
-    | "awaiting_approval"
-    | "queued"
-    | "running"
-    | "paused"
-    | "succeeded"
-    | "failed"
-    | "cancelled";
-export type WorkflowPhaseStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+export type WorkflowRunStatus = "queued" | "running" | "paused" | "succeeded" | "failed" | "cancelled";
+export type WorkflowPhaseStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type WorkflowAgentStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
 export type WorkflowActivityKind = "agent" | "tool" | "log" | "diagnostic";
 
@@ -60,7 +54,6 @@ export interface WorkflowAgentSummaryV1 {
     endedAt?: number;
     usage: WorkflowUsageV1;
     prompt?: string;
-    output?: string;
     error?: string;
     worktree?: { cwd: string; branch: string };
     recentActivity: WorkflowActivityV1[];
@@ -119,23 +112,8 @@ export function truncateWorkflowText(value: string, maximum: number): string {
     return `${result}…`;
 }
 
-const RUN_STATUSES = new Set<WorkflowRunStatus>([
-    "awaiting_approval",
-    "queued",
-    "running",
-    "paused",
-    "succeeded",
-    "failed",
-    "cancelled",
-]);
-const PHASE_STATUSES = new Set<WorkflowPhaseStatus>([
-    "queued",
-    "running",
-    "succeeded",
-    "failed",
-    "cancelled",
-    "skipped",
-]);
+const RUN_STATUSES = new Set<WorkflowRunStatus>(["queued", "running", "paused", "succeeded", "failed", "cancelled"]);
+const PHASE_STATUSES = new Set<WorkflowPhaseStatus>(["queued", "running", "succeeded", "failed", "cancelled"]);
 const AGENT_STATUSES = new Set<WorkflowAgentStatus>([
     "queued",
     "running",
@@ -217,7 +195,6 @@ function agent(value: unknown): value is WorkflowAgentSummaryV1 {
         timestamp(value.endedAt) &&
         usage(value.usage) &&
         optionalString(value.prompt, MAX_WORKFLOW_PROMPT) &&
-        optionalString(value.output, MAX_WORKFLOW_DETAIL) &&
         optionalString(value.error, MAX_WORKFLOW_DETAIL) &&
         (value.worktree === undefined ||
             (record(value.worktree) &&

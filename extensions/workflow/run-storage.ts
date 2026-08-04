@@ -11,7 +11,7 @@ import {
     syncDirectory,
 } from "./durable-fs.js";
 import type { WorkflowEntrypoint } from "./protocol.js";
-import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
+import { errorMessage, parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
 import { findRepositoryRoot } from "./source.js";
 import type { OwnedWorktree } from "./worktree.js";
@@ -625,10 +625,7 @@ export class WorkflowRunStorage {
                         recentActivity: [],
                         updatedAt: timestamp,
                         endedAt: timestamp,
-                        error: `Stored workflow is corrupt and was not executed: ${error instanceof Error ? error.message : String(error)}`.slice(
-                            0,
-                            2000,
-                        ),
+                        error: `Stored workflow is corrupt and was not executed: ${errorMessage(error)}`.slice(0, 2000),
                     },
                     completions: new Map(),
                     worktrees: new Map(),

@@ -13,7 +13,6 @@ import type { DisplayItem } from "./types.js";
 const MAX_TOOL_TEXT = 8_000;
 
 const WORKFLOW_STATUS_PRESENTATION: Record<WorkflowRunStatus | WorkflowAgentStatus, { icon: string; label: string }> = {
-    awaiting_approval: { icon: "?", label: "Awaiting approval" },
     queued: { icon: "·", label: "Queued" },
     running: { icon: "◌", label: "Running" },
     paused: { icon: "Ⅱ", label: "Paused" },
@@ -32,7 +31,7 @@ export function workflowStatusTone(
 ): "success" | "error" | "warning" | "muted" | "info" {
     if (status === "succeeded") return "success";
     if (status === "failed" || status === "timed_out") return "error";
-    if (status === "running" || status === "paused" || status === "awaiting_approval") return "warning";
+    if (status === "running" || status === "paused") return "warning";
     return status === "queued" || status === "cancelled" ? "muted" : "info";
 }
 

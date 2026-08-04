@@ -39,8 +39,7 @@ export function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value:
             </box>
             <For each={props.run.phases}>
                 {(phase, index) => {
-                    const phaseStatus = () =>
-                        workflowStatusPresentation(phase.status === "skipped" ? "cancelled" : phase.status);
+                    const phaseStatus = () => workflowStatusPresentation(phase.status);
                     return (
                         <box
                             marginBottom={1}
@@ -52,7 +51,7 @@ export function WorkflowPage(props: { run: WorkflowRunSummaryV1; setRef: (value:
                                 <strong>
                                     {phaseStatus().icon} Phase {index() + 1} · {phase.name}
                                 </strong>
-                                <span> · {phase.status === "skipped" ? "Skipped" : phaseStatus().label}</span>
+                                <span> · {phaseStatus().label}</span>
                             </text>
                             <For each={phase.agentIds.slice(0, WORKFLOW_PAGE_AGENT_LIMIT)}>
                                 {(agentId) => {

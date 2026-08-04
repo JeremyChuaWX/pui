@@ -1,5 +1,5 @@
 import type { WorkflowBackend, WorkflowLaunch } from "./backend.js";
-import type { WorkflowRunSummaryV1 } from "./protocol.js";
+import { errorMessage, type WorkflowRunSummaryV1 } from "./protocol.js";
 
 export interface WorkflowManagerOptions {
     backend: WorkflowBackend;
@@ -24,9 +24,7 @@ export class WorkflowRunManager {
             options.emit(run);
             if (terminal(run.status))
                 void this.deliver(run).catch((error) =>
-                    (options.log ?? console.error)(
-                        `Workflow terminal delivery failed: ${error instanceof Error ? error.message : String(error)}`,
-                    ),
+                    (options.log ?? console.error)(`Workflow terminal delivery failed: ${errorMessage(error)}`),
                 );
         });
     }

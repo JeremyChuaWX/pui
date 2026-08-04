@@ -153,9 +153,6 @@ export function createMenus(host: MenuHost) {
                 ...(agent.prompt
                     ? [{ label: "Prompt", detail: agent.prompt, search: `prompt ${agent.prompt}`, action: () => {} }]
                     : []),
-                ...(agent.output
-                    ? [{ label: "Output", detail: agent.output, search: `output ${agent.output}`, action: () => {} }]
-                    : []),
                 ...(agent.error
                     ? [{ label: "Error", detail: agent.error, search: `error ${agent.error}`, action: () => {} }]
                     : []),
@@ -214,7 +211,7 @@ export function createMenus(host: MenuHost) {
                 action: () => {},
             },
             ...run.phases.map((phase) => ({
-                label: `${workflowStatusPresentation(phase.status === "skipped" ? "cancelled" : phase.status).icon} ${phase.name}`,
+                label: `${workflowStatusPresentation(phase.status).icon} ${phase.name}`,
                 detail: `${phase.status} · ${phase.agentIds.length} agents`,
                 search: `${phase.name} ${phase.status}`,
                 action: () => openWorkflowPhase(run, phase.id),

@@ -24,7 +24,7 @@ describe("background workflow protocol", () => {
     test("parses routed snapshots and rejects stale or unknown events", () => {
         expect(parseBackgroundWorkflowEvent(envelope("ready"), route)?.type).toBe("ready");
         expect(parseBackgroundWorkflowEvent(envelope("upsert", { run: workflowRun() }), route)?.type).toBe("upsert");
-        expect(parseBackgroundWorkflowEvent(envelope("remove", { runId: "run-1" }), route)?.type).toBe("remove");
+        expect(parseBackgroundWorkflowEvent(envelope("remove", { runId: "run-1" }), route)).toBeUndefined();
         expect(parseBackgroundWorkflowEvent(envelope("ready", { sessionId: "stale" }), route)).toBeUndefined();
         expect(parseBackgroundWorkflowEvent(envelope("ready", { instanceId: "stale" }), route)).toBeUndefined();
         expect(parseBackgroundWorkflowEvent(envelope("ready", { version: 2 }), route)).toBeUndefined();

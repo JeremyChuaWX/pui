@@ -48,7 +48,7 @@ export function reduceWorkflowEvent(
     if (event.type === "upsert" && event.run) {
         if (!runs.has(event.run.id) && runs.size >= MAX_WORKFLOW_RUNS) return state;
         runs.set(event.run.id, event.run);
-    } else if (event.type === "remove" && event.runId !== undefined) runs.delete(event.runId);
+    }
     return {
         instanceId: event.instanceId,
         ...(state.acceptingInstance ? { acceptingInstance: true as const } : {}),

@@ -24,6 +24,7 @@ import {
     parseBackgroundWorkflowControl,
 } from "./background-protocol.js";
 import { WorkflowRunManager } from "./manager.js";
+import { errorMessage } from "./protocol.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
 import workflowWritingDocumentation from "./writing-workflows.md" with { type: "text" };
@@ -104,11 +105,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         initializationQueue: Promise<void> = Promise.resolve(),
         unsubscribeControl: (() => void) | undefined,
         manager: WorkflowRunManager;
-    const emitEnvelope = (
-        type: "ready" | "reset" | "upsert" | "remove",
-        extra: object = {},
-        route = { sessionId, cwd },
-    ) =>
+    const emitEnvelope = (type: "ready" | "reset" | "upsert", extra: object = {}, route = { sessionId, cwd }) =>
         pi.events?.emit(BACKGROUND_WORKFLOW_CHANNEL, {
             schema: BACKGROUND_WORKFLOW_SCHEMA,
             version: BACKGROUND_WORKFLOW_VERSION,
@@ -178,7 +175,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                         instanceId,
                         requestId: control.requestId,
                         ok: false,
-                        error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
+                        error: errorMessage(error).slice(0, 2_000),
                     });
                 }
             })();
@@ -210,10 +207,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 else if (choice === "Stop") await backend.control(run.id, "stop");
             } catch (error) {
                 if (generation !== lifecycleGeneration || abort.signal.aborted) return;
-                ctx.ui.notify(
-                    `Could not recover workflow ${run.name}: ${error instanceof Error ? error.message : String(error)}`,
-                    "warning",
-                );
+                ctx.ui.notify(`Could not recover workflow ${run.name}: ${errorMessage(error)}`, "warning");
             }
         }
         if (generation !== lifecycleGeneration || abort.signal.aborted) return;

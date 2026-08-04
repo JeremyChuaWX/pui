@@ -24,9 +24,8 @@ export interface BackgroundWorkflowEventV1 {
     sessionId: string;
     instanceId: string;
     cwd: string;
-    type: "ready" | "reset" | "upsert" | "remove";
+    type: "ready" | "reset" | "upsert";
     run?: WorkflowRunSummaryV1;
-    runId?: string;
 }
 
 export interface BackgroundWorkflowControlV1 {
@@ -96,8 +95,6 @@ export function parseBackgroundWorkflowEvent(
         if (!run || run.sessionId !== value.sessionId || run.cwd !== value.cwd) return undefined;
         return { ...(value as unknown as BackgroundWorkflowEventV1), run };
     }
-    if (value.type === "remove" && identity(value.runId) && value.run === undefined)
-        return value as unknown as BackgroundWorkflowEventV1;
     return undefined;
 }
 

@@ -22,7 +22,7 @@ describe("workflow v1 protocol", () => {
         expect(parseWorkflowRunV1({ ...run, status: "future" })).toBeUndefined();
         expect(parseWorkflowRunV1({ ...run, usage: { ...run.usage, cost: Number.NaN } })).toBeUndefined();
         expect(parseWorkflowRunV1({ ...run, agents: [run.agents[0], run.agents[0]] })).toBeUndefined();
-        run.agents[0].output = "x".repeat(MAX_WORKFLOW_DETAIL + 1);
+        run.agents[0].error = "x".repeat(MAX_WORKFLOW_DETAIL + 1);
         expect(parseWorkflowRunV1(run)).toBeUndefined();
 
         const worktree = workflowRun();
