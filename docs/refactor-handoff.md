@@ -38,18 +38,24 @@ at module boundaries).
 
 ## Remaining worklist (rough priority order)
 
-### 1. Shared retained-output module (was item 4)
+### 1. Finish retained-output convergence (was item 4; store layer done)
 
-Temp-file spill (mkdtemp 0700 → write 0600 → cleanup) exists 4×: `web/output-retention.ts` (the
-richest — quotas + retry; keep as the base), `subagent/output-store.ts`, `FileSearchOutput` inside
-`file-search/process.ts`, and a variant in `workflow/backend.ts`. Also: several inconsistent
-"[Output truncated …]" notice strings and three `truncateUtf8` copies (`web/output-retention.ts`
-private, `subagent/protocol.ts` exported, upstream `truncateHead`/`truncateTail`). Consolidate into
-one shared module (natural home now: `extensions/shared/retained-output.ts`) with one notice
-format. While there: file-search has no retention quota (cleanup closures accumulate unbounded per
-session) — give it the same policy as web. Check first whether upstream `pi-coding-agent`'s
-`OutputAccumulator` could replace all of it (it isn't exported from the package index today — worth
-asking upstream).
+Done this session: `extensions/shared/retained-output.ts` (`RetainedOutputStore` — spill + quotas +
+retrying cleanup, generalized from web); `WebOutputRetention` is now the notice layer over it, and
+subagent's `SessionOutputStore` was deleted in favor of it (subagent spills are now quota-bounded).
+Remaining:
+
+- One notice format: `boundedResult` in `web/output-retention.ts`, the two ad-hoc
+  "[Output truncated …]" strings in `subagent/background-manager.ts` and `subagent/index.ts`, and
+  file-search's presentation differ. Converging changes user-visible tool text — update the pinned
+  tests deliberately.
+- `truncateUtf8` still exists 2×: `web/output-retention.ts` private (returns string) and
+  `subagent/protocol.ts` exported (returns { content, truncated }).
+- `FileSearchOutput` in `file-search/process.ts` streams (cannot buffer whole outputs), so it keeps
+  its own capture — but it has no retention quota: cleanup closures accumulate unbounded per
+  session. Give it the web policy (track a per-session store or byte budget).
+- Check whether upstream `pi-coding-agent`'s `OutputAccumulator` could replace all of it (it isn't
+  exported from the package index today — worth asking upstream).
 
 ### 2. Test hygiene (was item 6)
 
