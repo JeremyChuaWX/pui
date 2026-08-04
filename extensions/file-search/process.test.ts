@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { access, readdir, readFile, rm, stat } from "node:fs/promises";
+import { afterEach, describe, expect, test } from "bun:test";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { FileSearchOutput } from "./output.ts";
 import { runFileSearch } from "./process.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-search.mjs", import.meta.url));
@@ -20,6 +19,7 @@ function run(scenario: string, options: Partial<Parameters<typeof runFileSearch>
     return runFileSearch({
         command: process.execPath,
         args: [fixture, scenario],
+        tool: "fd",
         cwd,
         timeoutMs: 2_000,
         killGraceMs: 20,
@@ -44,20 +44,17 @@ async function expectDescendantStopped(pid: number) {
     throw new Error(`descendant ${pid} remained alive`);
 }
 
-describe("FileSearchOutput", () => {
-    test("removes its private spill directory when output fits", async () => {
-        const capture = await FileSearchOutput.create();
-        const directory = capture.directory;
-        await capture.write("ok\n");
-        expect((await capture.finish()).fullOutputPath).toBeUndefined();
-        await expect(access(directory)).rejects.toThrow();
-    });
-});
-
 describe("runFileSearch", () => {
     test("streams normal output and counts records", async () => {
         const result = await run("small");
         expect(result).toMatchObject({ status: "succeeded", output: "one\ntwo\n", count: 2, truncated: false });
+    });
+
+    test("removes its private spill directory when output fits", async () => {
+        const before = await spillDirectories();
+        const result = await run("small");
+        expect(result.fullOutputPath).toBeUndefined();
+        expect(await spillDirectories()).toEqual(before);
     });
 
     test("treats rg exit 1 with no stdout as no matches", async () => {
@@ -110,21 +107,24 @@ describe("runFileSearch", () => {
     });
 
     test("handles abort while creating the output capture", async () => {
-        const before = await spillDirectories();
         const controller = new AbortController();
-        const originalCreate = FileSearchOutput.create;
-        const create = spyOn(FileSearchOutput, "create").mockImplementation(async () => {
-            const capture = await originalCreate.call(FileSearchOutput);
-            controller.abort();
-            return capture;
+        let discarded = false;
+        const result = await run("hang", {
+            signal: controller.signal,
+            timeoutMs: 20,
+            createCapture: async () => {
+                controller.abort();
+                return {
+                    write: async () => {},
+                    finish: async () => ({ output: "", count: 0, totalBytes: 0, truncated: false }),
+                    discard: async () => {
+                        discarded = true;
+                    },
+                };
+            },
         });
-
-        try {
-            expect((await run("hang", { signal: controller.signal, timeoutMs: 20 })).status).toBe("cancelled");
-            expect(await spillDirectories()).toEqual(before);
-        } finally {
-            create.mockRestore();
-        }
+        expect(result.status).toBe("cancelled");
+        expect(discarded).toBe(true);
     });
 
     test.skipIf(process.platform === "win32")(

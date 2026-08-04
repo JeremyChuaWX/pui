@@ -7,8 +7,7 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../../src/headless-workflow.js";
-import { AGENTS, type ResolvedAgentName, resolveModel } from "../subagent/presets.js";
+import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 import {
     createWorkflowBackend,
@@ -96,11 +95,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 ? dependencies.backendOptions.cooperativeExecutor
                 : true,
             storage: dependencies.backendOptions?.storage ?? new WorkflowRunStorage(),
-            policy: dependencies.backendOptions?.policy ?? {
-                roles: ["generic", "worker", "explore"],
-                resolveModel: (role, requested) =>
-                    resolveModel(AGENTS[role as ResolvedAgentName], requested, environment),
-            },
+            policy: dependencies.backendOptions?.policy ?? defaultWorkflowPolicy(environment),
         });
     let sessionId = "unbound",
         cwd = "",

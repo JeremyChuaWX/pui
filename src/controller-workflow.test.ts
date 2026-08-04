@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type AgentSessionRuntime, createEventBus, type EventBusController } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import { PuiController } from "./controller.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 };
@@ -86,12 +86,8 @@ function harness(cwd: string) {
         setRebindSession: () => {},
         dispose: async () => {},
     } as unknown as AgentSessionRuntime;
-    const Controller = PuiController as unknown as new (
-        runtime: AgentSessionRuntime,
-        bus: EventBusController,
-    ) => PuiController;
-    const controller = new Controller(runtime, bus);
-    const bind = (next = session) => (controller as any).bindSession(next);
+    const controller = new PuiController(runtime, { eventBus: bus });
+    const bind = (next = session) => controller.bindSession(next);
     return { bus, controller, runtime, session, bind, sessionListener, bindings: () => extensionBindings };
 }
 
@@ -155,22 +151,35 @@ describe("PuiController workflow bridge", () => {
                 );
             };
             await h.bind();
-            await waitFor(() => h.controller.listWorkflows().some((item) => item.id === "run-1"));
-            expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["run-1"]);
+            await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "run-1"));
+            expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["run-1"]);
             expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
             expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
             expect(h.controller.handlePrompt("/workflow review.ts")).toBe("workflow");
             expect(h.controller.handlePrompt("/workflow")).toBe("sent");
 
-            const controls: unknown[] = [];
-            h.bus.on("pui.workflow.background.control", (value) => controls.push(value));
-            expect(h.controller.pauseWorkflow("run-1")).toBe(true);
-            expect(h.controller.restartWorkflowAgent("run-1", "missing")).toBe(false);
-            expect(h.controller.restartWorkflowAgent("run-1", "agent-1")).toBe(true);
+            const controls: Array<Record<string, unknown>> = [];
+            h.bus.on("pui.workflow.background.control", (value) => controls.push(value as Record<string, unknown>));
+            const pause = h.controller.controlWorkflow("run-1", "pause");
+            await expect(h.controller.controlWorkflow("run-1", "restart-agent", "missing")).rejects.toThrow(
+                "Workflow agent is unavailable.",
+            );
+            const restart = h.controller.controlWorkflow("run-1", "restart-agent", "agent-1");
+            restart.catch(() => {});
             expect(controls).toEqual([
                 expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
                 expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
             ]);
+            h.bus.emit("pui.workflow.background.control.result", {
+                schema: "pi.workflow.background.control.result",
+                version: 1,
+                sessionId: "session-1",
+                instanceId: "instance-1",
+                cwd: canonical,
+                requestId: controls[0]?.requestId,
+                ok: true,
+            });
+            await expect(pause).resolves.toBeUndefined();
             const prior = h.controller.snapshot();
             h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
             h.bus.emit("pui.workflow.background", envelope("session-1", `${canonical}/..`, "reset"));
@@ -284,14 +293,14 @@ describe("PuiController workflow bridge", () => {
             "pui.workflow.background",
             envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "stale") }),
         );
-        await waitFor(() => h.controller.listWorkflows().some((item) => item.id === "new"));
-        expect(h.controller.listWorkflows().map((item) => item.id)).toEqual(["new"]);
+        await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "new"));
+        expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["new"]);
 
         const replacement = { ...h.session, sessionId: "session-2" };
         (h.runtime as any).session = replacement;
         await h.bind(replacement);
-        expect(h.controller.listWorkflows()).toEqual([]);
-        expect(h.controller.stopWorkflow("new")).toBe(false);
+        expect(h.controller.snapshot().workflows).toEqual([]);
+        await expect(h.controller.controlWorkflow("new", "stop")).rejects.toThrow("Workflow control is unavailable.");
         await h.controller.dispose();
     });
 });

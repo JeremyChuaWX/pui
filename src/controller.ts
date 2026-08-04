@@ -13,8 +13,8 @@ import {
     createAgentSessionServices,
     createEventBus,
     type EventBusController,
-    type ExtensionUIDialogOptions,
     getAgentDir,
+    type InlineExtension,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
@@ -28,9 +28,12 @@ import {
     reduceBackgroundSubagentEvent,
 } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
-import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
+import { findLocalCommand, LOCAL_COMMANDS } from "./commands.js";
+import { ExtensionDialogQueue } from "./extension-dialogs.js";
+import { buildDisplayItems, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
-import { isTerminalSubagentStatus as isTerminalBackgroundStatus } from "./subagent.js";
+import { isTerminalSubagentStatus } from "./subagent.js";
+import { ToastQueue } from "./toasts.js";
 import {
     reconcileToolExecutions,
     reduceToolExecutions,
@@ -41,7 +44,6 @@ import type {
     ActiveTool,
     AppliedPromptCompletion,
     DisplayItem,
-    ExtensionDialog,
     ModelChoice,
     PromptAction,
     PromptCompletionItem,
@@ -50,19 +52,7 @@ import type {
     SessionChoice,
     ToastMessage,
 } from "./types.js";
-import {
-    BACKGROUND_WORKFLOW_CHANNEL,
-    BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
-    BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL,
-    BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
-    parseWorkflowBackgroundEvent,
-    parseWorkflowControl,
-    parseWorkflowControlResult,
-    reduceWorkflowEvent,
-    type WorkflowControlAction,
-    type WorkflowRunSummaryV1,
-    type WorkflowState,
-} from "./workflow.js";
+import { WorkflowBridge, type WorkflowControlAction, type WorkflowRunSummaryV1 } from "./workflow-bridge.js";
 
 export interface ControllerOptions {
     cwd: string;
@@ -71,13 +61,23 @@ export interface ControllerOptions {
     noSession?: boolean;
 }
 
-export function createPuiRuntimeFactory(eventBus: EventBusController): CreateAgentSessionRuntimeFactory {
+/** Injectable collaborators; every field has a production default. */
+export interface ControllerDependencies {
+    eventBus?: EventBusController;
+    extensionFactories?: InlineExtension[];
+    readGitBranch?: (cwd: string) => string | undefined;
+}
+
+export function createPuiRuntimeFactory(
+    eventBus: EventBusController,
+    extensionFactories: InlineExtension[] = BUNDLED_EXTENSION_FACTORIES,
+): CreateAgentSessionRuntimeFactory {
     return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
         const services = await createAgentSessionServices({
             cwd,
             agentDir,
             resourceLoaderOptions: {
-                extensionFactories: BUNDLED_EXTENSION_FACTORIES,
+                extensionFactories,
                 eventBus,
             },
         });
@@ -88,9 +88,6 @@ export function createPuiRuntimeFactory(eventBus: EventBusController): CreateAge
         };
     };
 }
-
-/** Standalone factory retained for SDK/tests; a controller uses its own stable bus-backed factory. */
-export const createPuiRuntime = createPuiRuntimeFactory(createEventBus());
 
 type Listener = (snapshot: PuiSnapshot) => void;
 
@@ -105,22 +102,6 @@ const COALESCED_SESSION_EVENTS = new Set<AgentSessionEvent["type"]>([
     "turn_end",
     "tool_execution_update",
 ]);
-
-const LOCAL_SLASH_COMMANDS: SlashCommand[] = [
-    { name: "model", description: "Select the active model", argumentHint: "<provider/model>" },
-    { name: "resume", description: "Resume a previous session" },
-    { name: "new", description: "Start a new session" },
-    { name: "compact", description: "Compact conversation context" },
-    { name: "name", description: "Set the session name", argumentHint: "<name>" },
-    { name: "reload", description: "Reload extensions, skills, prompts, and context" },
-    { name: "session", description: "Show session information" },
-    { name: "commands", description: "Open the command palette" },
-    { name: "subagents", description: "Inspect or cancel background subagents" },
-    { name: "thinking", description: "Cycle the thinking level" },
-    { name: "help", description: "Show keyboard shortcuts" },
-    { name: "hotkeys", description: "Show keyboard shortcuts" },
-    { name: "quit", description: "Quit" },
-];
 
 interface RunningBash {
     command: string;
@@ -164,9 +145,6 @@ export class PuiController {
     private autocompleteProvider?: CombinedAutocompleteProvider;
     private displayItems: DisplayItem[] = [];
     private runningBash?: RunningBash;
-    private toasts: ToastMessage[] = [];
-    private toastId = 0;
-    private toastTimers = new Set<ReturnType<typeof setTimeout>>();
     private refreshTimer?: ReturnType<typeof setTimeout>;
     private disposed = false;
     private bindGeneration = 0;
@@ -174,24 +152,19 @@ export class PuiController {
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
     private backgroundState: BackgroundSubagentState = { jobs: new Map() };
-    private workflowState: WorkflowState = { runs: new Map() };
-    private workflowSessionId = "";
-    private workflowCwd = "";
-    private unsubscribeWorkflow?: () => void;
-    private pendingWorkflowControls = new Set<(error: Error) => void>();
-    private extensionDialogs: Array<{
-        dialog: ExtensionDialog;
-        resolve: (value: boolean | string | undefined) => void;
-        cleanup: () => void;
-    }> = [];
-    private extensionDialogId = 0;
+    private readonly readGitBranch: (cwd: string) => string | undefined;
+    private readonly toasts = new ToastQueue(() => this.refresh());
+    private readonly extensionDialogs = new ExtensionDialogQueue(() => this.refresh());
+    private readonly workflows: WorkflowBridge;
     private readonly eventBus: EventBusController;
     private readonly unsubscribeBackground: () => void;
 
-    private constructor(runtime: AgentSessionRuntime, eventBus: EventBusController = createEventBus()) {
+    constructor(runtime: AgentSessionRuntime, dependencies: ControllerDependencies = {}) {
         this.runtime = runtime;
-        this.eventBus = eventBus;
-        this.unsubscribeBackground = eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
+        this.eventBus = dependencies.eventBus ?? createEventBus();
+        this.readGitBranch = dependencies.readGitBranch ?? readGitBranch;
+        this.workflows = new WorkflowBridge({ eventBus: this.eventBus, onChange: () => this.scheduleRefresh() });
+        this.unsubscribeBackground = this.eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
             const event = parseBackgroundSubagentEvent(payload);
             if (!event || this.disposed) return;
             const next = reduceBackgroundSubagentEvent(this.backgroundState, event, this.runtime.session.sessionId);
@@ -199,11 +172,11 @@ export class PuiController {
             this.backgroundState = next;
             this.scheduleRefresh();
         });
-        this.gitBranch = readGitBranch(runtime.cwd);
+        this.gitBranch = this.readGitBranch(runtime.cwd);
         this.currentSnapshot = this.buildSnapshot();
     }
 
-    static async create(options: ControllerOptions): Promise<PuiController> {
+    static async create(options: ControllerOptions, dependencies: ControllerDependencies = {}): Promise<PuiController> {
         const agentDir = getAgentDir();
         let sessionManager: SessionManager;
         if (options.noSession) {
@@ -217,14 +190,17 @@ export class PuiController {
         }
 
         const sessionCwd = options.sessionPath ? sessionManager.getCwd() || options.cwd : options.cwd;
-        const eventBus = createEventBus();
-        const runtime = await createAgentSessionRuntime(createPuiRuntimeFactory(eventBus), {
-            cwd: sessionCwd,
-            agentDir,
-            sessionManager,
-            sessionStartEvent: { type: "session_start", reason: "startup" },
-        });
-        const controller = new PuiController(runtime, eventBus);
+        const eventBus = dependencies.eventBus ?? createEventBus();
+        const runtime = await createAgentSessionRuntime(
+            createPuiRuntimeFactory(eventBus, dependencies.extensionFactories),
+            {
+                cwd: sessionCwd,
+                agentDir,
+                sessionManager,
+                sessionStartEvent: { type: "session_start", reason: "startup" },
+            },
+        );
+        const controller = new PuiController(runtime, { ...dependencies, eventBus });
 
         runtime.setRebindSession(async (session) => controller.bindSession(session));
         await controller.bindSession(runtime.session);
@@ -266,31 +242,17 @@ export class PuiController {
         return () => this.listeners.delete(listener);
     }
 
-    private async bindSession(session: AgentSession): Promise<void> {
+    /** Attach to a session; invoked at startup and whenever the runtime rebinds. */
+    async bindSession(session: AgentSession): Promise<void> {
         const generation = ++this.bindGeneration;
-        this.dismissExtensionDialogs();
-        for (const reject of this.pendingWorkflowControls) reject(new Error("Workflow session changed."));
-        this.pendingWorkflowControls.clear();
-        this.unsubscribeSession?.();
-        this.unsubscribeWorkflow?.();
+        this.extensionDialogs.dismissAll();
         this.backgroundState = { jobs: new Map() };
-        this.workflowState = { runs: new Map() };
-        this.workflowSessionId = session.sessionId;
-        this.workflowCwd = canonicalPath(this.runtime.cwd);
-        this.unsubscribeWorkflow = this.eventBus.on(BACKGROUND_WORKFLOW_CHANNEL, (payload) => {
-            if (this.disposed) return;
-            const route = { sessionId: this.workflowSessionId, cwd: this.workflowCwd };
-            const event = parseWorkflowBackgroundEvent(payload, route);
-            if (!event) return;
-            const next = reduceWorkflowEvent(this.workflowState, event, route);
-            if (next === this.workflowState) return;
-            this.workflowState = next;
-            this.scheduleRefresh();
-        });
+        this.workflows.bind(session.sessionId, canonicalPath(this.runtime.cwd));
+        this.unsubscribeSession?.();
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
-        this.gitBranch = readGitBranch(this.runtime.cwd);
+        this.gitBranch = this.readGitBranch(this.runtime.cwd);
 
         const existingUI = session.extensionRunner.getUIContext?.() ?? {};
         await session.bindExtensions({
@@ -298,13 +260,13 @@ export class PuiController {
             uiContext: {
                 ...existingUI,
                 confirm: (title, message, options) =>
-                    this.requestExtensionDialog({ kind: "confirm", title, message }, options).then(Boolean),
+                    this.extensionDialogs.request({ kind: "confirm", title, message }, options).then(Boolean),
                 select: (title, options, dialogOptions) =>
-                    this.requestExtensionDialog({ kind: "select", title, options }, dialogOptions) as Promise<
+                    this.extensionDialogs.request({ kind: "select", title, options }, dialogOptions) as Promise<
                         string | undefined
                     >,
                 input: (title, placeholder, options) =>
-                    this.requestExtensionDialog({ kind: "input", title, placeholder }, options) as Promise<
+                    this.extensionDialogs.request({ kind: "input", title, placeholder }, options) as Promise<
                         string | undefined
                     >,
                 notify: (message, type) => this.notify(message, type),
@@ -346,21 +308,7 @@ export class PuiController {
             case "agent_settled":
                 this.toolExecutions = this.reconcileToolExecutionState(true);
                 break;
-            case "compaction_start":
-            case "compaction_end":
-            case "auto_retry_start":
-            case "auto_retry_end":
-            case "agent_start":
-            case "session_info_changed":
-            case "thinking_level_changed":
-            case "queue_update":
-            case "message_start":
-            case "message_update":
-            case "message_end":
-            case "entry_appended":
-            case "agent_end":
-            case "turn_start":
-            case "turn_end":
+            default:
                 break;
         }
         if (COALESCED_SESSION_EVENTS.has(event.type)) {
@@ -391,7 +339,7 @@ export class PuiController {
         const context = session.getContextUsage();
         const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
         this.toolExecutions = this.reconcileToolExecutionState();
-        const workflows = [...this.workflowState.runs.values()];
+        const workflows = this.workflows.runs();
         const display = buildDisplayItems(session.messages, streamingMessage, {
             toolExecutions: this.toolExecutions,
             workflows,
@@ -436,76 +384,14 @@ export class PuiController {
             activeTools,
             backgroundSubagents: [...this.backgroundState.jobs.values()],
             workflows,
-            extensionDialog: this.extensionDialogs[0]?.dialog,
-            toasts: [...this.toasts],
+            extensionDialog: this.extensionDialogs.current(),
+            toasts: this.toasts.list(),
             exitRequested: this.exitRequested,
         };
     }
 
-    private requestExtensionDialog(
-        value:
-            | Omit<Extract<ExtensionDialog, { kind: "confirm" }>, "id">
-            | Omit<Extract<ExtensionDialog, { kind: "select" }>, "id">
-            | Omit<Extract<ExtensionDialog, { kind: "input" }>, "id">,
-        options?: ExtensionUIDialogOptions,
-    ): Promise<boolean | string | undefined> {
-        if (
-            this.disposed ||
-            options?.signal?.aborted ||
-            this.extensionDialogs.length >= 32 ||
-            value.title.length > 512 ||
-            // A 64 KiB workflow script plus approval headers must remain inspectable byte-for-byte.
-            (value.kind === "confirm" && value.message.length > 72 * 1024) ||
-            (value.kind === "input" && (value.placeholder?.length ?? 0) > 1024) ||
-            (value.kind === "select" &&
-                (value.options.length > 100 || value.options.some((option) => option.length > 4096)))
-        )
-            return Promise.resolve(undefined);
-        return new Promise((resolve) => {
-            const dialog = { ...value, id: ++this.extensionDialogId } as ExtensionDialog;
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const abort = () => this.resolveExtensionDialog(dialog.id, undefined);
-            const cleanup = () => {
-                if (timer) clearTimeout(timer);
-                options?.signal?.removeEventListener("abort", abort);
-            };
-            this.extensionDialogs.push({ dialog, resolve, cleanup });
-            options?.signal?.addEventListener("abort", abort, { once: true });
-            if (options?.timeout !== undefined) timer = setTimeout(abort, Math.max(0, options.timeout));
-            this.refresh();
-        });
-    }
-
     resolveExtensionDialog(id: number, value: boolean | string | undefined): boolean {
-        const index = this.extensionDialogs.findIndex((request) => request.dialog.id === id);
-        if (index < 0) return false;
-        const [request] = this.extensionDialogs.splice(index, 1);
-        if (!request) return false;
-        request.cleanup();
-        const resolved =
-            request.dialog.kind === "confirm"
-                ? typeof value === "boolean"
-                    ? value
-                    : undefined
-                : request.dialog.kind === "select"
-                  ? typeof value === "string" && request.dialog.options.includes(value)
-                      ? value
-                      : undefined
-                  : typeof value === "string"
-                    ? value
-                    : undefined;
-        request.resolve(resolved);
-        this.refresh();
-        return true;
-    }
-
-    private dismissExtensionDialogs(): void {
-        const pending = this.extensionDialogs.splice(0);
-        for (const request of pending) {
-            request.cleanup();
-            request.resolve(undefined);
-        }
-        this.refresh();
+        return this.extensionDialogs.resolve(id, value);
     }
 
     private scheduleRefresh(): void {
@@ -516,7 +402,8 @@ export class PuiController {
         }, 16);
     }
 
-    private refresh(): void {
+    /** Rebuild the snapshot immediately and notify subscribers. */
+    refresh(): void {
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
             this.refreshTimer = undefined;
@@ -527,20 +414,15 @@ export class PuiController {
     }
 
     notify(message: string, type: ToastMessage["type"] = "info"): void {
-        const toast = { id: ++this.toastId, message, type };
-        this.toasts = [...this.toasts.slice(-2), toast];
-        this.refresh();
-
-        const timer = setTimeout(() => {
-            this.toastTimers.delete(timer);
-            this.toasts = this.toasts.filter((candidate) => candidate.id !== toast.id);
-            this.refresh();
-        }, 5_000);
-        this.toastTimers.add(timer);
+        this.toasts.push(message, type);
     }
 
     private setupAutocompleteProvider(): void {
-        const localCommands = LOCAL_SLASH_COMMANDS.map((command) => ({ ...command }));
+        const localCommands: SlashCommand[] = LOCAL_COMMANDS.filter((command) => !command.hidden).map((command) => ({
+            name: command.name,
+            description: command.description,
+            ...(command.argumentHint && { argumentHint: command.argumentHint }),
+        }));
         const modelCommand = localCommands.find((command) => command.name === "model");
         if (modelCommand) {
             modelCommand.getArgumentCompletions = async (prefix) => {
@@ -640,54 +522,9 @@ export class PuiController {
         const [command = "", ...firstArgs] = firstLine.split(/\s+/);
         const args = [...firstArgs, ...rest].join(" ").trim();
 
-        switch (command) {
-            case "/model":
-            case "/models":
-                if (args) {
-                    void this.selectModelBySpec(args);
-                    return "sent";
-                }
-                return "models";
-            case "/resume":
-            case "/sessions":
-                return "sessions";
-            case "/commands":
-            case "/palette":
-                return "commands";
-            case "/subagents":
-                return "subagents";
-            case "/workflows":
-                return "workflows";
-            case "/help":
-            case "/hotkeys":
-                return "help";
-            case "/new":
-            case "/clear":
-                void this.newSession();
-                return "sent";
-            case "/compact":
-                void this.compact(args || undefined);
-                return "sent";
-            case "/name":
-                if (!args) this.notify("Usage: /name <session name>", "warning");
-                else this.session.setSessionName(args);
-                return "sent";
-            case "/reload":
-                void this.reload();
-                return "sent";
-            case "/thinking":
-                this.cycleThinking();
-                return "sent";
-            case "/session":
-                this.notify(
-                    `${this.session.sessionName ?? this.session.sessionId.slice(0, 8)} · ${formatCount(this.session.getContextUsage()?.tokens)} context tokens`,
-                );
-                return "sent";
-            case "/quit":
-            case "/exit":
-            case "/q":
-                this.requestExit();
-                return "sent";
+        if (command.startsWith("/")) {
+            const local = findLocalCommand(command.slice(1));
+            if (local) return local.run(this, args);
         }
 
         if (trimmed.startsWith("!")) {
@@ -859,7 +696,7 @@ export class PuiController {
     cancelBackgroundSubagent(id: string): boolean {
         const job = this.backgroundState.jobs.get(id);
         const instanceId = this.backgroundState.instanceId;
-        if (!job || !instanceId || isTerminalBackgroundStatus(job.status)) return false;
+        if (!job || !instanceId || isTerminalSubagentStatus(job.status)) return false;
         this.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
             schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
             version: 1,
@@ -871,109 +708,14 @@ export class PuiController {
         return true;
     }
 
-    listWorkflows(): readonly WorkflowRunSummaryV1[] {
-        return [...this.workflowState.runs.values()];
-    }
-
     inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
-        return this.workflowState.runs.get(runId);
+        return this.workflows.inspect(runId);
     }
 
-    async controlWorkflowAsync(
-        runId: string,
-        action: WorkflowControlAction,
-        agentId?: string,
-    ): Promise<string | undefined> {
-        const run = this.workflowState.runs.get(runId),
-            instanceId = this.workflowState.instanceId;
-        if (!run || !instanceId) throw new Error("Workflow control is unavailable.");
-        if (action === "restart-agent" && !run.agents.some((agent) => agent.id === agentId))
-            throw new Error("Workflow agent is unavailable.");
-        const requestId = crypto.randomUUID();
-        return new Promise((resolve, reject) => {
-            let timer: ReturnType<typeof setTimeout>;
-            const cleanup = () => {
-                clearTimeout(timer);
-                unsubscribe();
-                this.pendingWorkflowControls.delete(cancel);
-            };
-            const cancel = (error: Error) => {
-                cleanup();
-                reject(error);
-            };
-            this.pendingWorkflowControls.add(cancel);
-            const unsubscribe = this.eventBus.on(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, (payload) => {
-                const result = parseWorkflowControlResult(payload, {
-                    sessionId: this.workflowSessionId,
-                    instanceId,
-                    cwd: this.workflowCwd,
-                });
-                if (!result || result.requestId !== requestId) return;
-                cleanup();
-                result.ok ? resolve(result.linkedRunId) : reject(new Error(result.error ?? "Workflow control failed."));
-            });
-            timer = setTimeout(() => cancel(new Error("Workflow control request timed out.")), 5_000);
-            const control = parseWorkflowControl(
-                {
-                    schema: BACKGROUND_WORKFLOW_CONTROL_SCHEMA,
-                    version: 1,
-                    sessionId: this.workflowSessionId,
-                    instanceId,
-                    cwd: this.workflowCwd,
-                    requestId,
-                    runId,
-                    action,
-                    ...(agentId === undefined ? {} : { agentId }),
-                },
-                { sessionId: this.workflowSessionId, instanceId, cwd: this.workflowCwd },
-            );
-            if (!control) return cancel(new Error("Invalid workflow control request."));
-            this.eventBus.emit(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, control);
-        });
+    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): Promise<string | undefined> {
+        return this.workflows.control(runId, action, agentId);
     }
 
-    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): boolean {
-        const run = this.workflowState.runs.get(runId);
-        const available =
-            !!this.workflowState.instanceId &&
-            !!run &&
-            (action !== "restart-agent" || run.agents.some((agent) => agent.id === agentId));
-        if (available)
-            void this.controlWorkflowAsync(runId, action, agentId).catch((error: unknown) =>
-                this.notify(error instanceof Error ? error.message : String(error), "error"),
-            );
-        return available;
-    }
-    pauseWorkflow(runId: string) {
-        return this.controlWorkflow(runId, "pause");
-    }
-    resumeWorkflow(runId: string) {
-        return this.controlWorkflow(runId, "resume");
-    }
-    stopWorkflow(runId: string) {
-        return this.controlWorkflow(runId, "stop");
-    }
-    restartWorkflowAgent(runId: string, agentId: string) {
-        return this.controlWorkflow(runId, "restart-agent", agentId);
-    }
-    retryWorkflow(runId: string) {
-        return this.controlWorkflow(runId, "retry");
-    }
-    pauseWorkflowAsync(runId: string) {
-        return this.controlWorkflowAsync(runId, "pause");
-    }
-    resumeWorkflowAsync(runId: string) {
-        return this.controlWorkflowAsync(runId, "resume");
-    }
-    stopWorkflowAsync(runId: string) {
-        return this.controlWorkflowAsync(runId, "stop");
-    }
-    restartWorkflowAgentAsync(runId: string, agentId: string) {
-        return this.controlWorkflowAsync(runId, "restart-agent", agentId);
-    }
-    retryWorkflowAsync(runId: string) {
-        return this.controlWorkflowAsync(runId, "retry");
-    }
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -994,22 +736,18 @@ export class PuiController {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
-        this.dismissExtensionDialogs();
-        for (const reject of this.pendingWorkflowControls) reject(new Error("Controller disposed."));
-        this.pendingWorkflowControls.clear();
+        this.extensionDialogs.close();
+        this.workflows.dispose();
         this.unsubscribeSession?.();
         this.unsubscribeBackground();
-        this.unsubscribeWorkflow?.();
         this.eventBus.clear();
         this.backgroundState = { jobs: new Map() };
-        this.workflowState = { runs: new Map() };
         this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);
         this.refreshTimer = undefined;
-        for (const timer of this.toastTimers) clearTimeout(timer);
-        this.toastTimers.clear();
+        this.toasts.dispose();
         await this.runtime.dispose();
         this.listeners.clear();
     }

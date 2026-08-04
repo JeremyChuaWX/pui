@@ -1,10 +1,14 @@
+import {
+    BACKGROUND_SUBAGENT_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+    BACKGROUND_SUBAGENT_SCHEMA,
+} from "../extensions/subagent/background-protocol.js";
 import type { SubagentViewModel } from "./subagent.js";
 import { normalizeSubagentDetails } from "./subagent.js";
 
-export const BACKGROUND_SUBAGENT_CHANNEL = "pui.subagent.background" as const;
-export const BACKGROUND_SUBAGENT_CONTROL_CHANNEL = "pui.subagent.background.control" as const;
-export const BACKGROUND_SUBAGENT_CONTROL_SCHEMA = "pi.subagent.background.control" as const;
-const SCHEMA = "pi.subagent.background";
+export { BACKGROUND_SUBAGENT_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_SCHEMA };
+
 const MAX_ID = 256;
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;
@@ -14,7 +18,7 @@ export interface BackgroundSubagentViewModel extends SubagentViewModel {
     title: string;
 }
 
-export type BackgroundSubagentEvent =
+type BackgroundSubagentEvent =
     | { type: "ready" | "reset"; sessionId: string; instanceId: string }
     | { type: "upsert" | "remove"; sessionId: string; instanceId: string; job: BackgroundSubagentViewModel };
 
@@ -32,7 +36,7 @@ function bounded(value: string, max: number): string {
 
 /** Parse the extension wire format without trusting or importing extension runtime code. */
 export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagentEvent | undefined {
-    if (!record(value) || value.schema !== SCHEMA || value.version !== 1) return undefined;
+    if (!record(value) || value.schema !== BACKGROUND_SUBAGENT_SCHEMA || value.version !== 1) return undefined;
     if (!identity(value.sessionId) || !identity(value.instanceId)) return undefined;
     if (value.type === "ready" || value.type === "reset") {
         if (value.job !== undefined) return undefined;

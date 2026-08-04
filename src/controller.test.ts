@@ -74,12 +74,16 @@ interface FakeSessionState {
     isStreaming: boolean;
 }
 
-function createController(messages: AgentMessage[]): {
+async function createController(
+    messages: AgentMessage[],
+    eventBus?: ReturnType<typeof createEventBus>,
+): Promise<{
     controller: PuiController;
     state: FakeSessionState;
     emit: (event: AgentSessionEvent) => void;
-} {
+}> {
     const state: FakeSessionState = { messages, pending: new Set(), isStreaming: true };
+    let listener: ((event: AgentSessionEvent) => void) | undefined;
     const session = {
         get messages() {
             return state.messages;
@@ -105,6 +109,17 @@ function createController(messages: AgentMessage[]): {
         isCompacting: false,
         getSteeringMessages: () => [],
         getFollowUpMessages: () => [],
+        bindExtensions: async () => {},
+        subscribe: (next: (event: AgentSessionEvent) => void) => {
+            listener = next;
+            return () => {
+                listener = undefined;
+            };
+        },
+        extensionRunner: { getRegisteredCommands: () => [] },
+        promptTemplates: [],
+        settingsManager: { getEnableSkillCommands: () => false },
+        resourceLoader: { getSkills: () => ({ skills: [] }) },
     };
     const runtime = {
         cwd: process.cwd(),
@@ -112,12 +127,12 @@ function createController(messages: AgentMessage[]): {
         setRebindSession: () => {},
         dispose: async () => {},
     } as unknown as AgentSessionRuntime;
-    const Controller = PuiController as unknown as new (runtime: AgentSessionRuntime) => PuiController;
-    const controller = new Controller(runtime);
+    const controller = new PuiController(runtime, eventBus ? { eventBus } : {});
+    await controller.bindSession(runtime.session);
     const emit = (event: AgentSessionEvent) => {
         if (event.type === "tool_execution_start") state.pending.add(event.toolCallId);
         if (event.type === "tool_execution_end") state.pending.delete(event.toolCallId);
-        (controller as unknown as { handleEvent: (next: AgentSessionEvent) => void }).handleEvent(event);
+        listener?.(event);
     };
     return { controller, state, emit };
 }
@@ -125,14 +140,7 @@ function createController(messages: AgentMessage[]): {
 describe("PuiController background event bridge", () => {
     test("coalesces current-instance updates and clears the bus on disposal", async () => {
         const bus = createEventBus();
-        const { controller: base } = createController([]);
-        await base.dispose();
-        const runtime = (base as any).runtime as AgentSessionRuntime;
-        const Controller = PuiController as unknown as new (
-            runtime: AgentSessionRuntime,
-            eventBus: ReturnType<typeof createEventBus>,
-        ) => PuiController;
-        const controller = new Controller(runtime, bus);
+        const { controller } = await createController([], bus);
         let notifications = 0;
         controller.subscribe(() => notifications++);
         const envelope = (type: string, status = "running") => ({
@@ -182,7 +190,11 @@ describe("PuiController assistant reference text", () => {
             { type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
             { type: "text", text: "Second\n\n" },
         ];
-        const { controller } = createController([assistantText("Older"), mixed, assistantCalls(["latest-tool-only"])]);
+        const { controller } = await createController([
+            assistantText("Older"),
+            mixed,
+            assistantCalls(["latest-tool-only"]),
+        ]);
 
         expect(controller.getLastAssistantText()).toBe("First\nSecond");
         await controller.dispose();
@@ -192,7 +204,10 @@ describe("PuiController assistant reference text", () => {
 describe("PuiController tool event path", () => {
     test("transports partial subagent snapshots and preserves a running sibling", async () => {
         const ids = ["slow", "fast"];
-        const { controller, state, emit } = createController([assistantText("Stable context"), assistantCalls(ids)]);
+        const { controller, state, emit } = await createController([
+            assistantText("Stable context"),
+            assistantCalls(ids),
+        ]);
 
         for (const id of ids) {
             const args = { agent: "explore", prompt: `Inspect ${id}`, cwd: process.cwd() };
@@ -334,7 +349,7 @@ describe("PuiController tool event path", () => {
             stopReason: "toolUse",
             timestamp: 1,
         } as AgentMessage;
-        const { controller, emit } = createController([call]);
+        const { controller, emit } = await createController([call]);
         emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } });
         emit({
             type: "tool_execution_update",

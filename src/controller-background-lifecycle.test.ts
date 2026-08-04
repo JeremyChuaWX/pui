@@ -10,7 +10,6 @@ import {
     createAgentSessionRuntime,
     createAgentSessionServices,
     createEventBus,
-    type EventBusController,
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "../extensions/subagent/index.js";
@@ -34,10 +33,6 @@ function isAlive(pid: number): boolean {
     } catch {
         return false;
     }
-}
-
-function refresh(controller: PuiController): void {
-    (controller as unknown as { refresh(): void }).refresh();
 }
 
 async function createHarness(temp: string) {
@@ -84,17 +79,9 @@ async function createHarness(temp: string) {
         agentDir,
         sessionManager: SessionManager.create(cwd, path.join(temp, "runtime-sessions")),
     });
-    const Controller = PuiController as unknown as new (
-        runtime: AgentSessionRuntime,
-        eventBus: EventBusController,
-    ) => PuiController;
-    const controller = new Controller(runtime, bus);
-    runtime.setRebindSession(async (session) =>
-        (controller as unknown as { bindSession(session: typeof runtime.session): Promise<void> }).bindSession(session),
-    );
-    await (controller as unknown as { bindSession(session: typeof runtime.session): Promise<void> }).bindSession(
-        runtime.session,
-    );
+    const controller = new PuiController(runtime, { eventBus: bus });
+    runtime.setRebindSession(async (session) => controller.bindSession(session));
+    await controller.bindSession(runtime.session);
     return { bus, controller, cwd, lifecycleEvents, pidPaths, runtime };
 }
 
@@ -130,13 +117,13 @@ describe("controller background runtime lifecycle", () => {
                 const [childPid, descendantPid] = (await fs.promises.readFile(pidPath, "utf8")).split(":").map(Number);
                 expect(isAlive(childPid!)).toBe(true);
                 expect(isAlive(descendantPid!)).toBe(true);
-                refresh(controller);
+                controller.refresh();
                 expect(controller.snapshot().backgroundSubagents.map((job) => job.id)).toContain(jobId);
 
                 await transition();
                 await waitUntil(() => !isAlive(childPid!), "old child termination");
                 await waitUntil(() => !isAlive(descendantPid!), "old descendant termination");
-                refresh(controller);
+                controller.refresh();
                 expect(controller.snapshot().backgroundSubagents).toEqual([]);
                 expect(backgroundMessages(oldSession)).toEqual([]);
 
@@ -145,7 +132,7 @@ describe("controller background runtime lifecycle", () => {
                     type: "upsert",
                     job: result.details,
                 });
-                refresh(controller);
+                controller.refresh();
                 expect(controller.snapshot().backgroundSubagents).toEqual([]);
 
                 const newReady = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
@@ -157,10 +144,10 @@ describe("controller background runtime lifecycle", () => {
                     job: result.details,
                 };
                 bus.emit("pui.subagent.background", replacementEnvelope);
-                refresh(controller);
+                controller.refresh();
                 expect(controller.snapshot().backgroundSubagents.map((job) => job.id)).toEqual([jobId]);
                 bus.emit("pui.subagent.background", { ...replacementEnvelope, type: "remove" });
-                refresh(controller);
+                controller.refresh();
                 expect(controller.snapshot().backgroundSubagents).toEqual([]);
             };
 

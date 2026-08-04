@@ -4,34 +4,18 @@ import { join } from "node:path";
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 
 /** Maximum complete-output bytes retained for a single result. */
-export const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
+const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
 /** Maximum complete-output bytes retained by one session owner. */
-export const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
+const MAX_RETAINED_SESSION_BYTES = 50 * 1024 * 1024;
 
 /** A bounded tool result and, when retained successfully, its complete-output file. */
-export interface RetainedWebOutput {
+interface RetainedWebOutput {
     /** Text bounded by the requested byte and line limits. */
     text: string;
     /** Whether the complete input was omitted from `text`. */
     truncated: boolean;
     /** Session-owned path to the complete input; absent when it was not retained. */
     fullOutputPath?: string;
-}
-
-/** Retains oversized web-tool output for the lifetime of one extension session. */
-export interface WebOutputRetentionAdapter {
-    /**
-     * Bounds `fullText` to `limits` and retains the complete text when truncation and quotas require and permit it.
-     *
-     * @returns The bounded result, including a complete-output path only when retention succeeded.
-     */
-    retain(fullText: string, limits: { maxBytes: number; maxLines: number }): Promise<RetainedWebOutput>;
-    /**
-     * Stops accepting retained output and removes all files owned by this adapter.
-     *
-     * @returns `true` when no owned directories remain. A `false` result may be retried by calling `cleanup` again.
-     */
-    cleanup(): Promise<boolean>;
 }
 
 /** Injectable filesystem operations used to create and remove private retained-output files. */
@@ -46,8 +30,6 @@ export interface WebOutputRetentionFileSystem {
 export interface WebOutputRetentionDependencies {
     /** Filesystem implementation; defaults to Node's filesystem promises API. */
     fileSystem?: WebOutputRetentionFileSystem;
-    /** Returns the parent directory in which private output directories are created. */
-    temporaryDirectory?: () => string;
     /** Per-result complete-output quota in UTF-8 bytes. */
     maxRetainedResultBytes?: number;
     /** Aggregate complete-output quota in UTF-8 bytes for this owner. */
@@ -76,10 +58,9 @@ function truncateUtf8(text: string, maxBytes: number): string {
     return bytes.subarray(0, end).toString("utf8");
 }
 
-/** Owns bounded previews and private complete-output files for one web-extension session. */
-export class WebOutputRetention implements WebOutputRetentionAdapter {
+/** Owns bounded previews and private complete-output files for one web-extension session at a time. */
+export class WebOutputRetention {
     private readonly fileSystem: WebOutputRetentionFileSystem;
-    private readonly temporaryDirectory: () => string;
     private readonly maxRetainedResultBytes: number;
     private readonly maxRetainedSessionBytes: number;
     private readonly directories = new Set<string>();
@@ -88,10 +69,9 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     private closed = false;
     private cleanupPromise: Promise<boolean> | undefined;
 
-    /** Creates an independent retention owner whose files live until cleanup. */
+    /** Creates a retention owner whose files live until cleanup. */
     constructor(dependencies: WebOutputRetentionDependencies = {}) {
         this.fileSystem = dependencies.fileSystem ?? defaultFileSystem;
-        this.temporaryDirectory = dependencies.temporaryDirectory ?? tmpdir;
         this.maxRetainedResultBytes = normalizedLimit(dependencies.maxRetainedResultBytes ?? MAX_RETAINED_RESULT_BYTES);
         this.maxRetainedSessionBytes = normalizedLimit(
             dependencies.maxRetainedSessionBytes ?? MAX_RETAINED_SESSION_BYTES,
@@ -99,7 +79,20 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     }
 
     /**
+     * Reopens this owner so a new session can retain results after an earlier cleanup.
+     *
+     * Directories whose removal failed stay tracked, so the next cleanup retries them.
+     */
+    startSession(): void {
+        this.closed = false;
+        this.cleanupPromise = undefined;
+    }
+
+    /**
      * Returns `fullText` unchanged when it fits; otherwise returns a bounded preview and attempts to retain the complete text.
+     *
+     * After cleanup begins and until the next `startSession`, truncated results refuse retention because
+     * the session is shutting down.
      *
      * @param fullText - Complete web-tool output to bound and, if needed, retain.
      * @param limits - Maximum UTF-8 bytes and lines allowed in the returned `text`.
@@ -178,7 +171,7 @@ export class WebOutputRetention implements WebOutputRetentionAdapter {
     private async write(output: string): Promise<WriteResult> {
         let directory: string | undefined;
         try {
-            directory = await this.fileSystem.mkdtemp(join(this.temporaryDirectory(), "pui-web-output-"));
+            directory = await this.fileSystem.mkdtemp(join(tmpdir(), "pui-web-output-"));
             this.directories.add(directory);
             if (this.closed) {
                 await this.removeDirectory(directory);

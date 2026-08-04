@@ -1,22 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { AGENTS, childArgs, type ResolvedAgentName, resolveModel } from "../extensions/subagent/presets.js";
-import { createInitialSubagentDetails } from "../extensions/subagent/protocol.js";
-import { getPiInvocation, runSubagent } from "../extensions/subagent/runner.js";
-import type { WorkflowBackend, WorkflowBackendOptions } from "../extensions/workflow/backend.js";
-import { createWorkflowBackend } from "../extensions/workflow/backend.js";
+import {
+    createDefaultWorkflowBackend,
+    HEADLESS_WORKFLOW_SESSION_PREFIX,
+} from "../extensions/workflow/agent-executor.js";
+import type { WorkflowBackend } from "../extensions/workflow/backend.js";
 import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
-import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
 import { readWorkflowFile } from "../extensions/workflow/source.js";
 
-const HEADLESS_WORKFLOW_SESSION_PREFIX = "headless-";
-const HEADLESS_WORKFLOW_SESSION_PATTERN =
-    /^headless-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+// Includes "timed_out" defensively: injected backends may report agent-style statuses.
 const TERMINAL_WORKFLOW_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
-
-export function isHeadlessWorkflowSession(sessionId: string): boolean {
-    return HEADLESS_WORKFLOW_SESSION_PATTERN.test(sessionId);
-}
 
 function compactProgressText(value: string, maximum = 200): string {
     const text = value.replace(/\s+/g, " ").trim();
@@ -50,45 +43,6 @@ function createProgressObserver(report: (message: string) => void): (run: Workfl
             terminalStatus = run.status;
             report(run.status === "succeeded" ? "completed" : run.status);
         }
-    };
-}
-
-export function createWorkflowAgentExecutor(
-    environment: NodeJS.ProcessEnv = process.env,
-): WorkflowBackendOptions["agentExecutor"] {
-    return async (request) => {
-        if (!Object.hasOwn(AGENTS, request.role))
-            throw new Error(`Agent role is not allowed by host policy: ${request.role}`);
-        const role = request.role as ResolvedAgentName;
-        const preset = AGENTS[role];
-        const model = resolveModel(preset, request.model, environment);
-        const prompt = request.schema
-            ? `${request.prompt}\n\nReturn only JSON matching this schema:\n${JSON.stringify(request.schema)}`
-            : request.prompt;
-        const invocation = getPiInvocation(childArgs(preset, model, prompt));
-        const result = await runSubagent({
-            details: createInitialSubagentDetails({
-                id: crypto.randomUUID(),
-                agent: role,
-                model: model ?? "default",
-                cwd: request.cwd,
-            }),
-            command: invocation.command,
-            args: invocation.args,
-            cwd: request.cwd,
-            timeoutMs: request.timeoutMs,
-            signal: request.signal,
-        });
-        if (result.details.run.status !== "succeeded")
-            throw new Error(result.details.run.error ?? `Child Pi ${result.details.run.status}.`);
-        let value: unknown = result.output;
-        if (request.schema)
-            try {
-                value = JSON.parse(result.output);
-            } catch {
-                throw new Error("Child Pi returned invalid structured JSON.");
-            }
-        return { value, usage: result.details.run.usage };
     };
 }
 
@@ -136,20 +90,7 @@ export async function runHeadlessWorkflow(options: HeadlessWorkflowOptions): Pro
     const cwd = await fs.promises.realpath(options.cwd ?? process.cwd());
     const source = await readWorkflowFile(cwd, options.path);
     report(`starting ${source.name}`);
-    const environment = options.environment ?? process.env;
-    const backend =
-        options.backend ??
-        createWorkflowBackend({
-            agentExecutor: createWorkflowAgentExecutor(environment),
-            cooperativeExecutor: true,
-            environment,
-            storage: new WorkflowRunStorage(),
-            policy: {
-                roles: ["generic", "worker", "explore"],
-                resolveModel: (role, requested) =>
-                    resolveModel(AGENTS[role as ResolvedAgentName], requested, environment),
-            },
-        });
+    const backend = options.backend ?? createDefaultWorkflowBackend(options.environment ?? process.env);
     let runId: string | undefined;
     let unsubscribe: (() => void) | undefined;
     try {

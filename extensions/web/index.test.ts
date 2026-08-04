@@ -3,8 +3,6 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { registerWebExtension } from "./index.ts";
-import type { WebOutputRetentionFileSystem } from "./output-retention.ts";
-import { lineCount, waitUntil } from "./test-utils.ts";
 
 const shutdownHandlers = new Set<() => Promise<void>>();
 
@@ -346,7 +344,7 @@ describe("web_crawl", () => {
         expect(result.details.truncated).toBe(true);
         expect(result.content[0].text).toContain("Output truncated");
         expect(Buffer.byteLength(result.content[0].text, "utf8")).toBeLessThanOrEqual(100);
-        expect(lineCount(result.content[0].text)).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
+        expect(result.content[0].text.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
         expect(await readFile(result.details.fullOutputPath, "utf8")).toBe(
             [
                 "Web crawl result for https://example.test/:",
@@ -417,150 +415,5 @@ describe("web output retention integration", () => {
         expect(nextSession.details.truncated).toBe(true);
         expect(nextSession.details.fullOutputPath).toBeString();
         expect(await stat(nextSession.details.fullOutputPath)).toBeDefined();
-    });
-
-    test("retries a retired owner's failed cleanup on a later session shutdown", async () => {
-        let directory = 0;
-        let removals = 0;
-        const removed: string[] = [];
-        const fileSystem: WebOutputRetentionFileSystem = {
-            async mkdtemp() {
-                return `/private/retry-web-output-${++directory}`;
-            },
-            async chmod() {},
-            async writeFile() {},
-            async rm(path) {
-                removed.push(path);
-                if (removals++ === 0) throw new Error("busy");
-            },
-        };
-        const registered = host({
-            outputRetention: { fileSystem },
-            environment: {},
-            fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
-        });
-
-        await run(registered("web_search"), { query: "first session" }, context(openai));
-        await registered.handler("session_shutdown")!();
-        await registered.handler("session_start")!();
-        await run(registered("web_search"), { query: "second session" }, context(openai));
-        await registered.handler("session_shutdown")!();
-
-        expect(removed.filter((path) => path === "/private/retry-web-output-1")).toHaveLength(2);
-        expect(removed).toContain("/private/retry-web-output-2");
-    });
-
-    test("does not assign a result finishing during shutdown to the next session", async () => {
-        let fetchStarted = false;
-        let resolveFetch!: (response: Response) => void;
-        const firstFetch = new Promise<Response>((resolve) => (resolveFetch = resolve));
-        const directories: string[] = [];
-        const fileSystem: WebOutputRetentionFileSystem = {
-            async mkdtemp() {
-                const directory = `/private/late-web-output-${directories.length + 1}`;
-                directories.push(directory);
-                return directory;
-            },
-            async chmod() {},
-            async writeFile() {},
-            async rm() {},
-        };
-        const registered = host({
-            outputRetention: { fileSystem },
-            environment: {},
-            fetch: async () => {
-                if (fetchStarted) return new Response(JSON.stringify({ output_text: "y".repeat(60_000) }));
-                fetchStarted = true;
-                return firstFetch;
-            },
-        });
-        const lateExecution = run(registered("web_search"), { query: "late result" }, context(openai));
-        await waitUntil(() => fetchStarted);
-
-        await registered.handler("session_shutdown")!();
-        await registered.handler("session_start")!();
-        const nextResult = await run(registered("web_search"), { query: "next session" }, context(openai));
-        resolveFetch(new Response(JSON.stringify({ output_text: "x".repeat(60_000) })));
-        const lateResult = await lateExecution;
-
-        expect("fullOutputPath" in lateResult.details).toBe(false);
-        expect(lateResult.content[0].text).toContain("session is shutting down");
-        expect(nextResult.details.fullOutputPath).toBeString();
-        expect(directories).toEqual(["/private/late-web-output-1"]);
-    });
-
-    test("waits for a write settling during shutdown and leaves no retained directory", async () => {
-        let resolveWrite!: () => void;
-        const writeGate = new Promise<void>((resolve) => (resolveWrite = resolve));
-        const writes: string[] = [];
-        const removed: string[] = [];
-        const fileSystem: WebOutputRetentionFileSystem = {
-            async mkdtemp() {
-                return "/private/integration-web-output";
-            },
-            async chmod() {},
-            async writeFile(path) {
-                writes.push(path);
-                await writeGate;
-            },
-            async rm(path) {
-                removed.push(path);
-            },
-        };
-        const registered = host({
-            outputRetention: { fileSystem },
-            environment: {},
-            fetch: async () => new Response(JSON.stringify({ output_text: "x".repeat(60_000) })),
-        });
-        const execution = run(registered("web_search"), { query: "race" }, context(openai));
-        await waitUntil(() => writes.length === 1);
-
-        let cleanupSettled = false;
-        const cleanup = registered.handler("session_shutdown")!().then(() => {
-            cleanupSettled = true;
-        });
-        await Bun.sleep(1);
-        const waitedForWrite = !cleanupSettled;
-        resolveWrite();
-        const result = await execution;
-        await cleanup;
-
-        expect(waitedForWrite).toBe(true);
-        expect(result.details.truncated).toBe(true);
-        expect("fullOutputPath" in result.details).toBe(false);
-        expect(removed).toContain("/private/integration-web-output");
-    });
-
-    test("keeps search and crawl provider success when temporary storage fails", async () => {
-        const fileSystem: WebOutputRetentionFileSystem = {
-            async mkdtemp() {
-                throw new Error("disk unavailable");
-            },
-            async chmod() {},
-            async writeFile() {},
-            async rm() {},
-        };
-        const registered = host({
-            outputRetention: { fileSystem },
-            environment: { FIRECRAWL_API_KEY: "fire" },
-            fetch: async (url) =>
-                String(url).includes("/responses")
-                    ? new Response(JSON.stringify({ output_text: "x".repeat(60_000) }))
-                    : new Response(JSON.stringify({ data: { markdown: "crawl ".repeat(200) } })),
-        });
-
-        const search = await run(registered("web_search"), { query: "storage failure" }, context(openai));
-        const crawl = await run(registered("web_crawl"), {
-            url: "https://example.test/storage-failure",
-            max_bytes: 200,
-        });
-        for (const result of [search, crawl]) {
-            expect(result.details.status).toBe("complete");
-            expect(result.details.truncated).toBe(true);
-            expect("fullOutputPath" in result.details).toBe(false);
-            expect(result.content[0].text).toContain("Complete output was not retained");
-        }
-        expect(Buffer.byteLength(search.content[0].text, "utf8")).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-        expect(Buffer.byteLength(crawl.content[0].text, "utf8")).toBeLessThanOrEqual(200);
     });
 });

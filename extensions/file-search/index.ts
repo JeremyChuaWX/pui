@@ -5,7 +5,7 @@ import { buildFdArgs, buildRgArgs, type FdArgs, type RgArgs } from "./args.js";
 import { resolveFdBinary, resolveRgBinary, type SystemBinary } from "./binaries.js";
 import { type FileSearchProcessResult, type RunFileSearchOptions, runFileSearch } from "./process.js";
 
-export interface FileSearchDetails {
+interface FileSearchDetails {
     binarySource: "system" | "managed";
     count: number;
     truncated: boolean;

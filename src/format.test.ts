@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
-    boundedWorkflowItems,
     buildDisplayItems,
     formatCount,
     formatToolTitle,
@@ -98,9 +97,7 @@ describe("pui formatting", () => {
         expect(formatToolTitle("bash", { command: "git status" })).toBe("bash  git status");
     });
 
-    test("formats workflow status and bounds thousand-agent list work", () => {
-        const agents = Array.from({ length: 1_000 }, (_, index) => index);
-        expect(boundedWorkflowItems(agents, 500)).toEqual(Array.from({ length: 50 }, (_, index) => index + 475));
+    test("formats workflow status", () => {
         expect(workflowStatusPresentation("timed_out")).toEqual({ icon: "×", label: "Timed out" });
         expect(workflowStatusTone("failed")).toBe("error");
         expect(formatWorkflowSummary(workflowRun())).toBe("◌ Review · Running · 0/1 agents · review");
@@ -232,12 +229,6 @@ describe("pui formatting", () => {
 
     test("falls back to partial details when persisted result details are undefined", () => {
         const messages = toolMessages("persisted-fallback-1", undefined, true);
-        const legacy = {
-            agent: "explore",
-            model: "test/model",
-            toolCalls: ["read README.md"],
-            usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0 },
-        };
         const item = buildDisplayItems(messages, undefined, {
             toolExecutions: new Map([
                 [
@@ -249,7 +240,7 @@ describe("pui formatting", () => {
                         status: "ended",
                         startedAt: 10,
                         updatedAt: 30,
-                        partialResult: { details: legacy },
+                        partialResult: { details: subagentDetails("persisted-fallback-1", "running") },
                         finalResult: { content: [{ type: "text", text: "delegated output" }] },
                         isError: true,
                     },
@@ -262,7 +253,7 @@ describe("pui formatting", () => {
                 kind: "tool",
                 running: false,
                 isError: true,
-                subagent: expect.objectContaining({ source: "legacy", status: "failed" }),
+                subagent: expect.objectContaining({ id: "persisted-fallback-1", status: "running" }),
             }),
         );
     });
@@ -300,7 +291,7 @@ describe("pui formatting", () => {
         );
     });
 
-    test("adapts legacy sessions and falls back for unknown protocol versions", () => {
+    test("keeps pre-protocol details and unknown protocol versions generic", () => {
         const legacy = {
             agent: "explore",
             model: "test/model",
@@ -308,9 +299,8 @@ describe("pui formatting", () => {
             usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0 },
         };
         const legacyItem = buildDisplayItems(toolMessages("legacy-1", legacy, false))[0];
-        expect(legacyItem).toEqual(
-            expect.objectContaining({ kind: "tool", subagent: expect.objectContaining({ source: "legacy" }) }),
-        );
+        expect(legacyItem).toEqual(expect.objectContaining({ kind: "tool", result: "delegated output" }));
+        expect(legacyItem && "subagent" in legacyItem ? legacyItem.subagent : undefined).toBeUndefined();
 
         const unknownItem = buildDisplayItems(
             toolMessages("future-1", { ...subagentDetails("future-1", "succeeded"), version: 2 }, false),

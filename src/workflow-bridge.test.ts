@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseWorkflowBackgroundEvent, reduceWorkflowEvent, type WorkflowState } from "./workflow.js";
+import { parseBackgroundWorkflowEvent } from "../extensions/workflow/background-protocol.js";
+import { reduceWorkflowEvent, type WorkflowState } from "./workflow-bridge.js";
 
 const route = { sessionId: "session-1", cwd: "/canonical/repo" };
 function payload(type: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -34,18 +35,18 @@ function run(): Record<string, unknown> {
     };
 }
 function parse(value: unknown) {
-    const event = parseWorkflowBackgroundEvent(value, route);
+    const event = parseBackgroundWorkflowEvent(value, route);
     if (!event) throw new Error("expected event");
     return event;
 }
 
 describe("workflow host protocol", () => {
     test("unknown protocol versions remain generic-fallback-friendly", () => {
-        expect(parseWorkflowBackgroundEvent(payload("ready", { version: 2 }), route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(payload("ready", { version: 2 }), route)).toBeUndefined();
         expect(
-            parseWorkflowBackgroundEvent(payload("upsert", { run: { ...run(), version: 2 } }), route),
+            parseBackgroundWorkflowEvent(payload("upsert", { run: { ...run(), version: 2 } }), route),
         ).toBeUndefined();
-        expect(parseWorkflowBackgroundEvent(null, route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(null, route)).toBeUndefined();
     });
 
     test("immutably reduces ready, upsert, remove, and reset", () => {
@@ -81,11 +82,11 @@ describe("workflow host protocol", () => {
     test("returns the same state for stale routes and instances", () => {
         const ready = reduceWorkflowEvent({ runs: new Map() }, parse(payload("ready")), route);
         expect(reduceWorkflowEvent(ready, parse(payload("upsert", { instanceId: "old" })), route)).toBe(ready);
-        const staleSession = parseWorkflowBackgroundEvent(
+        const staleSession = parseBackgroundWorkflowEvent(
             payload("upsert", { sessionId: "old", run: { ...run(), sessionId: "old" } }),
         );
         expect(reduceWorkflowEvent(ready, staleSession!, route)).toBe(ready);
-        const staleCwd = parseWorkflowBackgroundEvent(
+        const staleCwd = parseBackgroundWorkflowEvent(
             payload("upsert", { cwd: "/other", run: { ...run(), cwd: "/other" } }),
         );
         expect(reduceWorkflowEvent(ready, staleCwd!, route)).toBe(ready);

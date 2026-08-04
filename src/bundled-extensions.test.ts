@@ -7,6 +7,7 @@ import {
     createAgentSessionFromServices,
     createAgentSessionRuntime,
     createAgentSessionServices,
+    createEventBus,
     DefaultResourceLoader,
     SessionManager,
     SettingsManager,
@@ -14,7 +15,7 @@ import {
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { resolveFdBinary } from "../extensions/file-search/binaries.js";
 import { BUNDLED_EXTENSION_FACTORIES, BUNDLED_SUBAGENT_SOURCE_PATH } from "./bundled-extensions.js";
-import { createPuiRuntime } from "./controller.js";
+import { createPuiRuntimeFactory } from "./controller.js";
 
 const bundledTools = {
     "<inline:pui-file-search>": ["fd", "rg"],
@@ -67,7 +68,7 @@ describe("bundled extensions", () => {
             fs.promises.mkdir(sessionDir, { recursive: true }),
         ]);
 
-        const runtime = await createAgentSessionRuntime(createPuiRuntime, {
+        const runtime = await createAgentSessionRuntime(createPuiRuntimeFactory(createEventBus()), {
             cwd: initialCwd,
             agentDir,
             sessionManager: SessionManager.inMemory(initialCwd),

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
-import { lineCount, waitUntil } from "./test-utils.ts";
+import { waitUntil } from "./test-utils.ts";
 
 const stores: WebOutputRetention[] = [];
 
@@ -95,7 +95,7 @@ describe("WebOutputRetention", () => {
         const result = await retention.retain("content\n".repeat(100), { maxBytes: 10_000, maxLines: 5 });
 
         expect(result.text).toContain("\n\n[Output truncated");
-        expect(lineCount(result.text)).toBeLessThanOrEqual(5);
+        expect(result.text.split("\n")).toHaveLength(5);
     });
 
     test("keeps tiny results bounded and carries a retained path in details", async () => {
@@ -105,7 +105,7 @@ describe("WebOutputRetention", () => {
         expect(result.truncated).toBe(true);
         expect(result.fullOutputPath).toEndWith("result.md");
         expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(12);
-        expect(lineCount(result.text)).toBeLessThanOrEqual(1);
+        expect(result.text).not.toContain("\n");
     });
 
     test("never splits UTF-8 while truncating a notice containing a multibyte path", async () => {
@@ -234,6 +234,40 @@ describe("WebOutputRetention", () => {
         expect(calls.mkdtemp).toHaveLength(1);
         removeGate.resolve();
         await cleanup;
+    });
+
+    test("startSession reopens a cleaned-up owner for new retained results", async () => {
+        const { calls, fileSystem } = fakeFileSystem();
+        const retention = store({ fileSystem });
+        await retention.retain("first session ".repeat(40), { maxBytes: 200, maxLines: 10 });
+        await expect(retention.cleanup()).resolves.toBe(true);
+
+        retention.startSession();
+        const reopened = await retention.retain("second session ".repeat(40), { maxBytes: 200, maxLines: 10 });
+
+        expect(reopened.fullOutputPath).toBeString();
+        expect(calls.mkdtemp).toHaveLength(2);
+        expect(calls.rm).toEqual(["/private/web-output-1"]);
+    });
+
+    test("startSession keeps directories whose removal failed so the next cleanup retries them", async () => {
+        let removals = 0;
+        const { calls, fileSystem } = fakeFileSystem({
+            async rm(path) {
+                calls.rm.push(path);
+                if (removals++ === 0) throw new Error("busy");
+            },
+        });
+        const retention = store({ fileSystem });
+        await retention.retain("first session ".repeat(40), { maxBytes: 200, maxLines: 10 });
+        await expect(retention.cleanup()).resolves.toBe(false);
+
+        retention.startSession();
+        await retention.retain("second session ".repeat(40), { maxBytes: 200, maxLines: 10 });
+        await expect(retention.cleanup()).resolves.toBe(true);
+
+        expect(calls.rm.filter((path) => path === "/private/web-output-1")).toHaveLength(2);
+        expect(calls.rm).toContain("/private/web-output-2");
     });
 
     test("retries directories whose removal failed during cleanup", async () => {
