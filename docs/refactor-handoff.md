@@ -57,13 +57,13 @@ Remaining:
 - Check whether upstream `pi-coding-agent`'s `OutputAccumulator` could replace all of it (it isn't
   exported from the package index today — worth asking upstream).
 
-### 2. Test hygiene (was item 6)
+### 2. Test hygiene (was item 6; polling helpers done)
 
-- Eight copy-pasted `waitFor`/`waitUntil` polling helpers across workflow/src tests (plus
-  `web/test-utils.ts`'s `waitUntil`). One `extensions/test-support/` module; also home for one
-  typed fake `ExtensionAPI` replacing the three hand-rolled `pi: any` fakes
-  (`web/index.test.ts`, `file-search/index.test.ts`, `subagent/index.test.ts`,
-  `workflow/index.test.ts`).
+- Done: one `extensions/test-support/wait.ts` `waitFor` replaced the nine polling-helper copies
+  (worktree.test.ts keeps its env-tunable matcher; the compiled smoke harness keeps a local copy).
+- `extensions/test-support/` is also the natural home for one typed fake `ExtensionAPI` replacing
+  the three hand-rolled `pi: any` fakes (`web/index.test.ts`, `file-search/index.test.ts`,
+  `subagent/index.test.ts`, `workflow/index.test.ts`).
 - `subagent/index.test.ts` (~630 lines) re-tests deferral/cancellation/semaphore scenarios already
   covered by `background-manager.test.ts` — now that `run-job.ts` exists, trim index tests to
   tool-registration + lifecycle wiring and test the pipeline directly.
