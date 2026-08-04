@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { waitFor } from "../test-support/wait.js";
 import { workflowApprovalKey } from "./approval.js";
 import type { WorkflowBackend } from "./backend.js";
 import { registerWorkflowExtension } from "./index.js";
@@ -97,14 +98,6 @@ function fixture(dependencies: { backend?: Partial<WorkflowBackend>; [key: strin
 
 const workflowFile = (body = "return args;") =>
     `export default async function workflow(_context: unknown, args: unknown) { ${body} }`;
-
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        if (Date.now() >= deadline) throw new Error("Timed out waiting for workflow extension event.");
-        await Bun.sleep(5);
-    }
-}
 
 describe("workflow extension", () => {
     test("injects authoring documentation only for workflow-writing requests", () => {

@@ -2,18 +2,12 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitFor as waitUntil } from "../test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
-const waitUntil = async (predicate: () => boolean) => {
-    for (let i = 0; i < 500; i++) {
-        if (predicate()) return;
-        await Bun.sleep(2);
-    }
-    throw new Error("timeout");
-};
 function controlled(limit = 1) {
     const semaphore = new AbortableSemaphore(limit);
     const gates: Array<() => void> = [];

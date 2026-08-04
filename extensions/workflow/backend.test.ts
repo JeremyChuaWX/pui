@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { waitFor } from "../test-support/wait.js";
 import type { WorkflowBackendOptions } from "./backend.js";
 import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
 import { parseWorkflowRunV1 } from "./protocol.js";
@@ -14,14 +15,6 @@ const createWorkflowBackend = (options: WorkflowBackendOptions) =>
 beforeAll(async () => {
     await resolveWorkflowNode();
 });
-
-async function waitFor(predicate: () => boolean, timeout = 5_000) {
-    const end = Date.now() + timeout;
-    while (!predicate()) {
-        if (Date.now() > end) throw new Error("timeout");
-        await Bun.sleep(10);
-    }
-}
 
 describe("workflow backend", () => {
     test("preflight rejects ambient authority and dynamic code", () => {

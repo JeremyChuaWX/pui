@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { waitFor as waitUntil } from "../test-support/wait.js";
 import {
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
@@ -102,14 +103,6 @@ function execute(
 function argumentAfter(args: string[], flag: string): string | undefined {
     const index = args.indexOf(flag);
     return index < 0 ? undefined : args[index + 1];
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        if (Date.now() >= deadline) throw new Error("Timed out waiting for test condition");
-        await Bun.sleep(2);
-    }
 }
 
 describe("subagent extension integration", () => {

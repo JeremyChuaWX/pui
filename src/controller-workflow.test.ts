@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
+import { waitFor } from "../extensions/test-support/wait.js";
 import { PuiController } from "./controller.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 };
@@ -33,14 +34,6 @@ function run(sessionId: string, cwd: string, id = "run-1") {
         updatedAt: 1,
     };
 }
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        if (Date.now() >= deadline) throw new Error("Timed out waiting for condition");
-        await Bun.sleep(5);
-    }
-}
-
 const envelope = (sessionId: string, cwd: string, type: string, extra: object = {}) => ({
     schema: "pi.workflow.background",
     version: 1,

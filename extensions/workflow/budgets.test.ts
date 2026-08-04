@@ -1,14 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { waitFor } from "../test-support/wait.js";
 import { type AgentExecutor, createWorkflowBackend, type WorkflowBackend } from "./backend.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
-
-async function waitFor(predicate: () => boolean, timeout = 2_000) {
-    const end = Date.now() + timeout;
-    while (!predicate()) {
-        if (Date.now() > end) throw new Error("timeout");
-        await Bun.sleep(5);
-    }
-}
 
 const launch = (backend: WorkflowBackend, script: string, limits: Record<string, number> = {}) =>
     backend.launch({ name: "budgets", script, sessionId: "test", cwd: process.cwd(), limits });

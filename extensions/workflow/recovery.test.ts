@@ -2,17 +2,10 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { waitFor } from "../test-support/wait.js";
 import { createWorkflowBackend } from "./backend.js";
 import { parseWorkflowRunV1 } from "./protocol.js";
 import { WorkflowRunStorage } from "./run-storage.js";
-
-async function waitFor(predicate: () => boolean, timeout = 5_000) {
-    const end = Date.now() + timeout;
-    while (!predicate()) {
-        if (Date.now() > end) throw new Error("timeout");
-        await Bun.sleep(10);
-    }
-}
 
 const increment = (counts: Map<string, number>, prompt: string) => counts.set(prompt, (counts.get(prompt) ?? 0) + 1);
 

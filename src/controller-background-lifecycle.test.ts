@@ -14,17 +14,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "../extensions/subagent/index.js";
 import { AbortableSemaphore } from "../extensions/subagent/semaphore.js";
+import { waitFor } from "../extensions/test-support/wait.js";
 import { PuiController } from "./controller.js";
 
 const fixtureChild = fileURLToPath(new URL("../extensions/subagent/fixtures/fake-child.mjs", import.meta.url));
 
-async function waitUntil(predicate: () => boolean, description: string): Promise<void> {
-    const deadline = Date.now() + 10_000;
-    while (!predicate()) {
-        if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-        await Bun.sleep(5);
-    }
-}
+const waitUntil = (predicate: () => boolean, description: string) =>
+    waitFor(predicate, 10_000, `Timed out waiting for ${description}`);
 
 function isAlive(pid: number): boolean {
     try {
