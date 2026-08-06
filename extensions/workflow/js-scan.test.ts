@@ -84,4 +84,11 @@ describe("maskLiterals", () => {
         const script = "x = /a\\/b[/]c/i; y";
         expect(maskLiterals(script)).toBe(`x = ${" ".repeat(11)}; y`);
     });
+
+    test("a quote inside a regex literal does not open string mode and over-mask code", () => {
+        const script = `x = /'/ ;\nconst s = process.env.HOME;`;
+        const masked = maskLiterals(script, { preserveTemplateInterpolations: true });
+        expect(masked).toBe(`x = ${" ".repeat(3)} ;\nconst s = process.env.HOME;`);
+        expect(maskLiterals(script)).toContain("process.env.HOME");
+    });
 });

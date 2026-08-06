@@ -102,14 +102,15 @@ function result(binary: SystemBinary, execution: FileSearchProcessResult) {
                     : { nonRetentionReason: "the file-search retention quota was unavailable" }),
             });
         let notice = noticeFor(0, 0);
+        const tooFewLines = DEFAULT_MAX_LINES < 3;
         for (let attempt = 0; attempt < 3; attempt++) {
-            if (Buffer.byteLength(notice, "utf8") > DEFAULT_MAX_BYTES || DEFAULT_MAX_LINES < 3) {
+            if (tooFewLines || Buffer.byteLength(notice, "utf8") > DEFAULT_MAX_BYTES) {
                 text = truncateUtf8(notice, DEFAULT_MAX_BYTES).content;
                 break;
             }
             const visible = truncateHead(execution.output, {
-                maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8") - 2,
-                maxLines: DEFAULT_MAX_LINES - 2,
+                maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8") - 2),
+                maxLines: Math.max(1, DEFAULT_MAX_LINES - 2),
             });
             const next = noticeFor(visible.outputBytes, visible.outputLines);
             if (next === notice) {

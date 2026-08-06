@@ -235,6 +235,12 @@ export class BackgroundSubagentManager {
         }
     }
 
+    /** Reopens the manager so a later session can spawn jobs after an earlier shutdown. */
+    startSession(): void {
+        this.shuttingDown = false;
+        if (this.outputStore instanceof RetainedOutputStore) this.outputStore.startSession();
+    }
+
     async shutdown(timeoutMs = 3_000): Promise<void> {
         if (this.shuttingDown) return;
         this.shuttingDown = true;

@@ -244,6 +244,8 @@ describe("BackgroundSubagentManager", () => {
         const spawned = await manager.spawn({ prompt: "copy boundary", cwd }, cwd);
         const [result] = await manager.wait([spawned.id]);
         expect(result?.id).toBe(spawned.id);
+        expect(result?.status).toBe("succeeded");
+        expect(result?.text).toBe("done");
         expect(manager.check(spawned.id).run.model).toBe(model);
         expect(manager.list()[0]?.run.model).toBe(model);
         await manager.shutdown();

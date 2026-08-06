@@ -656,6 +656,9 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                             },
                             execute: async (signal) => {
                                 let result: AgentResult | undefined;
+                                // Every attempt reuses the worktree created in `setup`, so for
+                                // isolation "worktree" agents retries are resume-style: they start
+                                // from whatever state the failed attempt left, not a clean branch.
                                 for (let attempt = 0; attempt <= request.retries; attempt++)
                                     try {
                                         result = await options.agentExecutor({

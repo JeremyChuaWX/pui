@@ -76,15 +76,43 @@ export async function exclusiveWrite(file: string, text: string): Promise<boolea
     }
 }
 
+/** Open for reading without following a symlink at the path's final component. */
+function openNoFollow(file: string): Promise<fs.promises.FileHandle> {
+    return fs.promises.open(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+}
+
+/** Read at most `maximum` bytes through an already-validated handle; undefined means oversized. */
+async function readBoundedHandle(handle: fs.promises.FileHandle, maximum: number): Promise<string | undefined> {
+    const buffer = Buffer.alloc(maximum + 1);
+    let total = 0;
+    for (;;) {
+        const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+        if (total > maximum) return undefined;
+    }
+    return buffer.toString("utf8", 0, total);
+}
+
 /** Read a JSON artifact, rejecting symlinks, non-files, and oversized content. */
 export async function readBoundedJson<T = unknown>(file: string, maximum: number): Promise<T> {
-    const stat = await fs.promises.lstat(file);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > maximum)
-        throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
+    // Validate and read through one handle so a concurrent path swap cannot bypass the checks.
+    const handle = await openNoFollow(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ELOOP") throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
+        throw error;
+    });
     try {
-        return JSON.parse(await fs.promises.readFile(file, "utf8"));
-    } catch {
-        throw new Error(`Corrupt workflow artifact: ${file}`);
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.size > maximum) throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
+        const text = await readBoundedHandle(handle, maximum);
+        if (text === undefined) throw new Error(`Unsafe or oversized workflow artifact: ${file}`);
+        try {
+            return JSON.parse(text);
+        } catch {
+            throw new Error(`Corrupt workflow artifact: ${file}`);
+        }
+    } finally {
+        await handle.close();
     }
 }
 
@@ -120,22 +148,31 @@ export interface DirectoryLockOptions {
 
 async function readLockOwner(lockDirectory: string, label: string): Promise<DirectoryLockOwner | undefined> {
     const file = path.join(lockDirectory, "owner.json");
-    const stat = await fs.promises.lstat(file).catch((error: NodeJS.ErrnoException) => {
+    // Validate and read through one handle so a concurrent path swap cannot bypass the checks.
+    const handle = await openNoFollow(file).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return undefined;
+        if (error.code === "ELOOP") throw new Error(`Unsafe ${label} owner: ${file}`);
         throw error;
     });
-    if (!stat) return undefined;
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4_096) throw new Error(`Unsafe ${label} owner: ${file}`);
+    if (!handle) return undefined;
     try {
-        const owner = JSON.parse(await fs.promises.readFile(file, "utf8"));
-        return typeof owner?.token === "string" &&
-            Number.isInteger(owner.pid) &&
-            owner.pid > 0 &&
-            typeof owner.host === "string"
-            ? owner
-            : undefined;
-    } catch {
-        return undefined;
+        const stat = await handle.stat();
+        if (!stat.isFile() || stat.size > 4_096) throw new Error(`Unsafe ${label} owner: ${file}`);
+        const text = await readBoundedHandle(handle, 4_096);
+        if (text === undefined) throw new Error(`Unsafe ${label} owner: ${file}`);
+        try {
+            const owner = JSON.parse(text);
+            return typeof owner?.token === "string" &&
+                Number.isInteger(owner.pid) &&
+                owner.pid > 0 &&
+                typeof owner.host === "string"
+                ? owner
+                : undefined;
+        } catch {
+            return undefined;
+        }
+    } finally {
+        await handle.close();
     }
 }
 

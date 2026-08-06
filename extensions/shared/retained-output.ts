@@ -47,7 +47,15 @@ export function truncateUtf8Tail(text: string, maxBytes: number): Utf8Truncation
 
 /** Append text while retaining at most maxBytes of the newest complete code points. */
 export function appendBoundedUtf8(current: string, addition: string, maxBytes: number): string {
-    return truncateUtf8Tail(current + addition, maxBytes).content;
+    const cap = normalizedLimit(maxBytes);
+    const additionBytes = Buffer.byteLength(addition, "utf8");
+    if (additionBytes >= cap) return truncateUtf8Tail(addition, cap).content;
+    if (Buffer.byteLength(current, "utf8") + additionBytes <= cap) return current + addition;
+    // Trim whole code points from the head of current instead of rescanning the retained text.
+    const buffer = Buffer.from(current, "utf8");
+    let start = buffer.length - (cap - additionBytes);
+    while (start < buffer.length && ((buffer[start] ?? 0) & 0b1100_0000) === 0b1000_0000) start += 1;
+    return buffer.toString("utf8", start) + addition;
 }
 
 export interface TruncationNoticeOptions {
@@ -66,11 +74,22 @@ export function formatTruncationNotice(options: TruncationNoticeOptions): string
         options.outputLines === undefined || options.totalLines === undefined
             ? ""
             : `, ${options.outputLines} of ${options.totalLines} lines`;
-    const retention = options.retainedPath
-        ? ` Complete output retained at: ${JSON.stringify(options.retainedPath)}.`
-        : ` Complete output was not retained: ${options.nonRetentionReason ?? "retention was unavailable"}.`;
-    const notice = `[Output truncated: ${options.outputBytes} of ${options.totalBytes} bytes${lines}.${retention}]`;
-    return options.maxBytes === undefined ? notice : truncateUtf8(notice, options.maxBytes).content;
+    const frame = options.retainedPath
+        ? `[Output truncated: ${options.outputBytes} of ${options.totalBytes} bytes${lines}. Complete output retained at: .]`
+        : `[Output truncated: ${options.outputBytes} of ${options.totalBytes} bytes${lines}. Complete output was not retained: .]`;
+    const detail = options.retainedPath
+        ? JSON.stringify(options.retainedPath)
+        : (options.nonRetentionReason ?? "retention was unavailable");
+    const notice = `${frame.slice(0, -2)}${detail}.]`;
+    if (options.maxBytes === undefined) return notice;
+    const cap = normalizedLimit(options.maxBytes);
+    if (Buffer.byteLength(notice, "utf8") <= cap) return notice;
+    // Bound only the variable detail so the retained path's tail and the closing "]" survive.
+    const budget = Math.max(0, cap - Buffer.byteLength(frame, "utf8"));
+    const bounded = options.retainedPath
+        ? `"${truncateUtf8Tail(options.retainedPath, Math.max(0, budget - 2)).content}"`
+        : truncateUtf8(detail, budget).content;
+    return `${frame.slice(0, -2)}${bounded}.]`;
 }
 
 /** Injectable filesystem operations used to create and remove private retained-output files. */

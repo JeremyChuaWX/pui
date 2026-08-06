@@ -299,6 +299,7 @@ export async function runDurableOperation<T>(op: DurableOperation<T>): Promise<u
                 reject(new Error(op.timeoutMessage));
             }, op.timeoutMs);
         });
+        let outcome: { failed: false; value: unknown } | { failed: true; error: unknown };
         try {
             await op.setup?.();
             const operation = Promise.resolve(op.execute(signal));
@@ -311,16 +312,28 @@ export async function runDurableOperation<T>(op: DurableOperation<T>): Promise<u
             await op.journal?.(value, op.now());
             op.run.completions.set(op.operationId, structuredClone(value));
             op.onSuccess?.(value);
-            return value;
+            outcome = { failed: false, value };
+        } catch (error) {
+            outcome = { failed: true, error };
         } finally {
             if (timer) clearTimeout(timer);
-            await op.cleanup?.();
         }
+        try {
+            await op.cleanup?.();
+        } catch (cleanupError) {
+            // Cleanup failures must never replace the operation's own outcome.
+            if (!outcome.failed) outcome = { failed: true, error: cleanupError };
+        }
+        if (outcome.failed) throw outcome.error;
+        return outcome.value;
     } catch (error) {
         failure = { error };
         throw error;
     } finally {
-        op.onSettled?.(failure);
-        release();
+        try {
+            op.onSettled?.(failure);
+        } finally {
+            release();
+        }
     }
 }

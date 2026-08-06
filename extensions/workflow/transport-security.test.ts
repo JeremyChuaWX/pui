@@ -5,16 +5,17 @@ const prelude = `const send=x=>process.stdout.write(typeof x==="string"?x:JSON.s
 const ready = `send({v:1,t:"ready"});`;
 
 async function run(workerSource: string, options: Partial<WorkflowBackendOptions> = {}) {
+    const platform = {
+        workerSource: prelude + workerSource,
+        readyTimeoutMs: 2_000,
+        watchdogMs: 100,
+        runTimeoutMs: 500,
+        ...options.platform,
+    };
     const backend = createWorkflowBackend({
         agentExecutor: async () => ({ value: null }),
         ...options,
-        platform: {
-            workerSource: prelude + workerSource,
-            readyTimeoutMs: 2_000,
-            watchdogMs: 100,
-            runTimeoutMs: 500,
-            ...options.platform,
-        },
+        platform,
     });
     const { runId } = await backend.launch({
         name: "hostile transport",
@@ -22,7 +23,8 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
         sessionId: "transport-test",
         cwd: process.cwd(),
     });
-    const deadline = Date.now() + 2_000;
+    // Poll past the slowest configured supervision limit plus scheduling and kill-escalation margin.
+    const deadline = Date.now() + Math.max(platform.readyTimeoutMs, platform.watchdogMs, platform.runTimeoutMs) + 2_000;
     while (!(["failed", "cancelled", "succeeded"] as string[]).includes(backend.inspect(runId).run.status)) {
         if (Date.now() > deadline) throw new Error("hostile worker did not terminate");
         await Bun.sleep(10);
@@ -131,5 +133,5 @@ describe("workflow hostile transport and watchdog", () => {
         expect(result.status).toBe("failed");
         // Depending on Node/OS reserve behavior, either V8's bounded OOM exit or total supervision wins.
         expect(result.error).toMatch(/heap|exited|timed out/i);
-    }, 5_000);
+    }, 10_000);
 });

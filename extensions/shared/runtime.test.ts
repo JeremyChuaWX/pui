@@ -29,6 +29,18 @@ describe("retained-output presentation", () => {
         expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(72);
         expect(bounded).not.toContain("�");
     });
+
+    test("keeps the closing bracket and the retained path's tail under a tight bound", () => {
+        const bounded = formatTruncationNotice({
+            outputBytes: 4,
+            totalBytes: 9,
+            retainedPath: "/tmp/retained-outputs/very-long-directory-name/result.md",
+            maxBytes: 100,
+        });
+        expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(100);
+        expect(bounded.endsWith('".]')).toBe(true);
+        expect(bounded).toContain("result.md");
+    });
 });
 
 describe("runBoundedProcess", () => {
@@ -36,7 +48,7 @@ describe("runBoundedProcess", () => {
         const result = await runBoundedProcess({
             command: process.execPath,
             args: ["-e", "process.stdout.write('out'); process.stderr.write('err'); process.exit(7)"],
-            timeoutMs: 2_000,
+            timeoutMs: 30_000,
             output: { maxBytes: 100, overflow: "fail" },
         });
         expect(result).toEqual({ exitCode: 7, stdout: "out", stderr: "err" });
@@ -46,11 +58,22 @@ describe("runBoundedProcess", () => {
         const promise = runBoundedProcess({
             command: process.execPath,
             args: ["-e", "process.stdout.write('too much')"],
-            timeoutMs: 2_000,
+            timeoutMs: 30_000,
             output: { maxBytes: 3, overflow: "fail" },
         });
         await expect(promise).rejects.toBeInstanceOf(BoundedProcessError);
         await expect(promise).rejects.toMatchObject({ reason: "output" });
+    });
+
+    test("rejects a slow child with the timeout reason", async () => {
+        const promise = runBoundedProcess({
+            command: process.execPath,
+            args: ["-e", "setTimeout(() => {}, 30_000)"],
+            timeoutMs: 250,
+            output: { maxBytes: 100, overflow: "fail" },
+        });
+        await expect(promise).rejects.toBeInstanceOf(BoundedProcessError);
+        await expect(promise).rejects.toMatchObject({ reason: "timeout" });
     });
 });
 

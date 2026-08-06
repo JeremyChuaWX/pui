@@ -7,6 +7,8 @@ export const BACKGROUND_SUBAGENT_SCHEMA = "pi.subagent.background" as const;
 export const BACKGROUND_SUBAGENT_CONTROL_SCHEMA = "pi.subagent.background.control" as const;
 export const BACKGROUND_SUBAGENT_VERSION = 1 as const;
 const MAX_CONTROL_ID = 256;
+const MAX_JOB_TITLE = 4_096;
+const MAX_JOB_PROMPT = 64 * 1024;
 
 export interface BackgroundSubagentJobV1 {
     id: string;
@@ -56,7 +58,8 @@ export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagent
         job.id.length > MAX_CONTROL_ID ||
         typeof job.title !== "string" ||
         job.title.length === 0 ||
-        (job.prompt !== undefined && typeof job.prompt !== "string") ||
+        job.title.length > MAX_JOB_TITLE ||
+        (job.prompt !== undefined && (typeof job.prompt !== "string" || job.prompt.length > MAX_JOB_PROMPT)) ||
         !isSubagentDetailsV1({ schema: "pi.subagent", version: 1, run: job.run }) ||
         (job.run as SubagentRunV1).id !== job.id
     )

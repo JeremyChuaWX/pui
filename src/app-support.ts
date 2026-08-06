@@ -69,7 +69,7 @@ export function extractEditedPrompt(text: string): string {
     const normalized = text.replace(/\r\n/g, "\n");
     const lines = normalized.split("\n");
     const markerIndex = lines.findIndex((line) => line.trimEnd() === REFERENCE_MARKER);
-    if (markerIndex === -1) return text.replace(/\n$/, "");
+    if (markerIndex === -1) return normalized.replace(/\n$/, "");
 
     let start = markerIndex + 1;
     if ((lines[start] ?? "").trimEnd() === REFERENCE_INSTRUCTION) start += 1;

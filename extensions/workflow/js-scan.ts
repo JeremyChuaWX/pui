@@ -43,6 +43,9 @@ export function skipRegexLiteral(script: string, index: number): number {
     return index;
 }
 
+/** Sticky matcher reading an identifier run in place, avoiding a per-token suffix copy. */
+const IDENTIFIER_RUN = /[\w$]*/y;
+
 /** Blank out `output[start..end]` with spaces while preserving line breaks. */
 function maskRange(output: string[], start: number, end: number): void {
     for (let index = start; index <= end && index < output.length; index++)
@@ -73,7 +76,8 @@ export class CodeScanState {
     step(script: string, index: number): number {
         const character = script[index];
         if (/[A-Za-z_$]/.test(character)) {
-            const end = /^[\w$]*/.exec(script.slice(index + 1))?.[0].length ?? 0;
+            IDENTIFIER_RUN.lastIndex = index + 1;
+            const end = IDENTIFIER_RUN.exec(script)?.[0].length ?? 0;
             this.previousWord = script.slice(index, index + end + 1);
             if (this.previousWord === "function" || this.previousWord === "class") {
                 const prefix = script.slice(0, index).trimEnd(),
@@ -124,12 +128,16 @@ export class CodeScanState {
     }
 }
 
-/** Mask comments and string/template text while leaving `${...}` interpolation code executable. */
+/**
+ * Mask comments, string/template text, and regex literals while keeping `${...}` interpolation
+ * code scannable. Interpolation braces are blanked, so the output is scannable but not executable.
+ */
 function maskCommentsAndStrings(source: string): string {
     const output = [...source];
     let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code",
         escaped = false;
     const templates: number[] = [];
+    const state = new CodeScanState();
     for (let i = 0; i < source.length; i++) {
         const c = source[i],
             next = source[i + 1];
@@ -137,14 +145,28 @@ function maskCommentsAndStrings(source: string): string {
             if (c === "'" || c === '"' || c === "`") {
                 mode = c === "'" ? "single" : c === '"' ? "double" : "template";
                 output[i] = " ";
+                state.resetWord();
                 continue;
             } else if (c === "/" && next === "/") mode = "line";
             else if (c === "/" && next === "*") mode = "block";
-            else if (templates.length && c === "{") templates[templates.length - 1]++;
-            else if (templates.length && c === "}" && --templates[templates.length - 1] === 0) {
+            else if (c === "/" && regexLiteralStartsAt(source, i, state.previousWord, state.followsControlCondition)) {
+                // Consume the regex literal whole so a quote inside it cannot open string mode.
+                const start = i;
+                i = skipRegexLiteral(source, i);
+                maskRange(output, start, i);
+                state.resetWord();
+                continue;
+            } else if (templates.length && c === "{") {
+                templates[templates.length - 1]++;
+                state.resetWord();
+            } else if (templates.length && c === "}" && --templates[templates.length - 1] === 0) {
                 templates.pop();
                 mode = "template";
-            } else continue;
+                state.resetWord();
+            } else {
+                i = state.step(source, i);
+                continue;
+            }
         } else if (mode === "template" && c === "$" && next === "{" && !escaped) {
             output[i] = output[i + 1] = " ";
             templates.push(1);
@@ -168,7 +190,6 @@ function maskCommentsAndStrings(source: string): string {
         }
         output[i] = c === "\n" || c === "\r" ? c : " ";
         escaped = c === "\\" && !escaped;
-        if (c !== "\\") escaped = false;
     }
     return output.join("");
 }

@@ -1,16 +1,38 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { truncateUtf8, truncateUtf8Tail } from "./retained-output.js";
 
 /**
- * Signal a child's whole process group when possible, falling back to the direct child if group
- * signaling races with exit. Never throws.
+ * Signal a child's whole process group when possible (taskkill /T on Windows, where signals cannot
+ * reach descendants), falling back to the direct child if tree termination races with exit. Never
+ * throws.
  */
 export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
-    if (process.platform !== "win32" && child.pid) {
-        try {
-            process.kill(-child.pid, signal);
-            return;
-        } catch {
-            // Fall back to signaling just the direct child.
+    if (child.pid) {
+        if (process.platform === "win32") {
+            try {
+                const sweeper = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+                    stdio: "ignore",
+                    windowsHide: true,
+                });
+                sweeper.once("error", () => {
+                    try {
+                        child.kill(signal);
+                    } catch {
+                        // The child may have exited between the checks.
+                    }
+                });
+                sweeper.unref();
+                return;
+            } catch {
+                // Fall back to signaling just the direct child.
+            }
+        } else {
+            try {
+                process.kill(-child.pid, signal);
+                return;
+            } catch {
+                // Fall back to signaling just the direct child.
+            }
         }
     }
     try {
@@ -114,13 +136,13 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
             if (terminationReason === "output") return;
             const { maxBytes, overflow } = request.output;
             if (overflow === "keep-tail") {
-                if (stream === "stdout") stdout = `${stdout}${chunk}`.slice(-maxBytes);
-                else stderr = `${stderr}${chunk}`.slice(-maxBytes);
+                if (stream === "stdout") stdout = truncateUtf8Tail(`${stdout}${chunk}`, maxBytes).content;
+                else stderr = truncateUtf8Tail(`${stderr}${chunk}`, maxBytes).content;
                 return;
             }
             if (overflow === "keep-head") {
-                if (stream === "stdout") stdout = `${stdout}${chunk}`.slice(0, maxBytes);
-                else stderr = `${stderr}${chunk}`.slice(0, maxBytes);
+                if (stream === "stdout") stdout = truncateUtf8(`${stdout}${chunk}`, maxBytes).content;
+                else stderr = truncateUtf8(`${stderr}${chunk}`, maxBytes).content;
                 return;
             }
             if (stream === "stdout") stdout += chunk;

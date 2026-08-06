@@ -136,6 +136,10 @@ describe("external editor buffer", () => {
         const buffer = `reference\r\n\r\n${REFERENCE_MARKER}\r\n${REFERENCE_INSTRUCTION}\r\n\r\nnew prompt\r\n`;
         expect(extractEditedPrompt(buffer)).toBe("new prompt");
     });
+
+    test("normalizes Windows newlines in a marker-free buffer", () => {
+        expect(extractEditedPrompt("edited prompt\r\nwith detail\r\n")).toBe("edited prompt\nwith detail");
+    });
 });
 
 describe("PromptHistory", () => {

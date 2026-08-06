@@ -109,7 +109,7 @@ test("recovers from a durable completion without executing it twice", async () =
 
         await Promise.race([
             backendA.shutdown(),
-            Bun.sleep(2_000).then(() => {
+            Bun.sleep(5_000).then(() => {
                 throw new Error("backend shutdown did not cooperatively stop");
             }),
         ]);

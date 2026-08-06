@@ -104,13 +104,20 @@ export async function runSubagentJob(
     let output = "";
     let failure: unknown;
     let release: SemaphoreRelease | undefined;
+    const publish = (next: SubagentDetailsV1) => {
+        try {
+            request.publish(next);
+        } catch {
+            // Presentation failures must not affect job settlement.
+        }
+    };
 
     details = appendSubagentActivity(
         details,
         { timestamp: now(), kind: "diagnostic", title: "Queued for a child Pi process" },
         now(),
     );
-    request.publish(details);
+    publish(details);
 
     try {
         try {
@@ -127,7 +134,7 @@ export async function runSubagentJob(
             { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
             startedAt,
         );
-        request.publish(details);
+        publish(details);
 
         const child = invocation(childArgs(request.agent, request.model, request.prompt));
         const execution = await run({
@@ -139,7 +146,7 @@ export async function runSubagentJob(
             signal: request.signal,
             onSnapshot: (next) => {
                 details = next;
-                request.publish(next);
+                publish(next);
             },
         });
         details = execution.details;
@@ -154,7 +161,7 @@ export async function runSubagentJob(
                 errorMessage(error),
                 now(),
             );
-            request.publish(details);
+            publish(details);
         }
     } finally {
         release?.();
@@ -166,8 +173,15 @@ export async function runSubagentJob(
     const needsSpill =
         truncation.truncated ||
         (request.spill.spillOverBytes !== undefined && truncateUtf8(delivered, request.spill.spillOverBytes).truncated);
-    const fullOutputPath =
-        (needsSpill ? await request.spill.store.savePath(delivered) : undefined) ?? details.run.fullOutputPath;
+    let savedPath: string | undefined;
+    if (needsSpill) {
+        try {
+            savedPath = await request.spill.store.savePath(delivered);
+        } catch {
+            // Retention is best effort; the terminal snapshot must still settle.
+        }
+    }
+    const fullOutputPath = savedPath ?? details.run.fullOutputPath;
     if (fullOutputPath && fullOutputPath !== details.run.fullOutputPath) {
         details = updateSubagentDetails(details, { fullOutputPath }, now());
     }

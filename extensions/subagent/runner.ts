@@ -402,6 +402,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
     const processEvent = (eventValue: unknown) => {
         if (settled || !isJsonEvent(eventValue)) return;
+        if (!Object.hasOwn(dispatch, eventValue.type)) return;
         dispatch[eventValue.type]?.(eventValue, numberOrUndefined(eventValue.timestamp) ?? now());
     };
 

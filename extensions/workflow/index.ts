@@ -197,10 +197,15 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         lifecycle.bind(route);
         channel.bind({ ...route, instanceId });
         let recovered: Awaited<ReturnType<WorkflowRunManager["initialize"]>> | undefined;
-        await lifecycle.enqueue(async () => {
-            if (epoch.stale()) return;
-            recovered = await manager.initialize(route.cwd);
-        });
+        try {
+            await lifecycle.enqueue(async () => {
+                if (epoch.stale()) return;
+                recovered = await manager.initialize(route.cwd);
+            });
+        } catch (error) {
+            if (!epoch.stale()) ctx.ui.notify(`Could not load stored workflows: ${errorMessage(error)}`, "warning");
+            return;
+        }
         if (epoch.stale() || !recovered) return;
         channel.ready({ ...route, instanceId });
         for (const run of recovered.filter(

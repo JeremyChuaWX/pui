@@ -52,6 +52,7 @@ class FileSearchOutput implements OutputCapture {
     readonly directory: string;
     readonly path: string;
     private readonly stream: WriteStream;
+    private streamError: Error | undefined;
     private readonly head: Buffer[] = [];
     private headBytes = 0;
     private totalBytes = 0;
@@ -74,10 +75,17 @@ class FileSearchOutput implements OutputCapture {
             stream.once("open", () => resolve());
             stream.once("error", reject);
         });
-        return new FileSearchOutput(directory, path, stream);
+        const output = new FileSearchOutput(directory, path, stream);
+        // Latch mid-stream failures so write/finish surface them instead of a stale reject.
+        stream.removeAllListeners("error");
+        stream.on("error", (error: Error) => {
+            output.streamError ??= error;
+        });
+        return output;
     }
 
     async write(chunk: Buffer | string): Promise<void> {
+        if (this.streamError) throw this.streamError;
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         if (bytes.length === 0) return;
         this.totalBytes += bytes.length;
@@ -112,9 +120,9 @@ class FileSearchOutput implements OutputCapture {
         if (this.finished) throw new Error("File-search output was already finalized");
         this.finished = true;
         await new Promise<void>((resolve, reject) => {
-            this.stream.once("error", reject);
-            this.stream.end(resolve);
+            this.stream.end(() => (this.streamError ? reject(this.streamError) : resolve()));
         });
+        if (this.streamError) throw this.streamError;
         await chmod(this.path, 0o600);
 
         const head = Buffer.concat(this.head).toString("utf8");

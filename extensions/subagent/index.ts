@@ -147,7 +147,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         now,
         environment,
     } = createDefaultSubagentDependencies(dependencies);
-    const shutdownController = new AbortController();
+    let shutdownController = new AbortController();
     const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
@@ -200,6 +200,10 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         outputStore,
     });
     pi.on("session_start", (_event, ctx) => {
+        shuttingDown = false;
+        if (shutdownController.signal.aborted) shutdownController = new AbortController();
+        outputStore.startSession();
+        background.startSession();
         sessionId = ctx.sessionManager.getSessionId();
         idle = ctx.isIdle();
         channel.bind(route());

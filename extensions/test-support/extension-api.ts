@@ -58,6 +58,8 @@ export function createExtensionApiHarness() {
         {
             get(target, property, receiver) {
                 if (property in target) return Reflect.get(target, property, receiver);
+                // Runtime probes must not be mistaken for unimplemented host capabilities.
+                if (typeof property === "symbol" || property === "then") return undefined;
                 throw new Error(`Fake ExtensionAPI does not implement ${String(property)}`);
             },
         },
