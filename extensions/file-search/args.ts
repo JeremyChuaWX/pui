@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 
-export type FdFileType = "file" | "directory" | "symlink";
+type FdFileType = "file" | "directory" | "symlink";
 
 export interface FdArgs {
     pattern?: string;

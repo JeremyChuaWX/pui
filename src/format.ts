@@ -1,20 +1,18 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
-import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
-import type { DisplayItem } from "./types.js";
 import {
     MAX_WORKFLOW_ID,
     parseWorkflowRunV1,
     type WorkflowAgentStatus,
     type WorkflowRunStatus,
     type WorkflowRunSummaryV1,
-} from "./workflow.js";
+} from "../extensions/workflow/protocol.js";
+import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
+import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
+import type { DisplayItem } from "./types.js";
 
 const MAX_TOOL_TEXT = 8_000;
-export const WORKFLOW_LIST_WINDOW = 50;
 
 const WORKFLOW_STATUS_PRESENTATION: Record<WorkflowRunStatus | WorkflowAgentStatus, { icon: string; label: string }> = {
-    awaiting_approval: { icon: "?", label: "Awaiting approval" },
     queued: { icon: "·", label: "Queued" },
     running: { icon: "◌", label: "Running" },
     paused: { icon: "Ⅱ", label: "Paused" },
@@ -33,14 +31,8 @@ export function workflowStatusTone(
 ): "success" | "error" | "warning" | "muted" | "info" {
     if (status === "succeeded") return "success";
     if (status === "failed" || status === "timed_out") return "error";
-    if (status === "running" || status === "paused" || status === "awaiting_approval") return "warning";
+    if (status === "running" || status === "paused") return "warning";
     return status === "queued" || status === "cancelled" ? "muted" : "info";
-}
-
-export function boundedWorkflowItems<T>(items: readonly T[], selected = 0, count = WORKFLOW_LIST_WINDOW): T[] {
-    const size = Math.max(1, count);
-    const start = Math.max(0, Math.min(selected - Math.floor(size / 2), Math.max(0, items.length - size)));
-    return items.slice(start, start + size);
 }
 
 export function formatWorkflowSummary(run: WorkflowRunSummaryV1): string {
@@ -53,7 +45,7 @@ export function formatWorkflowSummary(run: WorkflowRunSummaryV1): string {
 
 type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
 
-export interface DisplayFormatOptions {
+interface DisplayFormatOptions {
     toolExecutions?: ToolExecutionState;
     workflows?: readonly WorkflowRunSummaryV1[];
 }
@@ -152,19 +144,10 @@ function applyWorkflowPresentation(
     item.workflowKey = `${runId}:${run.updatedAt}:${run.status}`;
 }
 
-function applySubagentPresentation(
-    item: ToolDisplayItem,
-    details: unknown,
-    args: Record<string, unknown>,
-    timestamp?: number,
-): void {
+function applySubagentPresentation(item: ToolDisplayItem, details: unknown, args: Record<string, unknown>): void {
     const subagent = normalizeSubagentDetails(details, {
         toolCallId: item.toolCallId,
         args,
-        running: item.running,
-        isError: item.isError,
-        timestamp,
-        error: item.isError ? item.result : undefined,
     });
     if (subagent) {
         item.subagent = subagent;
@@ -225,7 +208,6 @@ function buildToolDisplayItem(
     name: string,
     args: Record<string, unknown>,
     execution?: ToolExecution,
-    timestamp?: number,
     workflows: readonly WorkflowRunSummaryV1[] = [],
 ): ToolDisplayItem {
     const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
@@ -241,7 +223,7 @@ function buildToolDisplayItem(
         ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
         ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
     };
-    applySubagentPresentation(item, details, args, execution?.updatedAt ?? timestamp);
+    applySubagentPresentation(item, details, args);
     applyWorkflowPresentation(item, details, workflows);
     return item;
 }
@@ -299,7 +281,6 @@ export function buildDisplayItems(
                             part.name,
                             args,
                             executions.get(part.id),
-                            message.timestamp,
                             workflows,
                         );
                         result.push(item);
@@ -322,19 +303,14 @@ export function buildDisplayItems(
                     existing.running = false;
                     const details =
                         message.details !== undefined ? message.details : detailsById.get(message.toolCallId);
-                    applySubagentPresentation(
-                        existing,
-                        details,
-                        argsById.get(message.toolCallId) ?? {},
-                        message.timestamp,
-                    );
+                    applySubagentPresentation(existing, details, argsById.get(message.toolCallId) ?? {});
                     applyWorkflowPresentation(existing, details, workflows);
                 } else {
                     const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
                     item.result = output;
                     item.isError = message.isError;
                     item.running = false;
-                    applySubagentPresentation(item, message.details, {}, message.timestamp);
+                    applySubagentPresentation(item, message.details, {});
                     applyWorkflowPresentation(item, message.details, workflows);
                     result.push(item);
                     toolById.set(message.toolCallId, item);
@@ -374,7 +350,6 @@ export function buildDisplayItems(
             execution.name,
             execution.args,
             execution,
-            undefined,
             workflows,
         );
         result.push(item);

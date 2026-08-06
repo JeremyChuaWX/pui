@@ -1,6 +1,7 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { WebOutputRetentionAdapter } from "./output-retention.ts";
+import type { WebOutputRetention } from "./output-retention.ts";
+import { executeWebTool, nonEmptyString, type WebToolDependencies } from "./tool-shell.ts";
 
 const CRAWL_PARAMS = Type.Object({
     url: Type.String({ minLength: 1, description: "HTTP(S) URL to scrape with Firecrawl." }),
@@ -31,7 +32,6 @@ type CrawlDetails =
           requestedUrl: string;
           sourceUrl: string;
           title?: string;
-          metadata?: FirecrawlMetadata;
           maxBytes: number;
           contentBytes: number;
           truncated: boolean;
@@ -39,15 +39,6 @@ type CrawlDetails =
       };
 
 const FIRECRAWL_DEFAULT_BASE_URL = "https://api.firecrawl.dev";
-
-export type WebCrawlDependencies = {
-    fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-    environment?: Record<string, string | undefined>;
-};
-
-function nonEmptyString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
     return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -106,7 +97,7 @@ function parseFirecrawlPayload(text: string): Record<string, unknown> {
 async function scrapeWithFirecrawl(
     url: string,
     signal: AbortSignal | undefined,
-    dependencies: WebCrawlDependencies,
+    dependencies: WebToolDependencies,
 ): Promise<CrawlResult> {
     const environment = dependencies.environment ?? process.env;
     const apiKey = environment.FIRECRAWL_API_KEY?.trim();
@@ -158,8 +149,8 @@ function formatCrawlResult(result: CrawlResult): string {
 
 export default function webCrawlExtension(
     pi: ExtensionAPI,
-    dependencies: WebCrawlDependencies,
-    getOutputRetention: () => WebOutputRetentionAdapter,
+    dependencies: WebToolDependencies,
+    outputRetention: WebOutputRetention,
 ) {
     pi.registerTool<typeof CRAWL_PARAMS, CrawlDetails>({
         name: "web_crawl",
@@ -174,46 +165,36 @@ export default function webCrawlExtension(
             "web_crawl requires FIRECRAWL_API_KEY; FIRECRAWL_API_URL may configure a hosted or self-hosted API base URL.",
         ],
         parameters: CRAWL_PARAMS,
-        async execute(_toolCallId, params, signal, onUpdate) {
-            const outputRetention = getOutputRetention();
+        execute(_toolCallId, params, signal, onUpdate) {
             const maxBytes = clampMaxBytes(params.max_bytes);
-            onUpdate?.({
-                content: [{ type: "text", text: `Scraping with Firecrawl: ${params.url}` }],
-                details: { status: "scraping", url: params.url, maxBytes },
+            return executeWebTool({
+                toolName: "web_crawl",
+                cancelledMessage: "Crawl cancelled.",
+                outputRetention,
+                signal,
+                onUpdate,
+                starting: {
+                    text: `Scraping with Firecrawl: ${params.url}`,
+                    details: { status: "scraping", url: params.url, maxBytes },
+                },
+                limits: { maxBytes, maxLines: DEFAULT_MAX_LINES },
+                async run() {
+                    const requestedUrl = normalizeHttpUrl(params.url);
+                    const result = await scrapeWithFirecrawl(requestedUrl, signal, dependencies);
+                    return {
+                        fullText: formatCrawlResult(result),
+                        details: {
+                            status: "complete" as const,
+                            provider: "firecrawl" as const,
+                            requestedUrl: result.requestedUrl,
+                            sourceUrl: result.sourceUrl,
+                            title: result.title,
+                            maxBytes,
+                            contentBytes: Buffer.byteLength(result.content, "utf8"),
+                        },
+                    };
+                },
             });
-
-            try {
-                const requestedUrl = normalizeHttpUrl(params.url);
-                const result = await scrapeWithFirecrawl(requestedUrl, signal, dependencies);
-                if (signal?.aborted) throw new Error("Crawl cancelled.");
-                const fullText = formatCrawlResult(result);
-                const formatted = await outputRetention.retain(fullText, {
-                    maxBytes,
-                    maxLines: DEFAULT_MAX_LINES,
-                });
-                return {
-                    content: [{ type: "text", text: formatted.text }],
-                    details: {
-                        status: "complete",
-                        provider: "firecrawl",
-                        requestedUrl: result.requestedUrl,
-                        sourceUrl: result.sourceUrl,
-                        title: result.title,
-                        metadata: result.metadata,
-                        maxBytes,
-                        contentBytes: Buffer.byteLength(result.content, "utf8"),
-                        truncated: formatted.truncated,
-                        ...(formatted.fullOutputPath && { fullOutputPath: formatted.fullOutputPath }),
-                    },
-                };
-            } catch (error) {
-                const message = signal?.aborted
-                    ? "Crawl cancelled."
-                    : error instanceof Error
-                      ? error.message
-                      : String(error);
-                throw new Error(`web_crawl failed: ${message}`, { cause: error });
-            }
         },
     });
 }

@@ -1,7 +1,20 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createBackgroundChannel } from "../shared/background-channel.js";
+import {
+    AGENT_NAMES,
+    AGENT_SUMMARY,
+    AGENTS,
+    type ResolvedAgentName,
+    resolveModel,
+    resolveWorkingDirectory,
+    workingDirectoryCandidate,
+} from "../shared/presets.js";
+import { formatTruncationNotice, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
+import { AbortableSemaphore, configuredSubagentConcurrency } from "../shared/semaphore.js";
+import { errorMessage } from "../shared/validate.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
@@ -11,29 +24,9 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "./background-protocol.js";
-import { SessionOutputStore } from "./output-store.js";
-import {
-    AGENT_NAMES,
-    AGENT_SUMMARY,
-    AGENTS,
-    childArgs,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-    workingDirectoryCandidate,
-} from "./presets.js";
-import {
-    appendSubagentActivity,
-    createInitialSubagentDetails,
-    createTerminalSubagentDetails,
-    isTerminalSubagentStatus,
-    type SubagentDetailsV1,
-    type SubagentStatus,
-    truncateUtf8,
-    updateSubagentDetails,
-} from "./protocol.js";
+import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.js";
+import { runSubagentJob, synthesizeSubagentFailure } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import { AbortableSemaphore, configuredSubagentConcurrency, type SemaphoreRelease } from "./semaphore.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 
@@ -75,7 +68,6 @@ const processState = globalThis as typeof globalThis & {
 const PROCESS_SEMAPHORE =
     processState.__piSubagentSemaphoreV1 ?? new AbortableSemaphore(configuredSubagentConcurrency());
 if (!processState.__piSubagentSemaphoreV1) processState.__piSubagentSemaphoreV1 = PROCESS_SEMAPHORE;
-const ERROR_PREVIEW_BYTES = 8 * 1024;
 
 export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
@@ -83,6 +75,19 @@ export interface SubagentExtensionDependencies {
     invocation?: typeof getPiInvocation;
     now?: () => number;
     environment?: NodeJS.ProcessEnv;
+}
+
+/** Production collaborators, including the one process-wide concurrency owner. */
+export function createDefaultSubagentDependencies(
+    overrides: SubagentExtensionDependencies = {},
+): Required<SubagentExtensionDependencies> {
+    return {
+        semaphore: overrides.semaphore ?? PROCESS_SEMAPHORE,
+        run: overrides.run ?? runSubagent,
+        invocation: overrides.invocation ?? getPiInvocation,
+        now: overrides.now ?? Date.now,
+        environment: overrides.environment ?? process.env,
+    };
 }
 
 function lifecycleText(details: SubagentDetailsV1): string {
@@ -98,36 +103,78 @@ function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal
     return first ? AbortSignal.any([first, second]) : second;
 }
 
-function errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+function presentTruncated(
+    fullText: string,
+    limits: { maxBytes: number; maxLines: number },
+    retainedPath?: string,
+    nonRetentionReason = "complete output retention was unavailable",
+): string {
+    const totalBytes = Buffer.byteLength(fullText, "utf8");
+    const totalLines = fullText.length === 0 ? 0 : fullText.split("\n").length - (fullText.endsWith("\n") ? 1 : 0);
+    let notice = formatTruncationNotice({
+        outputBytes: 0,
+        totalBytes,
+        outputLines: 0,
+        totalLines,
+        ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
+    });
+    let preview = truncateHead(fullText, { maxBytes: 0, maxLines: 0 });
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const noticeBytes = Buffer.byteLength(notice, "utf8");
+        if (limits.maxLines < 3 || noticeBytes > limits.maxBytes) return truncateUtf8(notice, limits.maxBytes).content;
+        preview = truncateHead(fullText, {
+            maxBytes: Math.max(0, limits.maxBytes - noticeBytes - 2),
+            maxLines: limits.maxLines - 2,
+        });
+        const next = formatTruncationNotice({
+            outputBytes: preview.outputBytes,
+            totalBytes,
+            outputLines: preview.outputLines,
+            totalLines,
+            ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
+        });
+        if (next === notice) return preview.content ? `${preview.content}\n\n${notice}` : notice;
+        notice = next;
+    }
+    return truncateUtf8(notice, limits.maxBytes).content;
 }
 
-export { getPiInvocation } from "./runner.js";
-
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
-    const semaphore = dependencies.semaphore ?? PROCESS_SEMAPHORE;
-    const run = dependencies.run ?? runSubagent;
-    const resolveInvocation = dependencies.invocation ?? getPiInvocation;
-    const now = dependencies.now ?? Date.now;
-    const environment = dependencies.environment ?? process.env;
-    const shutdownController = new AbortController();
-    const outputStore = new SessionOutputStore();
+    const {
+        semaphore,
+        run,
+        invocation: resolveInvocation,
+        now,
+        environment,
+    } = createDefaultSubagentDependencies(dependencies);
+    let shutdownController = new AbortController();
+    const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
     let sessionId = "unbound";
     const instanceId = crypto.randomUUID();
     let idle = true;
-    const emitBus = (payload: object) => pi.events?.emit(BACKGROUND_SUBAGENT_CHANNEL, payload);
-    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") => {
-        emitBus({
+    let background: BackgroundSubagentManager;
+    const route = () => ({ sessionId, instanceId });
+    const channel = createBackgroundChannel({
+        events: pi.events,
+        eventChannel: BACKGROUND_SUBAGENT_CHANNEL,
+        controlChannel: BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+        parseControl: parseBackgroundSubagentControl,
+        controlRoute: (control) => ({ sessionId: control.sessionId, instanceId: control.instanceId }),
+        envelope: (type, target, extra) => ({
             schema: BACKGROUND_SUBAGENT_SCHEMA,
             version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
+            ...target,
             type,
-            job,
-        });
-    };
+            ...extra,
+        }),
+        onControl: (control) => {
+            if (!shuttingDown) void background.cancel([control.jobId]).catch(() => {});
+        },
+    });
+    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") =>
+        channel.emit(type, { job }, route());
     const deliver = (result: BackgroundTerminalResult) => {
         if (shuttingDown) return;
         const pathNote = result.fullOutputPath ? `\n\nFull output: ${result.fullOutputPath}` : "";
@@ -141,7 +188,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             { deliverAs: "followUp", triggerTurn: true },
         );
     };
-    const background = new BackgroundSubagentManager({
+    background = new BackgroundSubagentManager({
         semaphore,
         run,
         invocation: resolveInvocation,
@@ -150,26 +197,17 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         emit,
         deliver,
         isIdle: () => idle,
+        outputStore,
     });
-    let unsubscribeControl: (() => void) | undefined;
-
     pi.on("session_start", (_event, ctx) => {
+        shuttingDown = false;
+        if (shutdownController.signal.aborted) shutdownController = new AbortController();
+        outputStore.startSession();
+        background.startSession();
         sessionId = ctx.sessionManager.getSessionId();
         idle = ctx.isIdle();
-        unsubscribeControl?.();
-        unsubscribeControl = pi.events?.on(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, (payload) => {
-            const control = parseBackgroundSubagentControl(payload);
-            if (!control || shuttingDown || control.sessionId !== sessionId || control.instanceId !== instanceId)
-                return;
-            void background.cancel([control.jobId]).catch(() => {});
-        });
-        emitBus({
-            schema: BACKGROUND_SUBAGENT_SCHEMA,
-            version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
-            type: "ready",
-        });
+        channel.bind(route());
+        channel.ready();
     });
     pi.on("agent_start", () => {
         idle = false;
@@ -188,17 +226,11 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
 
     pi.on("session_shutdown", async () => {
         shuttingDown = true;
-        unsubscribeControl?.();
         shutdownController.abort();
         failedDetails.clear();
-        await background.shutdown();
-        await outputStore.cleanup();
-        emitBus({
-            schema: BACKGROUND_SUBAGENT_SCHEMA,
-            version: BACKGROUND_SUBAGENT_VERSION,
-            sessionId,
-            instanceId,
-            type: "reset",
+        await channel.shutdown(async () => {
+            await background.shutdown();
+            await outputStore.cleanup();
         });
     });
 
@@ -209,13 +241,15 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                     `[${item.id}] ${item.title} — ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
             )
             .join("\n\n");
-        const notice =
-            "\n\n[Combined wait output truncated; use the per-job full output paths above or in result details.]";
-        const truncation = truncateHead(content, {
-            maxBytes: DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8"),
-            maxLines: DEFAULT_MAX_LINES - 2,
-        });
-        return truncation.truncated ? `${truncation.content}${notice}` : content;
+        const truncation = truncateHead(content, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+        return truncation.truncated
+            ? presentTruncated(
+                  content,
+                  { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+                  undefined,
+                  "the combined wait presentation is not retained; use each job's retained path when available",
+              )
+            : content;
     };
     pi.registerTool({
         name: "subagent_spawn",
@@ -328,7 +362,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 now: now(),
             });
             const combinedSignal = combineAbortSignals(signal, shutdownController.signal);
-            let release: SemaphoreRelease | undefined;
 
             const publish = (next: SubagentDetailsV1) => {
                 details = next;
@@ -342,117 +375,60 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 }
             };
 
-            const settleSetupFailure = (status: Extract<SubagentStatus, "failed" | "cancelled">, message: string) => {
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: now(), kind: "diagnostic", title: truncateUtf8(message, 512).content, isError: true },
-                    now(),
-                );
-                publish(
-                    createTerminalSubagentDetails(
-                        details,
-                        { status, error: truncateUtf8(message, ERROR_PREVIEW_BYTES).content },
-                        now(),
-                    ),
-                );
-            };
-
+            let cwd: string;
             try {
-                let cwd: string;
-                try {
-                    cwd = await resolveWorkingDirectory(params.cwd, ctx.cwd);
-                } catch (error) {
-                    settleSetupFailure("failed", errorMessage(error));
-                    throw error;
-                }
-                details = updateSubagentDetails(details, { cwd }, now());
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: now(), kind: "diagnostic", title: "Queued for a child Pi process" },
-                    now(),
-                );
-                publish(details);
-
-                try {
-                    release = await semaphore.acquire(combinedSignal);
-                } catch (error) {
-                    settleSetupFailure("cancelled", "Subagent was cancelled while queued.");
-                    throw error;
-                }
-                if (combinedSignal.aborted) {
-                    settleSetupFailure("cancelled", "Subagent was cancelled before it started.");
-                    throw new Error("Subagent was cancelled before it started.");
-                }
-
-                const startedAt = now();
-                details = updateSubagentDetails(
-                    details,
-                    { status: "starting", phase: "spawning", startedAt },
-                    startedAt,
-                );
-                details = appendSubagentActivity(
-                    details,
-                    { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
-                    startedAt,
-                );
-                publish(details);
-
-                const invocation = resolveInvocation(childArgs(agent, model, params.prompt));
-                const execution = await run({
-                    details,
-                    command: invocation.command,
-                    args: invocation.args,
-                    cwd,
-                    timeoutMs: agent.timeoutMs,
-                    signal: combinedSignal,
-                    onSnapshot: publish,
-                });
-                details = execution.details;
-
-                if (details.run.status !== "succeeded") {
-                    if (!shuttingDown) failedDetails.set(toolCallId, details);
-                    throw new Error(details.run.error || `Subagent ${details.run.status}.`);
-                }
-
-                const visibleOutput = execution.output || "(no output)";
-                const truncation = truncateHead(visibleOutput, {
-                    maxLines: DEFAULT_MAX_LINES,
-                    maxBytes: DEFAULT_MAX_BYTES,
-                });
-                const fullOutputPath = truncation.truncated ? await outputStore.save(visibleOutput) : undefined;
-                let resultText = truncation.content;
-                if (truncation.truncated) {
-                    resultText += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}).`;
-                    if (fullOutputPath) resultText += ` Full output saved to: ${fullOutputPath}`;
-                    resultText += "]";
-                }
-                details = updateSubagentDetails(
-                    details,
-                    {
-                        outputPreview: truncateUtf8(visibleOutput, 4 * 1024).content,
-                        ...(fullOutputPath ? { fullOutputPath } : {}),
-                    },
-                    now(),
-                );
-
-                return {
-                    content: [{ type: "text", text: resultText }],
-                    details,
-                };
+                cwd = await resolveWorkingDirectory(params.cwd, ctx.cwd);
             } catch (error) {
-                if (!isTerminalSubagentStatus(details.run.status)) {
-                    const cancelled = combinedSignal.aborted;
-                    settleSetupFailure(cancelled ? "cancelled" : "failed", errorMessage(error));
-                }
+                publish(synthesizeSubagentFailure(details, "failed", errorMessage(error), now()));
                 if (!shuttingDown) failedDetails.set(toolCallId, details);
                 throw new Error(details.run.error || errorMessage(error), { cause: error });
-            } finally {
-                release?.();
             }
+            details = updateSubagentDetails(details, { cwd }, now());
+
+            const outcome = await runSubagentJob(
+                { semaphore, run, invocation: resolveInvocation, now },
+                {
+                    details,
+                    agent,
+                    model,
+                    prompt: params.prompt,
+                    cwd,
+                    signal: combinedSignal,
+                    publish,
+                    spill: { store: outputStore, maxLines: DEFAULT_MAX_LINES },
+                },
+            );
+            details = outcome.details;
+
+            if (details.run.status !== "succeeded") {
+                if (!shuttingDown) failedDetails.set(toolCallId, details);
+                throw new Error(details.run.error || `Subagent ${details.run.status}.`, {
+                    cause: outcome.failure,
+                });
+            }
+
+            const { truncation } = outcome;
+            const resultText = truncation.truncated
+                ? presentTruncated(
+                      outcome.delivered,
+                      { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+                      outcome.fullOutputPath,
+                  )
+                : truncation.content;
+            details = updateSubagentDetails(
+                details,
+                { outputPreview: truncateUtf8(outcome.delivered, 4 * 1024).content },
+                now(),
+            );
+
+            return {
+                content: [{ type: "text", text: resultText }],
+                details,
+            };
         },
     });
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-    registerSubagentExtension(pi);
+    registerSubagentExtension(pi, createDefaultSubagentDependencies());
 }

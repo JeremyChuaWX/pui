@@ -1,14 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_SUBAGENT_ACTIVE_TOOLS as PRODUCER_MAX_ACTIVE_TOOLS } from "../extensions/subagent/protocol.ts";
-import {
-    compactSubagentUsage,
-    formatElapsed,
-    MAX_SUBAGENT_ACTIVE_TOOLS,
-    normalizeSubagentDetails,
-    subagentElapsed,
-    subagentStatusIcon,
-    subagentSummary,
-} from "./subagent.js";
+import { MAX_SUBAGENT_ACTIVE_TOOLS } from "../extensions/subagent/protocol.ts";
+import { normalizeSubagentDetails } from "./subagent.js";
+import { compactSubagentUsage, subagentElapsed, subagentStatusIcon, subagentSummary } from "./ui/subagent-view.js";
 
 function protocolDetails(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
@@ -39,13 +32,11 @@ describe("subagent detail normalization", () => {
     test("normalizes a live protocol snapshot and outer call arguments", () => {
         const view = normalizeSubagentDetails(protocolDetails(), {
             toolCallId: "outer-1",
-            running: true,
             args: { prompt: "Inspect controller state", cwd: "/repo" },
         });
 
         expect(view).toEqual(
             expect.objectContaining({
-                source: "protocol-v1",
                 id: "outer-1",
                 agent: "explore",
                 status: "running",
@@ -60,7 +51,6 @@ describe("subagent detail normalization", () => {
     });
 
     test("accepts the producer maximum and rejects oversized active-tool snapshots", () => {
-        expect(MAX_SUBAGENT_ACTIVE_TOOLS).toBe(PRODUCER_MAX_ACTIVE_TOOLS);
         const tools = Array.from({ length: MAX_SUBAGENT_ACTIVE_TOOLS + 1 }, (_, index) => ({
             id: `tool-${index}`,
             name: "read",
@@ -99,46 +89,33 @@ describe("subagent detail normalization", () => {
         expect(compactSubagentUsage(view!.usage)).not.toContain("$");
     });
 
-    test("adapts legacy persisted details", () => {
-        const view = normalizeSubagentDetails(
-            {
-                agent: "explore",
-                model: "anthropic/claude-sonnet",
-                toolCalls: ["read README.md", "grep reducer in src"],
-                usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: 0.01 },
-            },
-            {
-                toolCallId: "legacy-1",
-                args: { prompt: "Review the project", cwd: "/repo" },
-                isError: false,
-                timestamp: 4_000,
-            },
-        );
-
-        expect(view).toEqual(
-            expect.objectContaining({
-                source: "legacy",
-                id: "legacy-1",
-                status: "succeeded",
-                cwd: "/repo",
-                prompt: "Review the project",
-            }),
-        );
-        expect(view?.recentActivity.map((activity) => activity.title)).toEqual([
-            "read README.md",
-            "grep reducer in src",
-        ]);
+    test("bounds oversized strings for display", () => {
+        const view = normalizeSubagentDetails(protocolDetails({ outputPreview: "x".repeat(20_000) }), {
+            args: { prompt: "y".repeat(9_000) },
+        });
+        expect(view?.outputPreview?.length).toBe(16_000);
+        expect(view?.outputPreview?.endsWith("…")).toBe(true);
+        expect(view?.prompt?.length).toBe(8_000);
     });
 
-    test("rejects malformed payloads, mismatched ids, and unknown versions", () => {
+    test("rejects malformed payloads, mismatched ids, unknown versions, and pre-protocol shapes", () => {
         expect(normalizeSubagentDetails({ ...protocolDetails(), version: 2 })).toBeUndefined();
         expect(normalizeSubagentDetails(protocolDetails(), { toolCallId: "different" })).toBeUndefined();
         expect(normalizeSubagentDetails(protocolDetails({ recentActivity: "bad" }))).toBeUndefined();
-        expect(normalizeSubagentDetails({ agent: "explore", toolCalls: [1], usage: {} })).toBeUndefined();
+        expect(
+            normalizeSubagentDetails({
+                agent: "explore",
+                toolCalls: ["read README.md"],
+                usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: 0 },
+            }),
+        ).toBeUndefined();
     });
 
     test("formats status-specific timing labels", () => {
-        expect(formatElapsed(125_000)).toBe("2m 5s");
+        const view = normalizeSubagentDetails(
+            protocolDetails({ status: "failed", endedAt: 126_000, activeTools: [], error: "boom" }),
+        );
+        expect(subagentElapsed(view!, 999_999)).toBe("2m 5s");
         expect(subagentStatusIcon("cancelled")).toBe("⊘");
         expect(subagentStatusIcon("timed_out")).toBe("⧖");
     });

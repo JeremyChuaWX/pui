@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
     MAX_WORKFLOW_AGENTS,
     MAX_WORKFLOW_DETAIL,
+    parseBackgroundWorkflowControl,
+    parseBackgroundWorkflowEvent,
     parseWorkflowDetailsV1,
     parseWorkflowRunV1,
     truncateWorkflowText,
 } from "./protocol.js";
-import { workflowRun } from "./workflow-fixture.js";
+import { workflowRun } from "./test-support/workflow-fixture.js";
 
 describe("workflow v1 protocol", () => {
     test("accepts a bounded synthetic 1,000-agent authoritative snapshot", () => {
@@ -22,7 +24,7 @@ describe("workflow v1 protocol", () => {
         expect(parseWorkflowRunV1({ ...run, status: "future" })).toBeUndefined();
         expect(parseWorkflowRunV1({ ...run, usage: { ...run.usage, cost: Number.NaN } })).toBeUndefined();
         expect(parseWorkflowRunV1({ ...run, agents: [run.agents[0], run.agents[0]] })).toBeUndefined();
-        run.agents[0].output = "x".repeat(MAX_WORKFLOW_DETAIL + 1);
+        run.agents[0].error = "x".repeat(MAX_WORKFLOW_DETAIL + 1);
         expect(parseWorkflowRunV1(run)).toBeUndefined();
 
         const worktree = workflowRun();
@@ -56,5 +58,53 @@ describe("workflow v1 protocol", () => {
                 script: "x".repeat(MAX_WORKFLOW_DETAIL + 1),
             }),
         ).toBeUndefined();
+    });
+});
+
+const route = { sessionId: "session-1", instanceId: "instance-1", cwd: "/canonical/repo" };
+const envelope = (type: string, extra: Record<string, unknown> = {}) => ({
+    schema: "pi.workflow.background",
+    version: 1,
+    ...route,
+    type,
+    ...extra,
+});
+const control = (action: string, extra: Record<string, unknown> = {}) => ({
+    schema: "pi.workflow.background.control",
+    version: 1,
+    ...route,
+    requestId: "request-1",
+    action,
+    runId: "run-1",
+    ...extra,
+});
+
+describe("background workflow protocol", () => {
+    test("parses routed snapshots and rejects stale or unknown events", () => {
+        expect(parseBackgroundWorkflowEvent(envelope("ready"), route)?.type).toBe("ready");
+        expect(parseBackgroundWorkflowEvent(envelope("upsert", { run: workflowRun() }), route)?.type).toBe("upsert");
+        expect(parseBackgroundWorkflowEvent(envelope("remove", { runId: "run-1" }), route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(envelope("ready", { sessionId: "stale" }), route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(envelope("ready", { instanceId: "stale" }), route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(envelope("ready", { version: 2 }), route)).toBeUndefined();
+        expect(parseBackgroundWorkflowEvent(envelope("future"), route)).toBeUndefined();
+    });
+
+    test("rejects invalid controls and exact-route mismatches", () => {
+        expect(parseBackgroundWorkflowControl(control("pause"), route)?.action).toBe("pause");
+        expect(parseBackgroundWorkflowControl(control("restart-agent", { agentId: "agent-1" }), route)?.agentId).toBe(
+            "agent-1",
+        );
+        for (const invalid of [
+            control("future"),
+            control("restart-agent"),
+            control("stop", { agentId: "agent-1" }),
+            control("pause", { runId: "" }),
+            control("pause", { sessionId: "stale" }),
+            control("pause", { instanceId: "stale" }),
+            control("pause", { cwd: "/other" }),
+            control("pause", { version: 2 }),
+        ])
+            expect(parseBackgroundWorkflowControl(invalid, route)).toBeUndefined();
     });
 });

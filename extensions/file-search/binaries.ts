@@ -6,7 +6,7 @@ export interface SystemBinary {
     source: "system";
 }
 
-export type BinaryLookup = (name: string) => string | undefined;
+type BinaryLookup = (name: string) => string | undefined;
 
 /** Finds an executable on PATH without invoking a shell. */
 export function findExecutable(name: string, environment: NodeJS.ProcessEnv = process.env): string | undefined {

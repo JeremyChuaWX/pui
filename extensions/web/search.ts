@@ -6,7 +6,8 @@ import {
     type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import type { WebOutputRetentionAdapter } from "./output-retention.ts";
+import type { WebOutputRetention } from "./output-retention.ts";
+import { executeWebTool, nonEmptyString, type WebToolDependencies } from "./tool-shell.ts";
 
 const SEARCH_PARAMS = Type.Object({
     query: Type.String({ minLength: 1, description: "Natural-language web search query." }),
@@ -70,15 +71,6 @@ const SEARCH_INSTRUCTIONS =
 const MAX_OUTPUT_TOKENS = 8000;
 const MAX_SOURCES = 10;
 const CHATGPT_USER_AGENT = "pi-web-search";
-
-export type WebSearchDependencies = {
-    fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-    environment?: Record<string, string | undefined>;
-};
-
-function nonEmptyString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
 
 function normalizeEndpoint(baseUrl: string, suffix: string): string {
     const normalized = baseUrl.replace(/\/+$/, "");
@@ -240,7 +232,7 @@ async function runSearch(
     params: SearchParams,
     ctx: ExtensionContext,
     signal: AbortSignal | undefined,
-    dependencies: WebSearchDependencies,
+    dependencies: WebToolDependencies,
 ): Promise<SearchResult> {
     const model = resolveSearchModel(ctx, dependencies.environment ?? process.env);
     const provider = searchProvider(model);
@@ -319,8 +311,8 @@ function formatSearchResult(query: string, result: SearchResult): string {
 
 export default function webSearchExtension(
     pi: ExtensionAPI,
-    dependencies: WebSearchDependencies,
-    getOutputRetention: () => WebOutputRetentionAdapter,
+    dependencies: WebToolDependencies,
+    outputRetention: WebOutputRetention,
 ) {
     pi.registerTool<typeof SEARCH_PARAMS, SearchDetails>({
         name: "web_search",
@@ -335,41 +327,29 @@ export default function webSearchExtension(
             "Set WEB_SEARCH_MODEL=provider/model when the active model is not an OpenAI Responses or ChatGPT/Codex model.",
         ],
         parameters: SEARCH_PARAMS,
-        async execute(_toolCallId, params, signal, onUpdate, ctx) {
-            const outputRetention = getOutputRetention();
-            onUpdate?.({
-                content: [{ type: "text", text: `Searching the web for: ${params.query}` }],
-                details: { status: "searching" },
+        execute(_toolCallId, params, signal, onUpdate, ctx) {
+            return executeWebTool({
+                toolName: "web_search",
+                cancelledMessage: "Search cancelled.",
+                outputRetention,
+                signal,
+                onUpdate,
+                starting: { text: `Searching the web for: ${params.query}`, details: { status: "searching" } },
+                limits: { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+                async run() {
+                    const result = await runSearch(params, ctx, signal, dependencies);
+                    return {
+                        fullText: formatSearchResult(params.query, result),
+                        details: {
+                            status: "complete" as const,
+                            provider: result.provider,
+                            model: result.model,
+                            query: params.query,
+                            sources: result.sources,
+                        },
+                    };
+                },
             });
-
-            try {
-                const result = await runSearch(params, ctx, signal, dependencies);
-                if (signal?.aborted) throw new Error("Search cancelled.");
-                const fullText = formatSearchResult(params.query, result);
-                const formatted = await outputRetention.retain(fullText, {
-                    maxBytes: DEFAULT_MAX_BYTES,
-                    maxLines: DEFAULT_MAX_LINES,
-                });
-                return {
-                    content: [{ type: "text", text: formatted.text }],
-                    details: {
-                        status: "complete",
-                        provider: result.provider,
-                        model: result.model,
-                        query: params.query,
-                        sources: result.sources,
-                        truncated: formatted.truncated,
-                        ...(formatted.fullOutputPath && { fullOutputPath: formatted.fullOutputPath }),
-                    },
-                };
-            } catch (error) {
-                const message = signal?.aborted
-                    ? "Search cancelled."
-                    : error instanceof Error
-                      ? error.message
-                      : String(error);
-                throw new Error(`web_search failed: ${message}`, { cause: error });
-            }
         },
     });
 }

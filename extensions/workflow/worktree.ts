@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { inferDirectoryBoundary, safeDirectory } from "./safe-directory.js";
+import { BoundedProcessError, runBoundedProcess } from "../shared/bounded-process.js";
+import { inferDirectoryBoundary, safeDirectory } from "./durable-fs.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const OWNED_REF = /^refs\/pui\/workflows\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})\/([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$/;
@@ -30,49 +30,28 @@ export class WorkflowWorktreeManager {
         this.timeoutMs = options.timeoutMs ?? 10_000;
         this.trustedBoundary = options.trustedBoundary;
     }
-    private command(cwd: string, args: string[]): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const env = { ...process.env };
-            delete env.GIT_DIR;
-            delete env.GIT_WORK_TREE;
-            delete env.GIT_INDEX_FILE;
-            const child = spawn(this.gitExecutable, args, {
+    private async command(cwd: string, args: string[]): Promise<string> {
+        const env = { ...process.env };
+        delete env.GIT_DIR;
+        delete env.GIT_WORK_TREE;
+        delete env.GIT_INDEX_FILE;
+        let result: Awaited<ReturnType<typeof runBoundedProcess>>;
+        try {
+            result = await runBoundedProcess({
+                command: this.gitExecutable,
+                args,
                 cwd,
                 env,
-                stdio: ["ignore", "pipe", "pipe"],
-                detached: process.platform !== "win32",
-                windowsHide: true,
+                timeoutMs: args[0] === "worktree" && args[1] === "add" ? this.timeoutMs * 6 : this.timeoutMs,
+                output: { maxBytes: OUTPUT_LIMIT, overflow: "keep-tail" },
             });
-            let out = "",
-                err = "",
-                settled = false;
-            const finish = (error?: Error) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                error ? reject(error) : resolve(out.trim());
-            };
-            const kill = () => {
-                try {
-                    process.platform !== "win32" && child.pid
-                        ? process.kill(-child.pid, "SIGKILL")
-                        : child.kill("SIGKILL");
-                } catch {}
-            };
-            const timer = setTimeout(
-                () => {
-                    kill();
-                    finish(new Error(`git ${args[0]} timed out`));
-                },
-                args[0] === "worktree" && args[1] === "add" ? this.timeoutMs * 6 : this.timeoutMs,
-            );
-            child.stdout.on("data", (c) => (out = `${out}${c}`.slice(-OUTPUT_LIMIT)));
-            child.stderr.on("data", (c) => (err = `${err}${c}`.slice(-OUTPUT_LIMIT)));
-            child.once("error", (e) => finish(e));
-            child.once("close", (code) =>
-                finish(code === 0 ? undefined : new Error(`git ${args[0]} failed: ${err.trim()}`)),
-            );
-        });
+        } catch (error) {
+            if (error instanceof BoundedProcessError && error.reason === "timeout")
+                throw new Error(`git ${args[0]} timed out`);
+            throw error;
+        }
+        if (result.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
+        return result.stdout.trim();
     }
     async repository(cwd: string): Promise<string> {
         const canonical = await fs.promises.realpath(cwd),

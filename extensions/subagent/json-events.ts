@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { truncateUtf8 } from "./protocol.js";
 
-export interface JsonLineParserOptions {
+interface JsonLineParserOptions {
     onValue: (value: unknown) => void;
     onDiagnostic?: (message: string) => void;
     maxLineBytes?: number;

@@ -1,26 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
-import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
-import { SessionOutputStore } from "./output-store.js";
+import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import {
     AGENTS,
     type AgentName,
-    childArgs,
     type ResolvedAgentName,
     resolveModel,
     resolveWorkingDirectory,
-} from "./presets.js";
+} from "../shared/presets.js";
+import { formatTruncationNotice, RetainedOutputStore } from "../shared/retained-output.js";
+import type { AbortableSemaphore } from "../shared/semaphore.js";
+import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import {
-    appendSubagentActivity,
     createInitialSubagentDetails,
-    createTerminalSubagentDetails,
-    isTerminalSubagentStatus,
+    SUBAGENT_PROTOCOL_VERSION,
+    SUBAGENT_SCHEMA,
     type SubagentDetailsV1,
     truncateUtf8,
-    updateSubagentDetails,
 } from "./protocol.js";
+import type { SubagentOutputStore } from "./run-job.js";
+import { runSubagentJob } from "./run-job.js";
 import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
-import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
@@ -30,14 +29,14 @@ const WAIT_JOB_BYTES = 24 * 1024;
 const WAIT_TOTAL_BYTES = 48 * 1024;
 const DELIVERY_MAX_LINES = DEFAULT_MAX_LINES - 8;
 
-export interface SpawnInput {
+interface SpawnInput {
     prompt: string;
     cwd: string;
     agent?: AgentName;
     model?: string;
     name?: string;
 }
-export interface BackgroundManagerOptions {
+interface BackgroundManagerOptions {
     semaphore: AbortableSemaphore;
     run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
     invocation?: typeof getPiInvocation;
@@ -46,7 +45,7 @@ export interface BackgroundManagerOptions {
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
     deliver: (result: BackgroundTerminalResult) => void;
     isIdle?: () => boolean;
-    outputStore?: Pick<SessionOutputStore, "save" | "cleanup">;
+    outputStore?: SubagentOutputStore;
 }
 export interface BackgroundTerminalResult {
     id: string;
@@ -75,49 +74,54 @@ function titleFor(input: SpawnInput): string {
     return truncateUtf8(candidate.replace(/\s+/g, " "), TITLE_BYTES).content;
 }
 function copyJob(job: Job): BackgroundSubagentJobV1 {
-    const snapshot = structuredClone(job.snapshot);
-    snapshot.title = truncateUtf8(snapshot.title, TITLE_BYTES).content;
-    if (snapshot.prompt) snapshot.prompt = truncateUtf8(snapshot.prompt, PROMPT_BYTES).content;
-    snapshot.run.agent = truncateUtf8(snapshot.run.agent, 128).content;
-    snapshot.run.model = truncateUtf8(snapshot.run.model, 256).content;
-    snapshot.run.cwd = truncateUtf8(snapshot.run.cwd, 2 * 1024).content;
-    if (snapshot.run.outputPreview)
-        snapshot.run.outputPreview = truncateUtf8(snapshot.run.outputPreview, 4 * 1024).content;
-    if (snapshot.run.error) snapshot.run.error = truncateUtf8(snapshot.run.error, 8 * 1024).content;
-    if (snapshot.run.fullOutputPath)
-        snapshot.run.fullOutputPath = truncateUtf8(snapshot.run.fullOutputPath, 2 * 1024).content;
-    snapshot.run.activeTools = snapshot.run.activeTools.map((tool) => ({
-        ...tool,
-        id: truncateUtf8(tool.id, 256).content,
-        name: truncateUtf8(tool.name, 128).content,
-        title: truncateUtf8(tool.title, 512).content,
-    }));
-    snapshot.run.recentActivity = snapshot.run.recentActivity.map((activity) => ({
-        ...activity,
-        title: truncateUtf8(activity.title, 512).content,
-    }));
-    return snapshot;
+    return structuredClone(job.snapshot);
 }
 function boundedResult(result: BackgroundTerminalResult, bytes: number): BackgroundTerminalResult {
     const cap = Math.max(0, bytes);
     const truncation = truncateUtf8(result.text, cap);
     if (!truncation.truncated) return result;
-    const notice = result.fullOutputPath
-        ? `\n\n[Output truncated for delivery. Full output: ${result.fullOutputPath}]`
-        : "\n\n[Output truncated for delivery.]";
+    const noticeFor = (outputBytes: number) =>
+        formatTruncationNotice({
+            outputBytes,
+            totalBytes: truncation.totalBytes,
+            ...(result.fullOutputPath
+                ? { retainedPath: result.fullOutputPath }
+                : { nonRetentionReason: "complete output was not retained by the subagent" }),
+        });
+    let notice = noticeFor(0);
+    let body = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const separator = cap >= Buffer.byteLength(notice, "utf8") + 2 ? "\n\n" : "";
+        const bodyBudget = Math.max(0, cap - Buffer.byteLength(separator + notice, "utf8"));
+        body = truncateUtf8(result.text, bodyBudget).content;
+        const next = noticeFor(Buffer.byteLength(body, "utf8"));
+        if (next === notice) return { ...result, text: `${body}${separator}${notice}` };
+        notice = next;
+    }
     const boundedNotice = truncateUtf8(notice, cap).content;
-    const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8"));
-    return { ...result, text: `${truncateUtf8(result.text, bodyBudget).content}${boundedNotice}` };
+    const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8") - 2);
+    body = truncateUtf8(result.text, bodyBudget).content;
+    return { ...result, text: body ? `${body}\n\n${boundedNotice}` : boundedNotice };
 }
 
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
-    private readonly outputStore: Pick<SessionOutputStore, "save" | "cleanup">;
+    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore">>;
+    private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
-    constructor(private readonly options: BackgroundManagerOptions) {
-        this.outputStore = options.outputStore ?? new SessionOutputStore();
+    constructor(options: BackgroundManagerOptions) {
+        this.options = {
+            ...options,
+            run: options.run ?? runSubagent,
+            invocation: options.invocation ?? getPiInvocation,
+            environment: options.environment ?? process.env,
+            now: options.now ?? Date.now,
+            isIdle: options.isIdle ?? (() => false),
+        };
+        this.outputStore =
+            options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
     }
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {
@@ -132,14 +136,10 @@ export class BackgroundSubagentManager {
         }
         const agentName: ResolvedAgentName = input.agent ?? "generic";
         const agent = AGENTS[agentName];
-        const model = resolveModel(agent, input.model, this.options.environment ?? process.env);
+        const model = resolveModel(agent, input.model, this.options.environment);
         const id = randomUUID();
-        const now = (this.options.now ?? Date.now)();
-        const details = appendSubagentActivity(
-            createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now }),
-            { timestamp: now, kind: "diagnostic", title: "Queued for a child Pi process" },
-            now,
-        );
+        const now = this.options.now();
+        const details = createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now });
         const controller = new AbortController();
         const job: Job = {
             snapshot: {
@@ -210,7 +210,7 @@ export class BackgroundSubagentManager {
                 if (count > 0) this.waitInterest.set(job.snapshot.id, count);
                 else {
                     this.waitInterest.delete(job.snapshot.id);
-                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle?.()) {
+                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle()) {
                         this.deferred.delete(job.snapshot.id);
                         this.consumeAndDeliver(job);
                     }
@@ -233,6 +233,12 @@ export class BackgroundSubagentManager {
             this.deferred.delete(id);
             this.consumeAndDeliver(this.require(id));
         }
+    }
+
+    /** Reopens the manager so a later session can spawn jobs after an earlier shutdown. */
+    startSession(): void {
+        this.shuttingDown = false;
+        if (this.outputStore instanceof RetainedOutputStore) this.outputStore.startSession();
     }
 
     async shutdown(timeoutMs = 3_000): Promise<void> {
@@ -288,69 +294,42 @@ export class BackgroundSubagentManager {
         model: string | undefined,
         cwd: string,
     ): Promise<void> {
-        let release: SemaphoreRelease | undefined;
-        let details: SubagentDetailsV1 = { schema: "pi.subagent", version: 1, run: job.snapshot.run };
-        try {
-            release = await this.options.semaphore.acquire(job.controller.signal);
-            if (job.controller.signal.aborted) throw new Error("Subagent was cancelled before it started.");
-            const startedAt = (this.options.now ?? Date.now)();
-            details = appendSubagentActivity(
-                updateSubagentDetails(details, { status: "starting", phase: "spawning", startedAt }, startedAt),
-                { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
-                startedAt,
-            );
-            this.publish(job, details);
-            const invocation = (this.options.invocation ?? getPiInvocation)(
-                childArgs(AGENTS[agentName], model, prompt),
-            );
-            const execution = await (this.options.run ?? runSubagent)({
+        const details: SubagentDetailsV1 = {
+            schema: SUBAGENT_SCHEMA,
+            version: SUBAGENT_PROTOCOL_VERSION,
+            run: job.snapshot.run,
+        };
+        const outcome = await runSubagentJob(
+            {
+                semaphore: this.options.semaphore,
+                run: this.options.run,
+                invocation: this.options.invocation,
+                now: this.options.now,
+            },
+            {
                 details,
-                command: invocation.command,
-                args: invocation.args,
+                agent: AGENTS[agentName],
+                model,
+                prompt,
                 cwd,
-                timeoutMs: AGENTS[agentName].timeoutMs,
                 signal: job.controller.signal,
-                onSnapshot: (next) => {
-                    details = next;
-                    this.publish(job, next);
-                },
-            });
-            details = execution.details;
-            job.output = execution.output;
-            this.publish(job, details);
-        } catch (error) {
-            if (!isTerminalSubagentStatus(details.run.status))
-                details = createTerminalSubagentDetails(
-                    details,
-                    {
-                        status: job.controller.signal.aborted ? "cancelled" : "failed",
-                        error: truncateUtf8(error instanceof Error ? error.message : String(error), 8 * 1024).content,
-                    },
-                    (this.options.now ?? Date.now)(),
-                );
-            this.publish(job, details);
-        } finally {
-            release?.();
-        }
-        const output = job.output || details.run.error || "(no output)";
-        const hard = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DELIVERY_MAX_LINES });
-        const needsDeliverySpill = hard.truncated || truncateUtf8(output, AUTO_RESULT_BYTES).truncated;
-        const fullOutputPath =
-            (needsDeliverySpill ? await this.outputStore.save(output) : undefined) ?? details.run.fullOutputPath;
-        if (fullOutputPath) {
-            details = updateSubagentDetails(details, { fullOutputPath }, (this.options.now ?? Date.now)());
-            this.publish(job, details);
-        }
+                publish: (next) => this.publish(job, next),
+                onSettled: (settled) => this.publish(job, settled),
+                spill: { store: this.outputStore, maxLines: DELIVERY_MAX_LINES, spillOverBytes: AUTO_RESULT_BYTES },
+            },
+        );
+        job.output = outcome.output;
+        if (outcome.fullOutputPath) this.publish(job, outcome.details);
         job.terminal = Object.freeze({
             id: job.snapshot.id,
             title: job.snapshot.title,
-            status: details.run.status,
-            text: hard.content,
-            ...(fullOutputPath ? { fullOutputPath } : {}),
+            status: outcome.details.run.status,
+            text: outcome.truncation.content,
+            ...(outcome.fullOutputPath ? { fullOutputPath: outcome.fullOutputPath } : {}),
         });
         if (!this.shuttingDown) {
             if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
-            else if (this.options.isIdle?.()) this.consumeAndDeliver(job);
+            else if (this.options.isIdle()) this.consumeAndDeliver(job);
             else this.deferred.set(job.snapshot.id, job.terminal);
         }
         this.prune();

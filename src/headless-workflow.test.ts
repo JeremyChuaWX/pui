@@ -2,14 +2,10 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../extensions/workflow/agent-executor.js";
 import { createWorkflowBackend, type WorkflowBackend } from "../extensions/workflow/backend.js";
 import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
-import {
-    createWorkflowAgentExecutor,
-    isHeadlessWorkflowSession,
-    parseHeadlessWorkflowArgs,
-    runHeadlessWorkflow,
-} from "./headless-workflow.js";
+import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./headless-workflow.js";
 
 describe("headless workflows", () => {
     test("only recognizes generated headless session IDs", () => {

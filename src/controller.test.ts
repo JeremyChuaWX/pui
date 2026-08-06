@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
+import { waitFor } from "../extensions/test-support/wait.js";
 import { PuiController } from "./controller.js";
 
 function usage() {
@@ -74,12 +78,16 @@ interface FakeSessionState {
     isStreaming: boolean;
 }
 
-function createController(messages: AgentMessage[]): {
+async function createController(
+    messages: AgentMessage[],
+    eventBus?: ReturnType<typeof createEventBus>,
+): Promise<{
     controller: PuiController;
     state: FakeSessionState;
     emit: (event: AgentSessionEvent) => void;
-} {
+}> {
     const state: FakeSessionState = { messages, pending: new Set(), isStreaming: true };
+    let listener: ((event: AgentSessionEvent) => void) | undefined;
     const session = {
         get messages() {
             return state.messages;
@@ -105,6 +113,17 @@ function createController(messages: AgentMessage[]): {
         isCompacting: false,
         getSteeringMessages: () => [],
         getFollowUpMessages: () => [],
+        bindExtensions: async () => {},
+        subscribe: (next: (event: AgentSessionEvent) => void) => {
+            listener = next;
+            return () => {
+                listener = undefined;
+            };
+        },
+        extensionRunner: { getRegisteredCommands: () => [] },
+        promptTemplates: [],
+        settingsManager: { getEnableSkillCommands: () => false },
+        resourceLoader: { getSkills: () => ({ skills: [] }) },
     };
     const runtime = {
         cwd: process.cwd(),
@@ -112,12 +131,12 @@ function createController(messages: AgentMessage[]): {
         setRebindSession: () => {},
         dispose: async () => {},
     } as unknown as AgentSessionRuntime;
-    const Controller = PuiController as unknown as new (runtime: AgentSessionRuntime) => PuiController;
-    const controller = new Controller(runtime);
+    const controller = new PuiController(runtime, eventBus ? { eventBus } : {});
+    await controller.bindSession(runtime.session);
     const emit = (event: AgentSessionEvent) => {
         if (event.type === "tool_execution_start") state.pending.add(event.toolCallId);
         if (event.type === "tool_execution_end") state.pending.delete(event.toolCallId);
-        (controller as unknown as { handleEvent: (next: AgentSessionEvent) => void }).handleEvent(event);
+        listener?.(event);
     };
     return { controller, state, emit };
 }
@@ -125,14 +144,7 @@ function createController(messages: AgentMessage[]): {
 describe("PuiController background event bridge", () => {
     test("coalesces current-instance updates and clears the bus on disposal", async () => {
         const bus = createEventBus();
-        const { controller: base } = createController([]);
-        await base.dispose();
-        const runtime = (base as any).runtime as AgentSessionRuntime;
-        const Controller = PuiController as unknown as new (
-            runtime: AgentSessionRuntime,
-            eventBus: ReturnType<typeof createEventBus>,
-        ) => PuiController;
-        const controller = new Controller(runtime, bus);
+        const { controller } = await createController([], bus);
         let notifications = 0;
         controller.subscribe(() => notifications++);
         const envelope = (type: string, status = "running") => ({
@@ -166,6 +178,10 @@ describe("PuiController background event bridge", () => {
             jobId: "job",
         });
         expect(controller.cancelBackgroundSubagent("missing")).toBe(false);
+        for (const status of ["succeeded", "failed", "cancelled", "timed_out"]) {
+            bus.emit("pui.subagent.background", envelope("upsert", status));
+            expect(controller.cancelBackgroundSubagent("job")).toBe(false);
+        }
         unsubscribeControl();
         await controller.dispose();
         bus.emit("pui.subagent.background", envelope("upsert", "succeeded"));
@@ -182,7 +198,11 @@ describe("PuiController assistant reference text", () => {
             { type: "toolCall", id: "read-1", name: "read", arguments: { path: "README.md" } },
             { type: "text", text: "Second\n\n" },
         ];
-        const { controller } = createController([assistantText("Older"), mixed, assistantCalls(["latest-tool-only"])]);
+        const { controller } = await createController([
+            assistantText("Older"),
+            mixed,
+            assistantCalls(["latest-tool-only"]),
+        ]);
 
         expect(controller.getLastAssistantText()).toBe("First\nSecond");
         await controller.dispose();
@@ -192,7 +212,10 @@ describe("PuiController assistant reference text", () => {
 describe("PuiController tool event path", () => {
     test("transports partial subagent snapshots and preserves a running sibling", async () => {
         const ids = ["slow", "fast"];
-        const { controller, state, emit } = createController([assistantText("Stable context"), assistantCalls(ids)]);
+        const { controller, state, emit } = await createController([
+            assistantText("Stable context"),
+            assistantCalls(ids),
+        ]);
 
         for (const id of ids) {
             const args = { agent: "explore", prompt: `Inspect ${id}`, cwd: process.cwd() };
@@ -334,7 +357,7 @@ describe("PuiController tool event path", () => {
             stopReason: "toolUse",
             timestamp: 1,
         } as AgentMessage;
-        const { controller, emit } = createController([call]);
+        const { controller, emit } = await createController([call]);
         emit({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "README.md" } });
         emit({
             type: "tool_execution_update",
@@ -351,5 +374,297 @@ describe("PuiController tool event path", () => {
         const item = controller.snapshot().display[0];
         expect(item && item.kind === "tool" ? item.subagent : undefined).toBeUndefined();
         await controller.dispose();
+    });
+});
+
+const workflowUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 };
+function run(sessionId: string, cwd: string, id = "run-1") {
+    return {
+        schema: "pi.workflow" as const,
+        version: 1 as const,
+        id,
+        name: "Review",
+        sessionId,
+        cwd,
+        status: "running" as const,
+        phases: [],
+        agents: [
+            {
+                id: "agent-1",
+                label: "Agent",
+                role: "explore",
+                status: "running" as const,
+                updatedAt: 1,
+                usage: workflowUsage,
+                recentActivity: [],
+            },
+        ],
+        usage: workflowUsage,
+        limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
+        recentActivity: [],
+        updatedAt: 1,
+    };
+}
+const envelope = (sessionId: string, cwd: string, type: string, extra: object = {}) => ({
+    schema: "pi.workflow.background",
+    version: 1,
+    sessionId,
+    instanceId: "instance-1",
+    cwd,
+    type,
+    ...extra,
+});
+
+function harness(cwd: string) {
+    const bus = createEventBus();
+    let sessionListener: (() => void) | undefined;
+    let extensionBindings: any;
+    const session: any = {
+        messages: [],
+        sessionId: "session-1",
+        sessionName: undefined,
+        model: undefined,
+        thinkingLevel: "off",
+        isStreaming: false,
+        isCompacting: false,
+        prompt: async () => {},
+        agent: { state: { streamingMessage: undefined, pendingToolCalls: new Set() } },
+        getContextUsage: () => undefined,
+        getSteeringMessages: () => [],
+        getFollowUpMessages: () => [],
+        bindExtensions: async (bindings: unknown) => {
+            extensionBindings = bindings;
+        },
+        subscribe: () => () => {
+            sessionListener = undefined;
+        },
+        extensionRunner: { getRegisteredCommands: () => [] },
+        promptTemplates: [],
+        settingsManager: { getEnableSkillCommands: () => false },
+        resourceLoader: { getSkills: () => ({ skills: [] }) },
+    };
+    const runtime = {
+        cwd,
+        session,
+        services: { modelRuntime: {} },
+        setRebindSession: () => {},
+        dispose: async () => {},
+    } as unknown as AgentSessionRuntime;
+    const controller = new PuiController(runtime, { eventBus: bus });
+    const bind = (next = session) => controller.bindSession(next);
+    return { bus, controller, runtime, session, bind, sessionListener, bindings: () => extensionBindings };
+}
+
+describe("PuiController workflow bridge", () => {
+    test("does not finish an out-of-order stale session bind", async () => {
+        const h = harness(process.cwd());
+        let releaseOld!: () => void;
+        const oldBinding = new Promise<void>((resolve) => {
+            releaseOld = resolve;
+        });
+        let oldSubscriptions = 0;
+        h.session.bindExtensions = () => oldBinding;
+        h.session.subscribe = () => {
+            oldSubscriptions += 1;
+            return () => {};
+        };
+
+        let newSubscriptions = 0;
+        const replacement = {
+            ...h.session,
+            sessionId: "session-2",
+            bindExtensions: async () => {},
+            subscribe: () => {
+                newSubscriptions += 1;
+                return () => {};
+            },
+        };
+        let autocompleteSetups = 0;
+        const controller = h.controller as any;
+        const setupAutocomplete = controller.setupAutocompleteProvider.bind(controller);
+        controller.setupAutocompleteProvider = () => {
+            autocompleteSetups += 1;
+            setupAutocomplete();
+        };
+
+        const staleBind = h.bind();
+        (h.runtime as any).session = replacement;
+        await h.bind(replacement);
+        const snapshot = h.controller.snapshot();
+        releaseOld();
+        await staleBind;
+
+        expect(oldSubscriptions).toBe(0);
+        expect(newSubscriptions).toBe(1);
+        expect(autocompleteSetups).toBe(1);
+        expect(h.controller.snapshot()).toBe(snapshot);
+        expect(h.controller.snapshot().sessionId).toBe("session-2");
+        await h.controller.dispose();
+    });
+
+    test("binds authoritative snapshots, routes controls, and disposes cleanly", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-controller-"));
+        const h = harness(temp);
+        try {
+            const canonical = fs.realpathSync(temp);
+            h.session.bindExtensions = async () => {
+                h.bus.emit("pui.workflow.background", envelope("session-1", canonical, "ready"));
+                h.bus.emit(
+                    "pui.workflow.background",
+                    envelope("session-1", canonical, "upsert", { run: run("session-1", canonical) }),
+                );
+            };
+            await h.bind();
+            await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "run-1"));
+            expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["run-1"]);
+            expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
+            expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
+            expect(h.controller.handlePrompt("/workflow review.ts")).toBe("workflow");
+            expect(h.controller.handlePrompt("/workflow")).toBe("sent");
+
+            const controls: Array<Record<string, unknown>> = [];
+            h.bus.on("pui.workflow.background.control", (value) => controls.push(value as Record<string, unknown>));
+            const pause = h.controller.controlWorkflow("run-1", "pause");
+            await expect(h.controller.controlWorkflow("run-1", "restart-agent", "missing")).rejects.toThrow(
+                "Workflow agent is unavailable.",
+            );
+            const restart = h.controller.controlWorkflow("run-1", "restart-agent", "agent-1");
+            restart.catch(() => {});
+            expect(controls).toEqual([
+                expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
+                expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
+            ]);
+            h.bus.emit("pui.workflow.background.control.result", {
+                schema: "pi.workflow.background.control.result",
+                version: 1,
+                sessionId: "session-1",
+                instanceId: "instance-1",
+                cwd: canonical,
+                requestId: controls[0]?.requestId,
+                ok: true,
+            });
+            await expect(pause).resolves.toBeUndefined();
+            const prior = h.controller.snapshot();
+            h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
+            h.bus.emit("pui.workflow.background", envelope("session-1", `${canonical}/..`, "reset"));
+            h.bus.emit("pui.workflow.background", { ...envelope("session-1", canonical, "reset"), version: 2 });
+            expect(h.controller.snapshot()).toBe(prior);
+            await h.controller.dispose();
+            h.bus.emit(
+                "pui.workflow.background",
+                envelope("session-1", canonical, "upsert", { run: run("session-1", canonical, "late") }),
+            );
+            expect(h.controller.snapshot().workflows).toEqual([]);
+        } finally {
+            await h.controller.dispose();
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+
+    test("bridges queued extension dialogs with resolve, deny, abort, timeout, rebind, and dispose", async () => {
+        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-dialog-controller-"));
+        const h = harness(temp);
+        try {
+            await h.bind();
+            const ui = h.bindings().uiContext;
+            const confirm = ui.confirm("Run?", "exact body");
+            const select = ui.select("Trust?", ["once", "trust"]);
+            expect(h.controller.snapshot().extensionDialog).toMatchObject({ kind: "confirm", message: "exact body" });
+            const first = h.controller.snapshot().extensionDialog!;
+            expect(h.controller.resolveExtensionDialog(first.id, true)).toBe(true);
+            expect(await confirm).toBe(true);
+            expect(h.controller.snapshot().extensionDialog).toMatchObject({
+                kind: "select",
+                options: ["once", "trust"],
+            });
+            const second = h.controller.snapshot().extensionDialog!;
+            expect(h.controller.resolveExtensionDialog(second.id, "other")).toBe(true);
+            expect(await select).toBeUndefined();
+            expect(h.controller.resolveExtensionDialog(second.id, "once")).toBe(false);
+
+            const invalidConfirm = ui.confirm("Confirm", "body");
+            const invalidConfirmDialog = h.controller.snapshot().extensionDialog!;
+            h.controller.resolveExtensionDialog(invalidConfirmDialog.id, "true");
+            expect(await invalidConfirm).toBe(false);
+
+            const abort = new AbortController();
+            const input = ui.input("Value", "placeholder", { signal: abort.signal });
+            abort.abort();
+            expect(await input).toBeUndefined();
+            expect(await ui.confirm("Timeout", "body", { timeout: 1 })).toBe(false);
+
+            const raced = ui.confirm("Race", "body", { timeout: 1 });
+            const racedDialog = h.controller.snapshot().extensionDialog!;
+            expect(await raced).toBe(false);
+            expect(h.controller.resolveExtensionDialog(racedDialog.id, true)).toBe(false);
+
+            const rebound = ui.confirm("Old", "body");
+            await h.bind();
+            expect(await rebound).toBe(false);
+            const disposed = h.bindings().uiContext.input("Dispose");
+            await h.controller.dispose();
+            expect(await disposed).toBeUndefined();
+        } finally {
+            await fs.promises.rm(temp, { recursive: true, force: true });
+        }
+    });
+
+    test("bounds extension dialogs without truncating a 64 KiB approval body", async () => {
+        const h = harness(process.cwd());
+        await h.bind();
+        const ui = h.bindings().uiContext;
+
+        expect(await ui.confirm("x".repeat(513), "body")).toBe(false);
+        expect(await ui.confirm("title", "x".repeat(72 * 1024 + 1))).toBe(false);
+        expect(
+            await ui.select(
+                "title",
+                Array.from({ length: 101 }, (_, index) => `${index}`),
+            ),
+        ).toBeUndefined();
+        expect(await ui.select("title", ["x".repeat(4097)])).toBeUndefined();
+        expect(await ui.input("title", "x".repeat(1025))).toBeUndefined();
+        expect(h.controller.snapshot().extensionDialog).toBeUndefined();
+
+        const exact = ui.confirm("title", "x".repeat(64 * 1024));
+        const exactDialog = h.controller.snapshot().extensionDialog!;
+        h.controller.resolveExtensionDialog(exactDialog.id, true);
+        expect(await exact).toBe(true);
+
+        const queued = Array.from({ length: 32 }, (_, index) => ui.input(`input ${index}`));
+        expect(await ui.input("overflow")).toBeUndefined();
+        for (let index = 0; index < queued.length; index += 1) {
+            const dialog = h.controller.snapshot().extensionDialog!;
+            h.controller.resolveExtensionDialog(dialog.id, `value ${index}`);
+        }
+        expect(await Promise.all(queued)).toHaveLength(32);
+        await h.controller.dispose();
+    });
+
+    test("resets on replacement and accepts only the replacement instance", async () => {
+        const h = harness(process.cwd());
+        await h.bind();
+        const cwd = fs.realpathSync(process.cwd());
+        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "ready"));
+        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "upsert", { run: run("session-1", cwd) }));
+        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "reset"));
+        h.bus.emit("pui.workflow.background", { ...envelope("session-1", cwd, "ready"), instanceId: "instance-2" });
+        h.bus.emit("pui.workflow.background", {
+            ...envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "new") }),
+            instanceId: "instance-2",
+        });
+        h.bus.emit(
+            "pui.workflow.background",
+            envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "stale") }),
+        );
+        await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "new"));
+        expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["new"]);
+
+        const replacement = { ...h.session, sessionId: "session-2" };
+        (h.runtime as any).session = replacement;
+        await h.bind(replacement);
+        expect(h.controller.snapshot().workflows).toEqual([]);
+        await expect(h.controller.controlWorkflow("new", "stop")).rejects.toThrow("Workflow control is unavailable.");
+        await h.controller.dispose();
     });
 });

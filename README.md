@@ -161,18 +161,27 @@ See the [web extension guide](extensions/web/README.md) for the compact configur
 
 ## Architecture
 
-- `src/index.tsx` owns OpenTUI renderer startup and shutdown.
-- `src/controller.ts` embeds Pi through `AgentSessionRuntime`, rebinds every replaced session, and adapts Pi's `CombinedAutocompleteProvider` to OpenTUI prompt completions.
-- `src/bundled-extensions.ts` registers application-owned extension factories independently of session cwd.
-- `extensions/subagent/` owns the standalone subagent extension, protocol producer, preset, fixtures, and tests.
-- `extensions/file-search/` owns bundled `fd`/`rg` schemas, binary resolution, safe process execution, and bounded output.
-- `extensions/web/` owns the bundled web-search and Firecrawl tools and their provider-facing tests.
-- `src/tool-executions.ts` reduces generic Pi tool lifecycle events, including partial updates.
-- `src/subagent.ts` defensively normalizes the versioned extension protocol for presentation.
-- `src/app.tsx` is the Solid/OpenTUI view layer.
-- `src/format.ts` projects Pi messages and live tool executions into explicit display variants and preserves identity when their presentation is unchanged.
-- `src/theme.ts` defines the neutral palette and syntax styles.
-- `scripts/build.ts` compiles the Solid application and embeds the bundled extension into `dist/pui`.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design: layers, module map, protocol
+ownership, dependency-injection conventions, and the testing strategy. The short version:
+
+- `src/index.tsx` owns CLI dispatch and OpenTUI renderer startup and shutdown.
+- `src/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
+  `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
+  `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
+  production defaults: `src/workflow-bridge.ts` (workflow run map and control round-trips) and
+  `src/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
+  drives slash-command autocomplete and dispatch.
+- `src/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in `src/ui/`
+  (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns all keyboard
+  predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
+- `src/format.ts` projects Pi messages and live tool executions into display variants and preserves
+  item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
+  events; `src/subagent.ts` validates and bounds the subagent protocol for display.
+- `extensions/` holds the bundled application-owned Pi extensions (file-search, subagent, workflow,
+  web), registered via `src/bundled-extensions.ts`. Each extension owns its wire protocol; `src/`
+  consumes those protocols directly instead of maintaining mirrors.
+- `scripts/build.ts` compiles the Solid application and embeds the bundled extensions into
+  `dist/pui`.
 
 The bundled application-owned extensions augment normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 

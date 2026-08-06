@@ -5,13 +5,17 @@ const prelude = `const send=x=>process.stdout.write(typeof x==="string"?x:JSON.s
 const ready = `send({v:1,t:"ready"});`;
 
 async function run(workerSource: string, options: Partial<WorkflowBackendOptions> = {}) {
-    const backend = createWorkflowBackend({
-        agentExecutor: async () => ({ value: null }),
-        testOnlyWorkerSource: prelude + workerSource,
+    const platform = {
+        workerSource: prelude + workerSource,
         readyTimeoutMs: 2_000,
         watchdogMs: 100,
         runTimeoutMs: 500,
+        ...options.platform,
+    };
+    const backend = createWorkflowBackend({
+        agentExecutor: async () => ({ value: null }),
         ...options,
+        platform,
     });
     const { runId } = await backend.launch({
         name: "hostile transport",
@@ -19,7 +23,8 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
         sessionId: "transport-test",
         cwd: process.cwd(),
     });
-    const deadline = Date.now() + 2_000;
+    // Poll past the slowest configured supervision limit plus scheduling and kill-escalation margin.
+    const deadline = Date.now() + Math.max(platform.readyTimeoutMs, platform.watchdogMs, platform.runTimeoutMs) + 2_000;
     while (!(["failed", "cancelled", "succeeded"] as string[]).includes(backend.inspect(runId).run.status)) {
         if (Date.now() > deadline) throw new Error("hostile worker did not terminate");
         await Bun.sleep(10);
@@ -34,23 +39,14 @@ async function run(workerSource: string, options: Partial<WorkflowBackendOptions
     return { ...details.run, result: details.result };
 }
 
-const failureCases = [
-    ["malformed JSON", `send("not-json\\n");setInterval(()=>{},1000)`],
-    ["unknown protocol version", `send({v:2,t:"ready"});setInterval(()=>{},1000)`],
-    ["unknown protocol type", `send({v:1,t:"mystery"});setInterval(()=>{},1000)`],
-    ["duplicate ready", `${ready}${ready}setInterval(()=>{},1000)`],
-    ["extra ready fields", `send({v:1,t:"ready",extra:true});setInterval(()=>{},1000)`],
-    ["unknown RPC method", `${ready}send({v:1,t:"rpc",id:"1",method:"root",value:null});setInterval(()=>{},1000)`],
-    ["oversized unterminated frame", `process.stdout.write("x".repeat(262145));setInterval(()=>{},1000)`],
-] as const;
-
+// Frame-shape and line-cap rules are unit-tested in worker-protocol.test.ts; the tests here keep
+// only the behaviors that need a real worker process: supervision, reaping, and sandbox limits.
 describe("workflow hostile transport and watchdog", () => {
-    for (const [name, source] of failureCases)
-        test(name, async () => {
-            const result = await run(source);
-            expect(result.status).toBe("failed");
-            expect(result.error?.length).toBeLessThanOrEqual(2_000);
-        });
+    test("fails and reaps a worker that violates the frame protocol", async () => {
+        const result = await run(`send({v:2,t:"ready"});setInterval(()=>{},1000)`);
+        expect(result.status).toBe("failed");
+        expect(result.error?.length).toBeLessThanOrEqual(2_000);
+    });
 
     test("accepts coalesced frames containing a terminal value at the JSON size limit", async () => {
         const result = await run(
@@ -89,26 +85,8 @@ describe("workflow hostile transport and watchdog", () => {
         expect(result.error).toContain("Malformed workflow result");
     });
 
-    test("caps concurrent pending RPC requests with a hanging executor", async () => {
-        const requests = Array.from({ length: 17 }, (_, index) =>
-            JSON.stringify({
-                v: 1,
-                t: "rpc",
-                id: String(index),
-                method: "agent",
-                value: { prompt: "hang", options: {} },
-                identity: `site#${index}`,
-            }),
-        ).join(",");
-        const result = await run(
-            `${ready}for(const x of [${requests}])send(x);setInterval(()=>send({v:1,t:"heartbeat"}),25)`,
-            { agentExecutor: () => new Promise(() => {}) },
-        );
-        expect(result.status).toBe("failed");
-    });
-
     test("heartbeat kills a ready worker whose event loop hangs", async () => {
-        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`, { runTimeoutMs: 1_500 });
+        const result = await run(`${ready}setTimeout(()=>{while(true){}},0)`, { platform: { runTimeoutMs: 1_500 } });
         expect(result.error).toContain("heartbeat timed out");
     });
 
@@ -130,8 +108,7 @@ describe("workflow hostile transport and watchdog", () => {
     test("supervises an async workflow that enters an infinite loop", async () => {
         const backend = createWorkflowBackend({
             agentExecutor: async () => ({ value: null }),
-            watchdogMs: 100,
-            runTimeoutMs: 500,
+            platform: { watchdogMs: 100, runTimeoutMs: 500 },
         });
         const { runId } = await backend.launch({
             name: "async hang",
@@ -151,10 +128,10 @@ describe("workflow hostile transport and watchdog", () => {
     test("retains the production 128 MiB heap cap under memory pressure", async () => {
         const result = await run(
             `${ready}const held=[];setImmediate(()=>{for(;;)held.push(new Array(100000).fill(Math.random()))});setInterval(()=>send({v:1,t:"heartbeat"}),25)`,
-            { watchdogMs: 2_000, runTimeoutMs: 3_000 },
+            { platform: { watchdogMs: 2_000, runTimeoutMs: 3_000 } },
         );
         expect(result.status).toBe("failed");
         // Depending on Node/OS reserve behavior, either V8's bounded OOM exit or total supervision wins.
         expect(result.error).toMatch(/heap|exited|timed out/i);
-    }, 5_000);
+    }, 10_000);
 });

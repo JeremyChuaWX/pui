@@ -93,7 +93,7 @@ If final output exceeds the model-visible limit, the extension writes the comple
 
 - **`Unable to start child Pi`**: ensure `pi` is on `PATH`. When the parent is Pi's CLI, the extension safely reuses that CLI entrypoint; SDK hosts do not reuse their own `argv[1]`.
 - **Exited without a final assistant response**: inspect the bounded stderr/diagnostic in the failed tool result. Malformed JSONL lines are reported as diagnostics rather than crashing the parent.
-- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `presets.ts` after review.
+- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `../shared/presets.ts` after review.
 - **Calls remain queued**: inspect `PI_SUBAGENT_MAX_CONCURRENCY`; invalid values fall back to four.
 - **Full output path missing after truncation**: the result remains usable, but the private temporary file could not be created.
 

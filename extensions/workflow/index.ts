@@ -7,8 +7,9 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../../src/headless-workflow.js";
-import { AGENTS, type ResolvedAgentName, resolveModel } from "../subagent/presets.js";
+import { createBackgroundChannel } from "../shared/background-channel.js";
+import { errorMessage } from "../shared/validate.js";
+import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 import {
     createWorkflowBackend,
@@ -16,6 +17,7 @@ import {
     type WorkflowBackend,
     type WorkflowBackendOptions,
 } from "./backend.js";
+import { WorkflowRunManager } from "./manager.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
@@ -23,9 +25,9 @@ import {
     BACKGROUND_WORKFLOW_SCHEMA,
     BACKGROUND_WORKFLOW_VERSION,
     parseBackgroundWorkflowControl,
-} from "./background-protocol.js";
-import { WorkflowRunManager } from "./manager.js";
+} from "./protocol.js";
 import { WorkflowRunStorage } from "./run-storage.js";
+import { SessionLifecycle } from "./session-lifecycle.js";
 import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
 import workflowWritingDocumentation from "./writing-workflows.md" with { type: "text" };
 
@@ -82,47 +84,87 @@ export interface WorkflowExtensionDependencies {
     approvalStore?: WorkflowApprovalStore;
 }
 
+/** Constructs the resource-owning production workflow backend and its host collaborators. */
+export function createDefaultWorkflowDependencies(
+    overrides: WorkflowExtensionDependencies = {},
+): Required<Pick<WorkflowExtensionDependencies, "backend" | "environment" | "instanceId" | "approvalStore">> {
+    const environment = overrides.environment ?? process.env;
+    const backendOptions = overrides.backendOptions;
+    return {
+        environment,
+        instanceId: overrides.instanceId ?? crypto.randomUUID(),
+        approvalStore: overrides.approvalStore ?? new FileWorkflowApprovalStore(),
+        backend:
+            overrides.backend ??
+            createWorkflowBackend({
+                ...backendOptions,
+                agentExecutor: backendOptions?.agentExecutor ?? createWorkflowAgentExecutor(environment),
+                cooperativeExecutor: backendOptions?.agentExecutor ? backendOptions.cooperativeExecutor : true,
+                storage: backendOptions?.storage ?? new WorkflowRunStorage(),
+                policy: backendOptions?.policy ?? defaultWorkflowPolicy(environment),
+            }),
+    };
+}
+
 export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: WorkflowExtensionDependencies = {}): void {
-    const environment = dependencies.environment ?? process.env;
-    const instanceId = dependencies.instanceId ?? crypto.randomUUID();
-    const approvalStore = dependencies.approvalStore ?? new FileWorkflowApprovalStore();
-    const defaultExecutor = createWorkflowAgentExecutor(environment);
-    const backend =
-        dependencies.backend ??
-        createWorkflowBackend({
-            ...dependencies.backendOptions,
-            agentExecutor: dependencies.backendOptions?.agentExecutor ?? defaultExecutor,
-            cooperativeExecutor: dependencies.backendOptions?.agentExecutor
-                ? dependencies.backendOptions.cooperativeExecutor
-                : true,
-            storage: dependencies.backendOptions?.storage ?? new WorkflowRunStorage(),
-            policy: dependencies.backendOptions?.policy ?? {
-                roles: ["generic", "worker", "explore"],
-                resolveModel: (role, requested) =>
-                    resolveModel(AGENTS[role as ResolvedAgentName], requested, environment),
-            },
-        });
-    let sessionId = "unbound",
-        cwd = "",
-        lifecycleGeneration = 0,
-        recoveryAbort: AbortController | undefined,
-        initializationQueue: Promise<void> = Promise.resolve(),
-        unsubscribeControl: (() => void) | undefined,
-        manager: WorkflowRunManager;
-    const emitEnvelope = (
-        type: "ready" | "reset" | "upsert" | "remove",
-        extra: object = {},
-        route = { sessionId, cwd },
-    ) =>
-        pi.events?.emit(BACKGROUND_WORKFLOW_CHANNEL, {
+    const { instanceId, approvalStore, backend } = createDefaultWorkflowDependencies(dependencies);
+    const lifecycle = new SessionLifecycle();
+    let activeEpoch: ReturnType<SessionLifecycle["beginEpoch"]> | undefined;
+    let manager: WorkflowRunManager;
+    const channel = createBackgroundChannel({
+        events: pi.events,
+        eventChannel: BACKGROUND_WORKFLOW_CHANNEL,
+        controlChannel: BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
+        parseControl: (payload) => parseBackgroundWorkflowControl(payload),
+        controlRoute: (control) => ({
+            sessionId: control.sessionId,
+            instanceId: control.instanceId,
+            cwd: control.cwd,
+        }),
+        envelope: (type, route, extra) => ({
             schema: BACKGROUND_WORKFLOW_SCHEMA,
             version: BACKGROUND_WORKFLOW_VERSION,
-            sessionId: route.sessionId,
-            instanceId,
-            cwd: route.cwd,
+            ...route,
             type,
             ...extra,
-        });
+        }),
+        onControl: (control) => {
+            const epoch = activeEpoch;
+            if (!epoch || epoch.stale()) return;
+            const route = { sessionId: control.sessionId, cwd: control.cwd };
+            void (async () => {
+                try {
+                    const result = await manager.control(control.runId, control.action, control.agentId);
+                    if (epoch.stale()) return;
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        ...route,
+                        instanceId,
+                        requestId: control.requestId,
+                        ok: true,
+                        ...(result?.runId ? { linkedRunId: result.runId } : {}),
+                    });
+                } catch (error) {
+                    if (epoch.stale()) return;
+                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
+                        schema: "pi.workflow.background.control.result",
+                        version: 1,
+                        ...route,
+                        instanceId,
+                        requestId: control.requestId,
+                        ok: false,
+                        error: errorMessage(error).slice(0, 2_000),
+                    });
+                }
+            })();
+        },
+    });
+    const emitEnvelope = (
+        type: "ready" | "reset" | "upsert",
+        extra: object = {},
+        route = { sessionId: lifecycle.sessionId, cwd: lifecycle.cwd },
+    ) => channel.emit(type, extra, { ...route, instanceId });
     manager = new WorkflowRunManager({
         backend,
         emit: (run) => emitEnvelope("upsert", { run }, { sessionId: run.sessionId, cwd: run.cwd }),
@@ -145,97 +187,59 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         };
     });
     pi.on("session_start", async (_event, ctx) => {
-        const generation = ++lifecycleGeneration;
-        recoveryAbort?.abort();
-        const abort = new AbortController();
-        recoveryAbort = abort;
+        const epoch = lifecycle.beginEpoch();
+        activeEpoch = epoch;
         const route = {
             sessionId: ctx.sessionManager.getSessionId(),
             cwd: await fs.promises.realpath(ctx.cwd),
         };
-        if (generation !== lifecycleGeneration || abort.signal.aborted) return;
-        sessionId = route.sessionId;
-        cwd = route.cwd;
-        unsubscribeControl?.();
-        unsubscribeControl = pi.events?.on(BACKGROUND_WORKFLOW_CONTROL_CHANNEL, (payload) => {
-            if (generation !== lifecycleGeneration) return;
-            const control = parseBackgroundWorkflowControl(payload, { ...route, instanceId });
-            if (!control) return;
-            void (async () => {
-                try {
-                    const result = await manager.control(control.runId, control.action, control.agentId);
-                    if (generation !== lifecycleGeneration) return;
-                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
-                        schema: "pi.workflow.background.control.result",
-                        version: 1,
-                        ...route,
-                        instanceId,
-                        requestId: control.requestId,
-                        ok: true,
-                        ...(result?.runId ? { linkedRunId: result.runId } : {}),
-                    });
-                } catch (error) {
-                    if (generation !== lifecycleGeneration) return;
-                    pi.events?.emit(BACKGROUND_WORKFLOW_CONTROL_RESULT_CHANNEL, {
-                        schema: "pi.workflow.background.control.result",
-                        version: 1,
-                        ...route,
-                        instanceId,
-                        requestId: control.requestId,
-                        ok: false,
-                        error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000),
-                    });
-                }
-            })();
-        });
+        if (epoch.stale()) return;
+        lifecycle.bind(route);
+        channel.bind({ ...route, instanceId });
         let recovered: Awaited<ReturnType<WorkflowRunManager["initialize"]>> | undefined;
-        const initialize = initializationQueue.then(async () => {
-            if (generation !== lifecycleGeneration || abort.signal.aborted) return;
-            recovered = await manager.initialize(route.cwd);
-        });
-        initializationQueue = initialize.catch(() => {});
-        await initialize;
-        if (generation !== lifecycleGeneration || abort.signal.aborted || !recovered) return;
-        emitEnvelope("ready", {}, route);
+        try {
+            await lifecycle.enqueue(async () => {
+                if (epoch.stale()) return;
+                recovered = await manager.initialize(route.cwd);
+            });
+        } catch (error) {
+            if (!epoch.stale()) ctx.ui.notify(`Could not load stored workflows: ${errorMessage(error)}`, "warning");
+            return;
+        }
+        if (epoch.stale() || !recovered) return;
+        channel.ready({ ...route, instanceId });
         for (const run of recovered.filter(
             (item) =>
                 !isHeadlessWorkflowSession(item.sessionId) &&
                 !["succeeded", "failed", "cancelled", "timed_out"].includes(item.status),
         )) {
-            if (generation !== lifecycleGeneration || abort.signal.aborted) return;
+            if (epoch.stale()) return;
             try {
                 const choice = await ctx.ui.select(
                     `Interrupted workflow: ${run.name}`,
                     ["Resume", "Inspect", "Stop", "Later"],
-                    { signal: abort.signal },
+                    { signal: epoch.signal },
                 );
-                if (generation !== lifecycleGeneration || abort.signal.aborted) return;
+                if (epoch.stale()) return;
                 if (choice === "Resume") await backend.recover?.(run.id);
                 else if (choice === "Inspect") ctx.ui.notify(JSON.stringify(backend.inspect(run.id).run), "info");
                 else if (choice === "Stop") await backend.control(run.id, "stop");
             } catch (error) {
-                if (generation !== lifecycleGeneration || abort.signal.aborted) return;
-                ctx.ui.notify(
-                    `Could not recover workflow ${run.name}: ${error instanceof Error ? error.message : String(error)}`,
-                    "warning",
-                );
+                if (epoch.stale()) return;
+                ctx.ui.notify(`Could not recover workflow ${run.name}: ${errorMessage(error)}`, "warning");
             }
         }
-        if (generation !== lifecycleGeneration || abort.signal.aborted) return;
+        if (epoch.stale()) return;
         for (const run of manager.list())
             if (run.sessionId === route.sessionId && run.cwd === route.cwd) emitEnvelope("upsert", { run }, route);
     });
     pi.on("session_shutdown", async () => {
-        const generation = ++lifecycleGeneration;
-        recoveryAbort?.abort();
-        recoveryAbort = undefined;
-        unsubscribeControl?.();
-        unsubscribeControl = undefined;
-        const route = { sessionId, cwd };
-        const shutdown = initializationQueue.then(() => manager.shutdown());
-        initializationQueue = shutdown.catch(() => {});
-        await shutdown;
-        if (generation === lifecycleGeneration) emitEnvelope("reset", {}, route);
+        const epoch = lifecycle.endEpoch();
+        activeEpoch = undefined;
+        await channel.shutdown(
+            () => lifecycle.enqueue(() => manager.shutdown()),
+            () => !epoch.stale(),
+        );
     });
     const authorize = async (key: string, title: string, body: string, ui: Partial<ExtensionUIContext>) => {
         if (await approvalStore.has(key)) return;
@@ -243,9 +247,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
         await approvalStore.add(key);
     };
     const launchFile = async (requestedPath: string, args: unknown, ctx: ExtensionContext) => {
-        const launchGeneration = lifecycleGeneration;
-        const launchSessionId = sessionId;
-        const launchSignal = recoveryAbort?.signal;
+        const launch = lifecycle.launchContext();
         const canonical = await fs.promises.realpath(ctx.cwd);
         const source = await readWorkflowFile(canonical, requestedPath);
         const repositoryRoot = await findRepositoryRoot(canonical);
@@ -261,7 +263,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             `Source: ${source.path}\nPhases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${source.script}`,
             ctx.ui,
         );
-        if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
+        if (!launch.unchanged(canonical))
             throw new Error("Workflow launch was cancelled because the active session changed during approval.");
         return manager.launch(
             {
@@ -269,10 +271,10 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 script: source.script,
                 entrypoint: "function",
                 args,
-                sessionId: launchSessionId,
+                sessionId: launch.sessionId,
                 cwd: canonical,
             },
-            launchSignal,
+            launch.signal,
         );
     };
     pi.registerCommand("workflow", {
@@ -316,9 +318,7 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
             if (script === undefined) throw new Error("Provide exactly one of inline script or workflow file path.");
             const preview = preflightWorkflow(script);
             const ui = ctx.ui;
-            const launchGeneration = lifecycleGeneration;
-            const launchSessionId = sessionId;
-            const launchSignal = recoveryAbort?.signal;
+            const launch = lifecycle.launchContext();
             const canonical = await fs.promises.realpath(ctx.cwd);
             const project = (await findRepositoryRoot(canonical)) ?? canonical;
             let inlineName = "Inline workflow";
@@ -329,17 +329,17 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
                 `Phases: ${preview.phases.join(", ") || "dynamic"}\nVisible agent calls: ${preview.agents}\nVisible shell calls: ${preview.shells}\n\n${script}`,
                 ui,
             );
-            if (launchGeneration !== lifecycleGeneration || launchSessionId !== sessionId || canonical !== cwd)
+            if (!launch.unchanged(canonical))
                 throw new Error("Workflow launch was cancelled because the active session changed during approval.");
             const launched = await manager.launch(
                 {
                     name: inlineName,
                     script,
                     args: params.args,
-                    sessionId: launchSessionId,
+                    sessionId: launch.sessionId,
                     cwd: canonical,
                 },
-                launchSignal,
+                launch.signal,
             );
             return {
                 content: [
@@ -354,5 +354,5 @@ export function registerWorkflowExtension(pi: ExtensionAPI, dependencies: Workfl
     });
 }
 export default function workflowExtension(pi: ExtensionAPI): void {
-    registerWorkflowExtension(pi);
+    registerWorkflowExtension(pi, createDefaultWorkflowDependencies());
 }

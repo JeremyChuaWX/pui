@@ -1,111 +1,40 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import registerCrawl, { type WebCrawlDependencies } from "./crawl.ts";
-import {
-    WebOutputRetention,
-    type WebOutputRetentionAdapter,
-    type WebOutputRetentionDependencies,
-} from "./output-retention.ts";
-import registerSearch, { type WebSearchDependencies } from "./search.ts";
+import registerCrawl from "./crawl.ts";
+import { WebOutputRetention, type WebOutputRetentionDependencies } from "./output-retention.ts";
+import registerSearch from "./search.ts";
+import type { WebToolDependencies } from "./tool-shell.ts";
 
 /** Provider dependencies and optional complete-output retention settings for the web extension. */
-export type WebExtensionDependencies = WebSearchDependencies &
-    WebCrawlDependencies & {
-        /** Storage and quota overrides applied independently to each session owner. */
-        outputRetention?: WebOutputRetentionDependencies;
+export type WebExtensionDependencies = WebToolDependencies & {
+    /** Storage and quota overrides used when no owner is supplied. */
+    outputRetention?: WebOutputRetentionDependencies;
+    /** Session output-retention owner; supplied by production composition roots and tests. */
+    outputRetentionOwner?: WebOutputRetention;
+};
+
+/** Production fetch, environment, and session retention owner. */
+export function createDefaultWebDependencies(
+    overrides: WebExtensionDependencies = {},
+): Required<Pick<WebExtensionDependencies, "fetch" | "environment" | "outputRetentionOwner">> {
+    return {
+        fetch: overrides.fetch ?? globalThis.fetch,
+        environment: overrides.environment ?? process.env,
+        outputRetentionOwner: overrides.outputRetentionOwner ?? new WebOutputRetention(overrides.outputRetention),
     };
-
-/** Coordinates exactly one output-retention owner per active extension session. */
-class SessionOutputRetention {
-    private owner: WebOutputRetentionAdapter | undefined;
-    private shutdownOwner: WebOutputRetentionAdapter | undefined;
-    private readonly retiredOwners = new Set<WebOutputRetentionAdapter>();
-    private acceptingResults = true;
-    private cleanupQueue = Promise.resolve(true);
-
-    /** Creates a session coordinator that will lazily create retention owners. */
-    constructor(private readonly ownerDependencies: WebOutputRetentionDependencies) {}
-
-    /** Opens a new session for results without reusing the previous session's owner. */
-    startSession(): void {
-        this.acceptingResults = true;
-        this.shutdownOwner = undefined;
-    }
-
-    /**
-     * Returns the active session's shared owner, creating it on first use.
-     *
-     * After shutdown begins, returns a closed owner so late results cannot escape session cleanup.
-     */
-    acquire(): WebOutputRetentionAdapter {
-        if (!this.acceptingResults) {
-            this.shutdownOwner ??= this.closedOwner();
-            return this.shutdownOwner;
-        }
-        this.owner ??= new WebOutputRetention(this.ownerDependencies);
-        return this.owner;
-    }
-
-    /**
-     * Ends the current session and serializes cleanup with earlier shutdowns.
-     *
-     * Owners whose cleanup fails or returns `false` remain tracked for retry on a later shutdown.
-     *
-     * @returns Whether every retired session owner has been cleaned up.
-     */
-    cleanup(): Promise<boolean> {
-        this.acceptingResults = false;
-        const currentOwner = this.owner;
-        let currentCleanup: Promise<boolean> | undefined;
-        if (currentOwner) {
-            this.retiredOwners.add(currentOwner);
-            this.shutdownOwner = currentOwner;
-            currentCleanup = currentOwner.cleanup();
-        }
-        this.owner = undefined;
-        this.cleanupQueue = this.cleanupQueue.then(async () => {
-            if (currentOwner && currentCleanup) {
-                try {
-                    if (await currentCleanup) this.retiredOwners.delete(currentOwner);
-                } catch {
-                    // Keep failed owners so a later session shutdown can retry them.
-                }
-            }
-            await this.cleanupRetiredOwners(currentOwner);
-            return this.retiredOwners.size === 0;
-        });
-        return this.cleanupQueue;
-    }
-
-    private closedOwner(): WebOutputRetentionAdapter {
-        const owner = new WebOutputRetention(this.ownerDependencies);
-        void owner.cleanup();
-        return owner;
-    }
-
-    private async cleanupRetiredOwners(excludedOwner?: WebOutputRetentionAdapter): Promise<void> {
-        await Promise.all(
-            [...this.retiredOwners]
-                .filter((owner) => owner !== excludedOwner)
-                .map(async (owner) => {
-                    try {
-                        if (await owner.cleanup()) this.retiredOwners.delete(owner);
-                    } catch {
-                        // Keep failed owners so a later session shutdown can retry them.
-                    }
-                }),
-        );
-    }
 }
 
 /** Registers the application-owned web discovery and extraction tools. */
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
-    const outputRetention = new SessionOutputRetention(dependencies.outputRetention ?? {});
-    registerSearch(pi, dependencies, () => outputRetention.acquire());
-    registerCrawl(pi, dependencies, () => outputRetention.acquire());
+    const resolved = createDefaultWebDependencies(dependencies);
+    const outputRetention = resolved.outputRetentionOwner;
+    registerSearch(pi, resolved, outputRetention);
+    registerCrawl(pi, resolved, outputRetention);
     pi.on("session_start", () => outputRetention.startSession());
     pi.on("session_shutdown", async () => {
         await outputRetention.cleanup();
     });
 }
 
-export default registerWebExtension;
+export default function webExtension(pi: ExtensionAPI): void {
+    registerWebExtension(pi, createDefaultWebDependencies());
+}

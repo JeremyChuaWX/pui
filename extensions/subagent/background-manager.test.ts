@@ -2,18 +2,12 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AbortableSemaphore } from "../shared/semaphore.ts";
+import { waitFor as waitUntil } from "../test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
-import { AbortableSemaphore } from "./semaphore.ts";
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
-const waitUntil = async (predicate: () => boolean) => {
-    for (let i = 0; i < 500; i++) {
-        if (predicate()) return;
-        await Bun.sleep(2);
-    }
-    throw new Error("timeout");
-};
 function controlled(limit = 1) {
     const semaphore = new AbortableSemaphore(limit);
     const gates: Array<() => void> = [];
@@ -223,7 +217,8 @@ describe("BackgroundSubagentManager", () => {
         await waitUntil(() => deliveries.length === 1);
         const result = deliveries[0];
         expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(12 * 1024);
-        expect(result.text).toContain("Output truncated for delivery");
+        expect(result.text).toContain("[Output truncated:");
+        expect(result.text).toContain("Complete output retained at:");
         expect(result.fullOutputPath).toBeString();
         expect(await fs.promises.readFile(result.fullOutputPath, "utf8")).toBe(output);
         expect((await fs.promises.stat(result.fullOutputPath)).mode & 0o777).toBe(0o600);
@@ -231,6 +226,29 @@ describe("BackgroundSubagentManager", () => {
         await manager.wait([job.id]);
         await manager.shutdown();
         await expect(fs.promises.stat(result.fullOutputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("copies producer-bounded snapshots without applying a second truncation policy", async () => {
+        const model = "m".repeat(300);
+        const manager = new BackgroundSubagentManager({
+            semaphore: new AbortableSemaphore(1),
+            emit: () => {},
+            deliver: () => {},
+            invocation: (args) => ({ command: "fake", args }),
+            run: async (options) => {
+                const details = createTerminalSubagentDetails(options.details, { status: "succeeded", model });
+                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+            },
+        });
+
+        const spawned = await manager.spawn({ prompt: "copy boundary", cwd }, cwd);
+        const [result] = await manager.wait([spawned.id]);
+        expect(result?.id).toBe(spawned.id);
+        expect(result?.status).toBe("succeeded");
+        expect(result?.text).toBe("done");
+        expect(manager.check(spawned.id).run.model).toBe(model);
+        expect(manager.list()[0]?.run.model).toBe(model);
+        await manager.shutdown();
     });
 
     test("shutdown overlapping settlement cannot spill afterward and does not remove runner-owned output", async () => {
@@ -351,7 +369,7 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             outputStore: {
-                save: async () => {
+                savePath: async () => {
                     saveStarted = true;
                     await new Promise<void>((resolve) => (releaseSave = resolve));
                     return "/tmp/full-output";

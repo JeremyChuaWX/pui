@@ -1,40 +1,46 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AbortableSemaphore } from "../subagent/semaphore.js";
-import {
-    MAX_WORKFLOW_ID,
-    type WorkflowActivityV1,
-    type WorkflowAgentSummaryV1,
-    type WorkflowLimitsV1,
-    type WorkflowRunSummaryV1,
-    type WorkflowUsageV1,
+import { BoundedProcessError, killProcessTree, runBoundedProcess } from "../shared/bounded-process.js";
+import { AbortableSemaphore } from "../shared/semaphore.js";
+import { errorMessage } from "../shared/validate.js";
+import { maskLiterals } from "./js-scan.js";
+import type {
+    WorkflowActivityV1,
+    WorkflowAgentSummaryV1,
+    WorkflowEntrypoint,
+    WorkflowLimitsV1,
+    WorkflowRunSummaryV1,
+    WorkflowUsageV1,
 } from "./protocol.js";
-import type { WorkflowRunStorage } from "./run-storage.js";
+import {
+    boundedJson,
+    DEFAULT_WORKFLOW_LIMITS,
+    MAX_SHELL_OUTPUT_BYTES,
+    normalizeWorkflowLimits,
+    runDurableOperation,
+    schemaValid,
+    validateAgentRequest,
+    validateLaunchMetadata,
+    validateShellRequest,
+    validateShellResult,
+    workflowOperationId,
+} from "./rpc-operations.js";
+import type { ImmutableRunLaunch, StoredRun } from "./run-storage.js";
 import { executableWorkflowScript } from "./source.js";
-import { WorkflowWorktreeManager } from "./worktree.js";
+import { parseWorkerFrame, WORKER_SOURCE, WorkerFrameDecoder } from "./worker-protocol.js";
+import { type OwnedWorktree, WorkflowWorktreeManager } from "./worktree.js";
 
-export const DEFAULT_WORKFLOW_LIMITS = {
-    maxConcurrency: 4,
-    maxAgents: 1_000,
-    timeoutMs: 10 * 60_000,
-    maxTokens: 0,
-    maxCost: 0,
-} as const;
+export { DEFAULT_WORKFLOW_LIMITS };
+
 const MAX_SCRIPT_BYTES = 64 * 1024,
-    MAX_FRAME_BYTES = 256 * 1024,
-    MAX_FRAME_LINE_BYTES = MAX_FRAME_BYTES * 2 + 1024,
-    MAX_PENDING = 16,
     STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
     LARGE_RUN_WARNING_AGENTS = 25,
-    MAX_AGENT_PROMPT_BYTES = 8_000,
-    MAX_SHELL_INVOCATIONS = 1_000,
-    MAX_SHELL_OUTPUT_BYTES = 128 * 1024;
+    MAX_SHELL_INVOCATIONS = 1_000;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const INTERRUPTION_WARNING = "Workflow interrupted by host shutdown; resume after restart.";
 
@@ -65,7 +71,6 @@ export interface ShellResult {
     stderr: string;
 }
 export type ShellExecutor = (request: ShellRequest) => Promise<ShellResult>;
-export type WorkflowEntrypoint = "script" | "function";
 
 export interface WorkflowLaunch {
     name: string;
@@ -86,6 +91,43 @@ export interface WorkflowHostPolicy {
     models?: readonly string[];
     resolveModel?: (role: string, requested?: string) => string | undefined;
 }
+/**
+ * Host facilities and supervision timings with production defaults; tests inject overrides here
+ * instead of widening the public options.
+ */
+export interface WorkflowPlatform {
+    now: () => number;
+    uuid: () => string;
+    /** Diagnostics sink for persistence and shutdown failures. */
+    log: (message: string) => void;
+    /**
+     * Trusted worker module source. Never accept untrusted input here. An injected module receives
+     * the same read-only worker-file permission, 128 MiB heap cap, empty environment, and no
+     * filesystem-write, network, or child-process permissions.
+     */
+    workerSource: string;
+    /** Worker startup deadline. */
+    readyTimeoutMs: number;
+    /** Worker heartbeat deadline once ready. */
+    watchdogMs: number;
+    /** Overrides every run's limit-derived total timeout when set. */
+    runTimeoutMs?: number;
+    shutdownGraceMs: number;
+}
+/** The durable-run store the backend requires; WorkflowRunStorage is the production implementation. */
+export interface WorkflowRunStore {
+    readonly root: string;
+    create(cwd: string, id: string, launch: ImmutableRunLaunch, snapshot: WorkflowRunSummaryV1): Promise<string>;
+    snapshot(directory: string, snapshot: WorkflowRunSummaryV1): Promise<void>;
+    complete(directory: string, operation: string, value: unknown, at?: number): Promise<void>;
+    worktree(directory: string, operation: string, owned: OwnedWorktree | null, at?: number): Promise<void>;
+    terminal(directory: string, result: unknown, summary: WorkflowRunSummaryV1): Promise<void>;
+    claimDelivery(directory: string): Promise<boolean>;
+    recoverDeliveryClaim(directory: string, staleAfterMs?: number): Promise<boolean>;
+    markDelivered(directory: string): Promise<void>;
+    releaseClaim(directory: string): Promise<void>;
+    discover(cwd: string): Promise<StoredRun[]>;
+}
 export interface WorkflowBackendOptions {
     agentExecutor: AgentExecutor;
     /** Trusted host command runner. Defaults to the platform shell in the workflow cwd. */
@@ -93,25 +135,12 @@ export interface WorkflowBackendOptions {
     nodePath?: string;
     environment?: NodeJS.ProcessEnv;
     eventSink?: (run: WorkflowRunSummaryV1) => void;
-    now?: () => number;
     policy?: WorkflowHostPolicy;
-    runTimeoutMs?: number;
-    watchdogMs?: number;
-    /** Worker startup deadline. Defaults to 5 seconds in production. */
-    readyTimeoutMs?: number;
-    /**
-     * Trusted-host test hook for injecting worker module source. Never accept untrusted input here.
-     * The injected module receives the same read-only worker-file permission, 128 MiB heap cap,
-     * empty environment, and no filesystem-write, network, or child-process permissions.
-     */
-    testOnlyWorkerSource?: string;
     /** True for executors (such as runSubagent) that honor abort and reap their child process. */
     cooperativeExecutor?: boolean;
-    shutdownGraceMs?: number;
-    storage?: WorkflowRunStorage;
+    storage?: WorkflowRunStore;
     worktreeManager?: WorkflowWorktreeManager;
-    /** Test-only fault injection, called after an operation is durable but before replying. */
-    afterDurableCompletion?: (operationId: string) => Promise<void> | void;
+    platform?: Partial<WorkflowPlatform>;
 }
 export interface WorkflowBackend {
     launch(input: WorkflowLaunch, signal?: AbortSignal): Promise<{ runId: string }>;
@@ -164,156 +193,12 @@ const emptyUsage = (): WorkflowUsageV1 => ({
     cost: 0,
     turns: 0,
 });
-const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const bounded = (value: unknown) => {
-    const text = JSON.stringify(value);
-    if (text === undefined) throw new Error("Workflow values must be JSON serializable.");
-    if (Buffer.byteLength(text) > MAX_FRAME_BYTES) throw new Error("Workflow RPC value exceeds the 256 KiB limit.");
-    return text;
-};
 const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {}) => {
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
 
-function regexLiteralStartsAt(
-    script: string,
-    index: number,
-    previousWord: string | undefined,
-    followsStatement: boolean,
-): boolean {
-    const rawPrefix = script.slice(0, index),
-        prefix = rawPrefix.trimEnd();
-    if (!prefix || followsStatement) return true;
-    if (/(?:\+\+|--)\s*$/.test(prefix)) return false;
-    const previous = prefix.at(-1);
-    if (previous === "}" && /[\r\n]/.test(rawPrefix.slice(prefix.length))) return true;
-    if (previous && "([{=,:;!?&|+-*%^~<>".includes(previous)) return true;
-    return (
-        previousWord !== undefined &&
-        /^(?:await|case|delete|do|else|in|instanceof|new|of|return|throw|typeof|void|yield)$/.test(previousWord)
-    );
-}
-
-function executableCode(source: string): string {
-    const output = [...source];
-    let mode: "code" | "single" | "double" | "template" | "line" | "block" = "code",
-        escaped = false;
-    const templates: number[] = [];
-    for (let i = 0; i < source.length; i++) {
-        const c = source[i],
-            next = source[i + 1];
-        if (mode === "code") {
-            if (c === "'" || c === '"' || c === "`") {
-                mode = c === "'" ? "single" : c === '"' ? "double" : "template";
-                output[i] = " ";
-                continue;
-            } else if (c === "/" && next === "/") mode = "line";
-            else if (c === "/" && next === "*") mode = "block";
-            else if (templates.length && c === "{") templates[templates.length - 1]++;
-            else if (templates.length && c === "}" && --templates[templates.length - 1] === 0) {
-                templates.pop();
-                mode = "template";
-            } else continue;
-        } else if (mode === "template" && c === "$" && next === "{" && !escaped) {
-            output[i] = output[i + 1] = " ";
-            templates.push(1);
-            i++;
-            mode = "code";
-            continue;
-        } else if (mode === "line" && (c === "\n" || c === "\r")) {
-            mode = "code";
-            continue;
-        } else if (mode === "block" && c === "*" && next === "/") {
-            output[i] = output[i + 1] = " ";
-            i++;
-            mode = "code";
-            continue;
-        } else if (
-            (mode === "single" && c === "'") ||
-            (mode === "double" && c === '"') ||
-            (mode === "template" && c === "`")
-        ) {
-            if (!escaped) mode = "code";
-        }
-        output[i] = c === "\n" || c === "\r" ? c : " ";
-        escaped = c === "\\" && !escaped;
-        if (c !== "\\") escaped = false;
-    }
-    return output.join("");
-}
-
-/** Mask regex literals after comments, strings, and static template text have already been removed. */
-function maskRegexLiterals(source: string): string {
-    const output = [...source],
-        controlParens: boolean[] = [],
-        declarationParens: boolean[] = [],
-        blockBraces: boolean[] = [];
-    let previousWord: string | undefined;
-    let functionDeclarationPending = false;
-    let declarationBlockPending = false;
-    let followsControlCondition = false;
-    for (let index = 0; index < source.length; index++) {
-        const character = source[index];
-        if (character === "/" && regexLiteralStartsAt(source, index, previousWord, followsControlCondition)) {
-            const start = index;
-            let characterClass = false;
-            for (index++; index < source.length; index++) {
-                if (source[index] === "\\") index++;
-                else if (source[index] === "[") characterClass = true;
-                else if (source[index] === "]") characterClass = false;
-                else if (source[index] === "/" && !characterClass) break;
-            }
-            while (/[a-z]/i.test(source[index + 1] ?? "")) index++;
-            for (let masked = start; masked <= index && masked < output.length; masked++)
-                if (output[masked] !== "\n" && output[masked] !== "\r") output[masked] = " ";
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (/[A-Za-z_$]/.test(character)) {
-            const end = /^[\w$]*/.exec(source.slice(index + 1))?.[0].length ?? 0;
-            previousWord = source.slice(index, index + end + 1);
-            if (previousWord === "function" || previousWord === "class") {
-                const prefix = source.slice(0, index).trimEnd(),
-                    declarationPrefix = /(?:^|[{};])\s*(?:export(?:\s+default)?)?$/;
-                if (previousWord === "function")
-                    functionDeclarationPending =
-                        declarationPrefix.test(prefix) || /(?:^|[{};])\s*(?:export\s+)?async\s*$/.test(prefix);
-                else declarationBlockPending = declarationPrefix.test(prefix);
-            }
-            followsControlCondition = false;
-            index += end;
-        } else if (character === "(") {
-            controlParens.push(/^(?:catch|for|if|switch|while|with)$/.test(previousWord ?? ""));
-            declarationParens.push(functionDeclarationPending);
-            functionDeclarationPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === "{") {
-            blockBraces.push(
-                declarationBlockPending ||
-                    followsControlCondition ||
-                    /^(?:do|else|finally|try)$/.test(previousWord ?? "") ||
-                    !source.slice(0, index).trim(),
-            );
-            declarationBlockPending = false;
-            previousWord = undefined;
-            followsControlCondition = false;
-        } else if (character === ")") {
-            followsControlCondition = controlParens.pop() ?? false;
-            declarationBlockPending ||= declarationParens.pop() ?? false;
-            previousWord = undefined;
-        } else if (character === "}") {
-            previousWord = undefined;
-            followsControlCondition = blockBraces.pop() ?? false;
-        } else if (!/\s/.test(character)) {
-            previousWord = undefined;
-            followsControlCondition = false;
-        }
-    }
-    return output.join("");
-}
-
 function eraseTypeOnlyNamespaces(source: string): string {
-    const code = maskRegexLiterals(executableCode(source)),
+    const code = maskLiterals(source, { preserveTemplateInterpolations: true }),
         output = [...source];
     for (const match of code.matchAll(/\bnamespace\s+[A-Za-z_$][\w$]*\s*\{/g)) {
         const start = match.index,
@@ -343,7 +228,7 @@ export function preflightWorkflow(
     const executable = executableWorkflowScript(script, entrypoint),
         erasableExecutable = eraseTypeOnlyNamespaces(executable);
     // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
-    const sourceCode = maskRegexLiterals(executableCode(executable));
+    const sourceCode = maskLiterals(executable, { preserveTemplateInterpolations: true });
     if (
         /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
         /\bmodule\s+[A-Za-z_$]/.test(sourceCode) ||
@@ -356,8 +241,11 @@ export function preflightWorkflow(
     const forbidden =
         /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
     // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
-    const code = maskRegexLiterals(
-        executableCode(new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`)),
+    const code = maskLiterals(
+        new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`),
+        {
+            preserveTemplateInterpolations: true,
+        },
     );
     if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
     return {
@@ -369,33 +257,26 @@ export function preflightWorkflow(
     };
 }
 async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
-            executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
-            args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"],
-            child = spawn(executable, args, {
-                stdio: ["ignore", "pipe", "pipe"],
-                env: environment,
-                windowsHide: true,
-            });
-        let output = "",
-            settled = false;
-        const finish = (error?: Error) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            error ? reject(error) : resolve(output.trim());
-        };
-        const timer = setTimeout(() => {
-            child.kill("SIGKILL");
-            finish(new Error("version probe timed out"));
-        }, 2_000);
-        child.stdout.on("data", (c) => {
-            output = `${output}${c}`.slice(0, 1024);
+    const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
+        executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
+        args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"];
+    let result: Awaited<ReturnType<typeof runBoundedProcess>>;
+    try {
+        result = await runBoundedProcess({
+            command: executable,
+            args,
+            env: environment,
+            timeoutMs: 2_000,
+            directChildOnly: true,
+            output: { maxBytes: 1024, overflow: "keep-head" },
         });
-        child.once("error", (e) => finish(e));
-        child.once("close", (code) => finish(code === 0 ? undefined : new Error(`exit code ${code}`)));
-    });
+    } catch (error) {
+        if (error instanceof BoundedProcessError && error.reason === "timeout")
+            throw new Error("version probe timed out");
+        throw error;
+    }
+    if (result.exitCode !== 0) throw new Error(`exit code ${result.exitCode}`);
+    return result.stdout.trim();
 }
 export async function resolveWorkflowNode(
     options: { environment?: NodeJS.ProcessEnv; configuredPath?: string } = {},
@@ -433,121 +314,27 @@ export async function resolveWorkflowNode(
     );
 }
 
-function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
-    if (request.signal.aborted) return Promise.reject(new Error("Shell command was cancelled."));
-    return new Promise((resolve, reject) => {
-        const child = spawn(request.command, {
+async function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
+    try {
+        return await runBoundedProcess({
+            command: request.command,
             cwd: request.cwd,
             env: { ...environment, ...request.env },
             shell: true,
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: process.platform !== "win32",
-            windowsHide: true,
+            timeoutMs: request.timeoutMs,
+            signal: request.signal,
+            termination: { graceMs: 500 },
+            output: { maxBytes: MAX_SHELL_OUTPUT_BYTES, overflow: "fail", scope: "combined" },
         });
-        let stdout = "",
-            stderr = "",
-            settled = false,
-            closed = false,
-            terminationReason: "cancelled" | "timed_out" | "output" | undefined,
-            killTimer: NodeJS.Timeout | undefined,
-            spawnError: Error | undefined;
-        const sendSignal = (signal: NodeJS.Signals) => {
-            if (closed) return;
-            try {
-                process.platform !== "win32" && child.pid ? process.kill(-child.pid, signal) : child.kill(signal);
-            } catch {}
-        };
-        const terminate = (reason: NonNullable<typeof terminationReason>) => {
-            if (terminationReason || closed) return;
-            terminationReason = reason;
-            sendSignal("SIGTERM");
-            killTimer = setTimeout(() => sendSignal("SIGKILL"), 500);
-            killTimer.unref();
-        };
-        const finish = (error?: Error, result?: ShellResult) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            if (killTimer) clearTimeout(killTimer);
-            request.signal.removeEventListener("abort", abort);
-            if (error) reject(error);
-            else if (result) resolve(result);
-            else reject(new Error("Shell command returned no result."));
-        };
-        const abort = () => terminate("cancelled");
-        const append = (stream: "stdout" | "stderr", chunk: string) => {
-            if (terminationReason === "output") return;
-            if (stream === "stdout") stdout += chunk;
-            else stderr += chunk;
-            if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > MAX_SHELL_OUTPUT_BYTES) terminate("output");
-        };
-        const timer = setTimeout(() => terminate("timed_out"), request.timeoutMs);
-        request.signal.addEventListener("abort", abort, { once: true });
-        child.stdout?.setEncoding("utf8");
-        child.stderr?.setEncoding("utf8");
-        child.stdout?.on("data", (chunk: string) => append("stdout", chunk));
-        child.stderr?.on("data", (chunk: string) => append("stderr", chunk));
-        child.once("error", (error) => {
-            spawnError = error;
-        });
-        child.once("close", (code) => {
-            // The platform shell can exit while one of its descendants ignores SIGTERM.
-            if (terminationReason) sendSignal("SIGKILL");
-            closed = true;
-            if (spawnError) finish(spawnError);
-            else if (terminationReason === "cancelled") finish(new Error("Shell command was cancelled."));
-            else if (terminationReason === "timed_out") finish(new Error("Shell command timed out."));
-            else if (terminationReason === "output")
-                finish(new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`));
-            else finish(undefined, { exitCode: code ?? 1, stdout, stderr });
-        });
-        if (request.signal.aborted) abort();
-    });
-}
-
-function validateSchema(schema: unknown, depth = 0, state = { nodes: 0, properties: 0 }): void {
-    if (depth > 16 || ++state.nodes > 1_000) throw new Error("Agent schema exceeds complexity limits.");
-    if (schema === null || typeof schema === "string" || typeof schema === "boolean" || typeof schema === "number")
-        return;
-    if (Array.isArray(schema)) {
-        for (const value of schema) validateSchema(value, depth + 1, state);
-        return;
-    }
-    if (!schema || typeof schema !== "object") throw new Error("Agent schema must be JSON-compatible.");
-    for (const [key, value] of Object.entries(schema)) {
-        if (++state.properties > 2_000 || key.length > 512) throw new Error("Agent schema exceeds property limits.");
-        validateSchema(value, depth + 1, state);
+    } catch (error) {
+        if (!(error instanceof BoundedProcessError)) throw error;
+        if (error.reason === "cancelled") throw new Error("Shell command was cancelled.");
+        if (error.reason === "timeout") throw new Error("Shell command timed out.");
+        if (error.reason === "output")
+            throw new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`);
+        throw new Error(error.message);
     }
 }
-
-function schemaValid(value: unknown, schema: unknown): boolean {
-    if (!schema || typeof schema !== "object" || Array.isArray(schema)) return true;
-    const s = schema as Record<string, unknown>;
-    if (s.type === "object") {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-        const o = value as Record<string, unknown>;
-        if (Array.isArray(s.required) && !s.required.every((k) => typeof k === "string" && k in o)) return false;
-        if (s.properties && typeof s.properties === "object")
-            for (const [k, child] of Object.entries(s.properties))
-                if (k in o && !schemaValid(o[k], child)) return false;
-    } else if (s.type === "array") return Array.isArray(value) && value.every((v) => schemaValid(v, s.items));
-    else if (s.type === "string") return typeof value === "string";
-    else if (s.type === "number") return typeof value === "number";
-    else if (s.type === "boolean") return typeof value === "boolean";
-    return true;
-}
-
-// The only cross-realm value retained by VM code is this closure's bridge. Its callable wrappers
-// and every value visible to workflow code are created by the context itself.
-const BOOTSTRAP_SOURCE = `(()=>{const bridge=__bridge,parse=JSON.parse,stringify=JSON.stringify,agentOcc=new Map(),shellOcc=new Map(),call=(method,value,identity)=>Promise.resolve(bridge(stringify({method,value,identity}))).then(parse),site=()=>String(new Error().stack||"").split("\\n")[4]?.trim().slice(0,512)||"unknown",identity=occ=>{const s=site(),n=(occ.get(s)||0)+1;occ.set(s,n);return s+"#"+n},phase=n=>call("phase",{name:n}),log=x=>call("log",{message:String(x)}),agent=(prompt,options={})=>call("agent",{prompt,options},identity(agentOcc)),shell=(command,options={})=>call("shell",{command,options},identity(shellOcc)),parallel=x=>Array.isArray(x)?Promise.all(x):Promise.all(Object.entries(x).map(async([k,v])=>[k,await v])).then(Object.fromEntries),pipeline=async(items,fn,options={})=>{const out=new Array(items.length),limit=Math.max(1,Math.min(16,options.concurrency||4));let cursor=0;await Promise.all(Array.from({length:Math.min(limit,items.length)},async()=>{for(;;){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i)}}));return out},workflowArgs=parse(__args),workflowContext=Object.freeze({phase,log,agent,shell,parallel,pipeline});Object.assign(globalThis,{phase,log,agent,shell,parallel,pipeline,args:workflowArgs,__puiWorkflowContext:workflowContext,__puiWorkflowArgs:workflowArgs});delete globalThis.__bridge;delete globalThis.__args})()`;
-// The function-entrypoint prefix keeps its historical byte length: stack columns feed durable agent identities.
-// Using `let` and `this` below exactly offsets the added `"shell",` entry.
-// Bridge operations are drained because fail-fast user promises may otherwise leave sibling RPCs pending.
-const WORKER_SOURCE = String.raw`import vm from "node:vm";import {stripTypeScriptTypes} from "node:module";
-const send=v=>process.stdout.write(JSON.stringify({v:1,...v})+"\n");let buffer="",next=0;const pending=new Map(),operations=new Set();
-process.stdin.setEncoding("utf8");process.stdin.on("data",chunk=>{buffer+=chunk;if(Buffer.byteLength(buffer)>262144)process.exit(72);let i;while((i=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,i);buffer=buffer.slice(i+1);let m;try{m=JSON.parse(line)}catch{process.exit(73)}if(m.v!==1)process.exit(74);if(m.t==="start")void run(m);else if(m.t==="reply"){const p=pending.get(m.id);if(p){pending.delete(m.id);m.ok?p.resolve(m.json):p.reject(String(m.error).slice(0,2000))}}}});
-const host=json=>{const operation=new Promise((resolve,reject)=>{let request;try{request=JSON.parse(json)}catch(e){reject(e);return}const id=String(++next);pending.set(id,{resolve,reject});send({t:"rpc",id,...request})});operations.add(operation);operation.finally(()=>operations.delete(operation)).catch(()=>{});return operation};
-async function run(m){const context=vm.createContext({__bridge:host,__args:JSON.stringify(m.args??null)},{codeGeneration:{strings:false,wasm:false}});new vm.Script(${JSON.stringify(BOOTSTRAP_SOURCE)}).runInContext(context);let terminal;try{if(m.entrypoint!=="script"&&m.entrypoint!=="function")throw new Error("Invalid workflow entrypoint.");const wrapped=m.entrypoint==="function"?'(async(__puiWorkflowContext,__puiWorkflowArgs)=>{for(let key of ["phase","log","agent","shell","parallel","pipeline","args","__puiWorkflowContext","__puiWorkflowArgs"])delete this[key];'+m.script+'\n})(globalThis.__puiWorkflowContext,globalThis.__puiWorkflowArgs)':'(async()=>{'+m.script+'\n})()';const source=stripTypeScriptTypes(wrapped,{mode:"strip"});const result=await new vm.Script(source,{timeout:1000}).runInContext(context,{timeout:1000});terminal={t:"terminal",ok:true,json:JSON.stringify(result)}}catch(e){terminal={t:"terminal",ok:false,error:String(e?.message||e).slice(0,2000)}}while(operations.size)await Promise.allSettled([...operations]);send(terminal)}send({t:"ready"});setInterval(()=>send({t:"heartbeat"}),1000).unref();`;
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const home = fs.realpathSync(os.homedir()),
@@ -571,7 +358,17 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
     let shuttingDown = false,
         pendingLaunches = 0,
         pendingLaunchWaiter: (() => void) | undefined;
-    const now = options.now ?? Date.now;
+    const platform: WorkflowPlatform = {
+        now: Date.now,
+        uuid: () => crypto.randomUUID(),
+        log: (message) => console.error(message),
+        workerSource: WORKER_SOURCE,
+        readyTimeoutMs: READY_TIMEOUT_MS,
+        watchdogMs: HEARTBEAT_TIMEOUT_MS,
+        shutdownGraceMs: 2_000,
+        ...options.platform,
+    };
+    const now = platform.now;
     const persist = (a: ActiveRun, write: () => Promise<void>) => (a.persistence = a.persistence.then(write, write));
     const emit = (copy: WorkflowRunSummaryV1) => {
         options.eventSink?.(copy);
@@ -587,7 +384,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         const storage = options.storage;
         if (directory && storage && !TERMINAL.has(copy.status))
             void persist(a, () => storage.snapshot(directory, copy)).catch((error) =>
-                console.error(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
+                platform.log(`Workflow snapshot persistence failed: ${errorMessage(error)}`),
             );
     };
     const publishTerminal = (a: ActiveRun, result: unknown) => {
@@ -598,7 +395,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             storage = options.storage;
         if (directory && storage)
             void persist(a, () => storage.terminal(directory, result, copy)).catch((error) =>
-                console.error(`Workflow terminal persistence failed: ${errorMessage(error)}`),
+                platform.log(`Workflow terminal persistence failed: ${errorMessage(error)}`),
             );
         emit(copy);
     };
@@ -647,7 +444,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         try {
             directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
             const worker = path.join(directory, "worker.mjs");
-            await fs.promises.writeFile(worker, options.testOnlyWorkerSource ?? WORKER_SOURCE, { mode: 0o600 });
+            await fs.promises.writeFile(worker, platform.workerSource, { mode: 0o600 });
             const canonical = await realpath(worker);
             const child = spawn(
                 node,
@@ -656,18 +453,8 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             );
             active.child = child;
             const terminate = () => {
-                try {
-                    process.platform !== "win32" && child.pid
-                        ? process.kill(-child.pid, "SIGTERM")
-                        : child.kill("SIGTERM");
-                } catch {}
-                setTimeout(() => {
-                    try {
-                        process.platform !== "win32" && child.pid
-                            ? process.kill(-child.pid, "SIGKILL")
-                            : child.kill("SIGKILL");
-                    } catch {}
-                }, 500).unref();
+                killProcessTree(child, "SIGTERM");
+                setTimeout(() => killProcessTree(child, "SIGKILL"), 500).unref();
             };
             active.controller.signal.addEventListener("abort", terminate, { once: true });
             if (active.controller.signal.aborted) terminate();
@@ -677,8 +464,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 publish(active);
             }
             if (!child.stdin || !child.stdout) throw new Error("Workflow worker pipes were not created.");
-            let buffer = "",
-                pending = 0,
+            let pending = 0,
                 agents = 0,
                 shells = 0,
                 phaseId: string | undefined,
@@ -688,19 +474,13 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (error.code !== "EPIPE") finish("failed", errorMessage(error));
             });
             const send = (frame: unknown) => {
-                const payload = `${bounded(frame)}\n`;
+                const payload = `${boundedJson(frame)}\n`;
                 if (!child.stdin.writable || child.stdin.writableEnded || child.stdin.destroyed) return false;
                 return child.stdin.write(payload);
             };
-            const exact = (frame: Record<string, unknown>, keys: readonly string[]) =>
-                Object.keys(frame).length === keys.length && keys.every((key) => key in frame);
             const handle = async (inputFrame: unknown) => {
-                if (!inputFrame || typeof inputFrame !== "object" || Array.isArray(inputFrame))
-                    throw new Error("Malformed workflow worker frame.");
-                const frame = inputFrame as Record<string, unknown>;
-                if (frame.v !== 1 || typeof frame.t !== "string") throw new Error("Malformed workflow worker frame.");
+                const frame = parseWorkerFrame(inputFrame, { ready, pending });
                 if (frame.t === "ready") {
-                    if (ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow ready frame.");
                     ready = true;
                     lastBeat = now();
                     send({
@@ -713,43 +493,16 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     return;
                 }
                 if (frame.t === "heartbeat") {
-                    if (!ready || !exact(frame, ["v", "t"])) throw new Error("Malformed workflow heartbeat frame.");
                     lastBeat = now();
                     return;
                 }
                 if (frame.t === "terminal") {
-                    if (pending > 0)
-                        throw new Error("Workflow worker sent a terminal frame with pending RPC requests.");
-                    if (
-                        !ready ||
-                        (frame.ok === true
-                            ? !(exact(frame, ["v", "t", "ok"]) || exact(frame, ["v", "t", "ok", "json"]))
-                            : frame.ok !== false || !exact(frame, ["v", "t", "ok", "error"])) ||
-                        (frame.ok === false && typeof frame.error !== "string")
-                    )
-                        throw new Error("Malformed workflow terminal frame.");
-                    if (frame.json !== undefined && typeof frame.json !== "string")
-                        throw new Error("Malformed workflow result.");
-                    if (typeof frame.json === "string" && Buffer.byteLength(frame.json) > MAX_FRAME_BYTES)
-                        throw new Error("Oversized workflow result.");
-                    frame.ok === true
-                        ? finish("succeeded", undefined, frame.json as string | undefined)
-                        : finish("failed", String(frame.error));
+                    frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", frame.error);
                     child.stdin.end();
                     child.kill("SIGTERM");
                     return;
                 }
-                if (
-                    frame.t !== "rpc" ||
-                    !ready ||
-                    typeof frame.id !== "string" ||
-                    typeof frame.method !== "string" ||
-                    !(["agent", "shell"].includes(frame.method)
-                        ? exact(frame, ["v", "t", "id", "method", "value", "identity"])
-                        : exact(frame, ["v", "t", "id", "method", "value"])) ||
-                    ++pending > MAX_PENDING
-                )
-                    throw new Error("Invalid or excessive workflow RPC request.");
+                pending++;
                 try {
                     let value: unknown = null;
                     if (frame.method === "phase") {
@@ -786,295 +539,149 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                         publish(active);
                     } else if (frame.method === "shell") {
                         if (++shells > MAX_SHELL_INVOCATIONS) throw new Error("Workflow shell cap exceeded.");
-                        if (
-                            typeof frame.identity !== "string" ||
-                            frame.identity.length > 1024 ||
-                            !frame.identity.includes("#")
-                        )
-                            throw new Error("Invalid workflow operation identity.");
-                        const operationId = `shell-${createHash("sha256").update(frame.identity).digest("hex")}`.slice(
-                            0,
-                            MAX_WORKFLOW_ID,
-                        );
+                        const operationId = workflowOperationId("shell", frame.identity);
                         if (active.completions.has(operationId)) {
                             value = structuredClone(active.completions.get(operationId));
-                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
                             return;
                         }
                         await waitWhilePaused(active);
-                        if (!frame.value || typeof frame.value !== "object" || Array.isArray(frame.value))
-                            throw new Error("Invalid shell request.");
-                        const request = frame.value as Record<string, unknown>,
-                            command = request.command,
-                            rawOptions = request.options;
-                        if (
-                            Object.keys(request).some((key) => !["command", "options"].includes(key)) ||
-                            typeof command !== "string" ||
-                            !command.trim() ||
-                            Buffer.byteLength(command) > 8_000 ||
-                            !rawOptions ||
-                            typeof rawOptions !== "object" ||
-                            Array.isArray(rawOptions)
-                        )
-                            throw new Error("Invalid shell request.");
-                        const opts = rawOptions as Record<string, unknown>;
-                        if (
-                            Object.keys(opts).some((key) => !["timeoutMs", "env"].includes(key)) ||
-                            (opts.timeoutMs !== undefined &&
-                                (!Number.isFinite(opts.timeoutMs) || (opts.timeoutMs as number) <= 0)) ||
-                            (opts.env !== undefined &&
-                                (!opts.env || typeof opts.env !== "object" || Array.isArray(opts.env)))
-                        )
-                            throw new Error("Invalid or unknown shell option.");
-                        let env: Record<string, string> | undefined;
-                        if (opts.env !== undefined) {
-                            const entries = Object.entries(opts.env as Record<string, unknown>);
-                            if (
-                                entries.length > 128 ||
-                                entries.some(
-                                    ([key, item]) =>
-                                        !key ||
-                                        key.length > 256 ||
-                                        key.includes("=") ||
-                                        key.includes("\0") ||
-                                        typeof item !== "string" ||
-                                        Buffer.byteLength(item) > 8_000,
-                                )
-                            )
-                                throw new Error("Invalid shell environment override.");
-                            env = Object.fromEntries(entries) as Record<string, string>;
-                        }
-                        bounded(opts);
-                        const timeoutMs = Math.min(
-                                DEFAULT_WORKFLOW_LIMITS.timeoutMs,
-                                Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                            ),
-                            activity: WorkflowActivityV1 = {
-                                sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
-                                timestamp: now(),
-                                kind: "tool" as const,
-                                title: `$ ${command}`.slice(0, 2000),
-                            };
+                        const request = validateShellRequest(frame.value);
+                        const activity: WorkflowActivityV1 = {
+                            sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
+                            timestamp: now(),
+                            kind: "tool" as const,
+                            title: `$ ${request.command}`.slice(0, 2000),
+                        };
                         active.summary.recentActivity.push(activity);
                         active.summary.recentActivity = active.summary.recentActivity.slice(-20);
                         publish(active);
-                        const controller = new AbortController(),
-                            signal = AbortSignal.any([active.controller.signal, controller.signal]);
-                        let timer: NodeJS.Timeout | undefined;
-                        const release = await active.semaphore.acquire(active.controller.signal);
-                        try {
-                            const timeout = new Promise<never>((_, reject) => {
-                                    timer = setTimeout(() => {
-                                        controller.abort();
-                                        reject(new Error("Shell command timed out."));
-                                    }, timeoutMs);
-                                }),
-                                operation = Promise.resolve(
-                                    shellExecutor({ command, cwd: input.cwd, env, signal, timeoutMs }),
-                                );
-                            active.cooperativeTasks.add(operation);
-                            operation.finally(() => active.cooperativeTasks.delete(operation)).catch(() => {});
-                            const result = await Promise.race([operation, timeout]);
-                            if (
-                                !result ||
-                                typeof result !== "object" ||
-                                Array.isArray(result) ||
-                                Object.keys(result).some((key) => !["exitCode", "stdout", "stderr"].includes(key)) ||
-                                !Number.isInteger(result.exitCode) ||
-                                result.exitCode < 0 ||
-                                typeof result.stdout !== "string" ||
-                                typeof result.stderr !== "string" ||
-                                Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) >
-                                    MAX_SHELL_OUTPUT_BYTES
-                            )
-                                throw new Error("Shell executor returned an invalid or oversized result.");
-                            value = result;
-                            bounded(value);
-                            if (active.directory)
-                                await options.storage?.complete(active.directory, operationId, value, now());
-                            active.completions.set(operationId, structuredClone(value));
-                            await options.afterDurableCompletion?.(operationId);
-                        } catch (error) {
-                            activity.isError = true;
-                            throw error;
-                        } finally {
-                            if (timer) clearTimeout(timer);
-                            release();
-                            publish(active);
-                        }
+                        value = await runDurableOperation({
+                            run: active,
+                            operationId,
+                            timeoutMs: request.timeoutMs,
+                            timeoutMessage: "Shell command timed out.",
+                            cooperative: true,
+                            now,
+                            execute: (signal) =>
+                                Promise.resolve(
+                                    shellExecutor({
+                                        command: request.command,
+                                        cwd: input.cwd,
+                                        env: request.env,
+                                        signal,
+                                        timeoutMs: request.timeoutMs,
+                                    }),
+                                ),
+                            validateResult: (result) => {
+                                validateShellResult(result);
+                                boundedJson(result);
+                                return result;
+                            },
+                            journal: async (durable, at) => {
+                                if (active.directory)
+                                    await options.storage?.complete(active.directory, operationId, durable, at);
+                            },
+                            onSettled: (failure) => {
+                                if (failure) activity.isError = true;
+                                publish(active);
+                            },
+                        });
                     } else if (frame.method === "agent") {
                         if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
                         if (agents === LARGE_RUN_WARNING_AGENTS) {
                             active.summary.warning = `Large workflow run: ${LARGE_RUN_WARNING_AGENTS} agents scheduled.`;
                             publish(active);
                         }
-                        if (
-                            typeof frame.identity !== "string" ||
-                            frame.identity.length > 1024 ||
-                            !frame.identity.includes("#")
-                        )
-                            throw new Error("Invalid workflow operation identity.");
-                        // Stable across hosts and runtimes while remaining bounded by the protocol.
-                        const operationId = `agent-${createHash("sha256").update(frame.identity).digest("hex")}`.slice(
-                            0,
-                            MAX_WORKFLOW_ID,
-                        );
+                        const operationId = workflowOperationId("agent", frame.identity);
                         if (active.completions.has(operationId)) {
                             value = structuredClone(active.completions.get(operationId));
-                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
                             return;
                         }
                         await waitWhilePaused(active);
-                        if (!frame.value || typeof frame.value !== "object" || Array.isArray(frame.value))
-                            throw new Error("Invalid agent request payload.");
-                        const request = frame.value as Record<string, unknown>,
-                            prompt = request.prompt,
-                            rawOptions = request.options;
-                        if (typeof prompt !== "string") throw new Error("Agent prompt must be a string.");
-                        if (!prompt.trim()) throw new Error("Agent prompt must not be empty.");
-                        const promptBytes = Buffer.byteLength(prompt);
-                        if (promptBytes > MAX_AGENT_PROMPT_BYTES)
-                            throw new Error(
-                                `Agent prompt exceeds the ${MAX_AGENT_PROMPT_BYTES.toLocaleString("en-US")}-byte limit (received ${promptBytes.toLocaleString("en-US")} bytes).`,
-                            );
-                        if (!rawOptions || typeof rawOptions !== "object" || Array.isArray(rawOptions))
-                            throw new Error("Agent options must be an object.");
-                        const opts = rawOptions as Record<string, unknown>;
-                        if (
-                            Object.keys(opts).some(
-                                (key) =>
-                                    !["label", "role", "model", "schema", "retries", "timeoutMs", "isolation"].includes(
-                                        key,
-                                    ),
-                            ) ||
-                            (opts.label !== undefined && (typeof opts.label !== "string" || opts.label.length > 512)) ||
-                            (opts.role !== undefined &&
-                                (typeof opts.role !== "string" || !opts.role || opts.role.length > 128)) ||
-                            (opts.model !== undefined &&
-                                (typeof opts.model !== "string" || !opts.model || opts.model.length > 256)) ||
-                            (opts.schema !== undefined &&
-                                (!opts.schema || typeof opts.schema !== "object" || Array.isArray(opts.schema))) ||
-                            (opts.retries !== undefined &&
-                                (!Number.isInteger(opts.retries) || (opts.retries as number) < 0)) ||
-                            (opts.timeoutMs !== undefined &&
-                                (!Number.isFinite(opts.timeoutMs) || (opts.timeoutMs as number) <= 0))
-                        )
-                            throw new Error("Invalid or unknown agent option.");
-                        bounded(opts);
-                        if (opts.schema !== undefined) validateSchema(opts.schema);
-                        const role = typeof opts.role === "string" ? opts.role : "generic",
-                            isolation = opts.isolation,
-                            schema = opts.schema as Record<string, unknown> | undefined;
-                        if (isolation !== undefined && isolation !== "worktree")
-                            throw new Error(`Unknown agent isolation: ${String(isolation)}`);
-                        const writeCapable = role !== "explore" && role !== "read-only";
-                        if (
-                            writeCapable &&
-                            isolation !== "worktree" &&
-                            active.activeSharedWriters > 0 &&
-                            !options.policy?.allowUnsafeSharedCheckout
-                        )
-                            throw new Error("Concurrent write-capable agents require worktree isolation.");
-                        if (options.policy?.roles && !options.policy.roles.includes(role))
-                            throw new Error(`Agent role is not allowed by host policy: ${role}`);
-                        const model =
-                            options.policy?.resolveModel?.(
-                                role,
-                                typeof opts.model === "string" ? opts.model : undefined,
-                            ) ?? (typeof opts.model === "string" ? opts.model : undefined);
-                        if (model && options.policy?.models && !options.policy.models.includes(model))
-                            throw new Error(`Agent model is not allowed by host policy: ${model}`);
+                        const request = validateAgentRequest(frame.value, {
+                            policy: options.policy,
+                            activeSharedWriters: active.activeSharedWriters,
+                        });
                         const agent: WorkflowAgentSummaryV1 = {
                             id: operationId,
-                            label: String(opts.label || prompt).slice(0, 512),
-                            role,
-                            ...(model ? { model } : {}),
+                            label: request.label,
+                            role: request.role,
+                            ...(request.model ? { model: request.model } : {}),
                             status: "running",
                             phaseId,
                             startedAt: now(),
                             updatedAt: now(),
                             usage: emptyUsage(),
-                            prompt: prompt.slice(0, 8000),
+                            prompt: request.prompt.slice(0, 8000),
                             recentActivity: [],
                         };
                         active.summary.agents.push(agent);
                         if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
                         publish(active);
-                        const release = await active.semaphore.acquire(active.controller.signal);
-                        let sharedWriter = false;
-                        try {
-                            if (writeCapable && isolation !== "worktree") {
-                                if (active.activeSharedWriters > 0 && !options.policy?.allowUnsafeSharedCheckout)
-                                    throw new Error("Concurrent write-capable agents require worktree isolation.");
-                                active.activeSharedWriters++;
-                                sharedWriter = true;
-                            }
-                            await waitWhilePaused(active);
-                            const timeoutMs = Math.min(
-                                    DEFAULT_WORKFLOW_LIMITS.timeoutMs,
-                                    Math.max(1, Number(opts.timeoutMs) || DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                                ),
-                                controller = new AbortController(),
-                                signal = AbortSignal.any([active.controller.signal, controller.signal]);
-                            let timer: NodeJS.Timeout | undefined;
-                            const timeout = new Promise<never>((_, reject) => {
-                                timer = setTimeout(() => {
-                                    controller.abort();
-                                    reject(new Error("Agent timed out."));
-                                }, timeoutMs);
-                            });
-                            let owned: Awaited<ReturnType<WorkflowWorktreeManager["create"]>> | undefined,
-                                operationKey: string | undefined;
-                            try {
-                                if (isolation === "worktree") {
-                                    operationKey = `${operationId.slice(0, 35)}-${crypto.randomUUID().slice(0, 8)}`;
-                                    owned = await worktrees.create(
-                                        input.cwd,
-                                        active.summary.id.slice(0, 63),
-                                        operationKey,
-                                    );
-                                    if (active.directory && options.storage)
-                                        await options.storage.worktree(active.directory, operationKey, owned, now());
-                                    agent.worktree = { cwd: owned.cwd, branch: owned.branch };
-                                    agent.recentActivity.push({
-                                        sequence: 1,
-                                        timestamp: now(),
-                                        kind: "diagnostic",
-                                        title: `Worktree ${owned.branch} at ${owned.cwd}`.slice(0, 2000),
-                                    });
-                                    publish(active);
+                        let sharedWriter = false,
+                            owned: Awaited<ReturnType<WorkflowWorktreeManager["create"]>> | undefined,
+                            operationKey: string | undefined;
+                        value = await runDurableOperation({
+                            run: active,
+                            operationId,
+                            timeoutMs: request.timeoutMs,
+                            timeoutMessage: "Agent timed out.",
+                            cooperative: options.cooperativeExecutor === true,
+                            now,
+                            beforeExecute: async () => {
+                                if (request.writeCapable && request.isolation !== "worktree") {
+                                    if (active.activeSharedWriters > 0 && !options.policy?.allowUnsafeSharedCheckout)
+                                        throw new Error("Concurrent write-capable agents require worktree isolation.");
+                                    active.activeSharedWriters++;
+                                    sharedWriter = true;
                                 }
+                                await waitWhilePaused(active);
+                            },
+                            setup: async () => {
+                                if (request.isolation !== "worktree") return;
+                                operationKey = `${operationId.slice(0, 35)}-${platform.uuid().slice(0, 8)}`;
+                                owned = await worktrees.create(input.cwd, active.summary.id.slice(0, 63), operationKey);
+                                if (active.directory && options.storage)
+                                    await options.storage.worktree(active.directory, operationKey, owned, now());
+                                agent.worktree = { cwd: owned.cwd, branch: owned.branch };
+                                agent.recentActivity.push({
+                                    sequence: 1,
+                                    timestamp: now(),
+                                    kind: "diagnostic",
+                                    title: `Worktree ${owned.branch} at ${owned.cwd}`.slice(0, 2000),
+                                });
+                                publish(active);
+                            },
+                            execute: async (signal) => {
                                 let result: AgentResult | undefined;
-                                const retries = Math.min(3, Math.max(0, Number(opts.retries) || 0));
-                                for (let attempt = 0; attempt <= retries; attempt++)
+                                // Every attempt reuses the worktree created in `setup`, so for
+                                // isolation "worktree" agents retries are resume-style: they start
+                                // from whatever state the failed attempt left, not a clean branch.
+                                for (let attempt = 0; attempt <= request.retries; attempt++)
                                     try {
-                                        const operation = Promise.resolve(
-                                            options.agentExecutor({
-                                                prompt,
-                                                role,
-                                                model,
-                                                schema,
-                                                signal,
-                                                timeoutMs,
-                                                cwd: owned?.cwd ?? input.cwd,
-                                            }),
-                                        );
-                                        if (options.cooperativeExecutor) {
-                                            active.cooperativeTasks.add(operation);
-                                            operation
-                                                .finally(() => active.cooperativeTasks.delete(operation))
-                                                .catch(() => {});
-                                        }
-                                        result = await Promise.race([operation, timeout]);
-                                        if (!schemaValid(result.value, schema))
+                                        result = await options.agentExecutor({
+                                            prompt: request.prompt,
+                                            role: request.role,
+                                            model: request.model,
+                                            schema: request.schema,
+                                            signal,
+                                            timeoutMs: request.timeoutMs,
+                                            cwd: owned?.cwd ?? input.cwd,
+                                        });
+                                        if (!schemaValid(result.value, request.schema))
                                             throw new Error("Agent result does not match schema.");
                                         break;
                                     } catch (e) {
-                                        if (attempt === retries || signal.aborted) throw e;
+                                        if (attempt === request.retries || signal.aborted) throw e;
                                     }
                                 if (!result) throw new Error("Agent produced no result.");
-                                value = result.value;
-                                bounded(value);
+                                return result;
+                            },
+                            validateResult: (result) => {
+                                const durable = result.value;
+                                boundedJson(durable);
                                 const nextTokens =
                                         active.summary.usage.totalTokens + (Number(result.usage?.totalTokens) || 0),
                                     nextCost = active.summary.usage.cost + (Number(result.usage?.cost) || 0);
@@ -1088,35 +695,37 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                                     throw new Error(
                                         `Workflow cost budget exceeded (${nextCost}/${active.summary.limits.maxCost}).`,
                                     );
+                                return durable;
+                            },
+                            journal: async (durable, at) => {
                                 if (active.directory)
-                                    await options.storage?.complete(active.directory, operationId, value, now());
-                                active.completions.set(operationId, structuredClone(value));
-                                await options.afterDurableCompletion?.(operationId);
+                                    await options.storage?.complete(active.directory, operationId, durable, at);
+                            },
+                            onSuccess: () => {
                                 agent.status = "succeeded";
-                            } finally {
-                                if (timer) clearTimeout(timer);
-                                if (owned) {
-                                    await worktrees.cleanup(input.cwd, owned);
-                                    if (operationKey && active.directory && options.storage)
-                                        await options.storage.worktree(active.directory, operationKey, null, now());
+                            },
+                            cleanup: async () => {
+                                if (!owned) return;
+                                await worktrees.cleanup(input.cwd, owned);
+                                if (operationKey && active.directory && options.storage)
+                                    await options.storage.worktree(active.directory, operationKey, null, now());
+                            },
+                            onSettled: (failure) => {
+                                if (failure) {
+                                    agent.status = active.controller.signal.aborted
+                                        ? "cancelled"
+                                        : errorMessage(failure.error).includes("timed out")
+                                          ? "timed_out"
+                                          : "failed";
+                                    agent.error = errorMessage(failure.error).slice(0, 2000);
                                 }
-                            }
-                        } catch (e) {
-                            agent.status = active.controller.signal.aborted
-                                ? "cancelled"
-                                : errorMessage(e).includes("timed out")
-                                  ? "timed_out"
-                                  : "failed";
-                            agent.error = errorMessage(e).slice(0, 2000);
-                            throw e;
-                        } finally {
-                            if (sharedWriter) active.activeSharedWriters--;
-                            agent.endedAt = agent.updatedAt = now();
-                            publish(active);
-                            release();
-                        }
+                                if (sharedWriter) active.activeSharedWriters--;
+                                agent.endedAt = agent.updatedAt = now();
+                                publish(active);
+                            },
+                        });
                     } else throw new Error(`Unknown workflow RPC method: ${frame.method}`);
-                    send({ v: 1, t: "reply", id: frame.id, ok: true, json: bounded(value) });
+                    send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
                 } catch (e) {
                     send({ v: 1, t: "reply", id: frame.id, ok: false, error: errorMessage(e).slice(0, 2000) });
                 } finally {
@@ -1127,37 +736,21 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 stderr = Buffer.from(`${stderr}${c}`).subarray(-STDERR_BYTES).toString();
             });
             child.stdout.setEncoding("utf8");
+            const decoder = new WorkerFrameDecoder();
             child.stdout.on("data", (chunk) => {
-                buffer += chunk;
-                let index = buffer.indexOf("\n");
-                while (index >= 0) {
-                    const line = buffer.slice(0, index);
-                    buffer = buffer.slice(index + 1);
-                    index = buffer.indexOf("\n");
-                    if (Buffer.byteLength(line) > MAX_FRAME_LINE_BYTES) {
-                        finish("failed", "Oversized workflow worker frame.");
-                        active.controller.abort();
-                        return;
-                    }
-                    try {
-                        void handle(JSON.parse(line)).catch((e) => {
+                try {
+                    for (const parsed of decoder.decode(chunk))
+                        void handle(parsed).catch((e) => {
                             finish("failed", errorMessage(e));
                             active.controller.abort();
                         });
-                    } catch {
-                        finish("failed", "Malformed workflow worker output.");
-                        active.controller.abort();
-                    }
-                }
-                if (Buffer.byteLength(buffer) > MAX_FRAME_LINE_BYTES) {
-                    finish("failed", "Oversized workflow worker frame.");
+                } catch (e) {
+                    finish("failed", errorMessage(e));
                     active.controller.abort();
                 }
             });
             const watchdog = setInterval(() => {
-                const limit = ready
-                    ? (options.watchdogMs ?? HEARTBEAT_TIMEOUT_MS)
-                    : (options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+                const limit = ready ? platform.watchdogMs : platform.readyTimeoutMs;
                 if (now() - lastBeat > limit) {
                     finish(
                         "failed",
@@ -1169,7 +762,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             const total = setTimeout(() => {
                 finish("failed", "Workflow run timed out.");
                 active.controller.abort();
-            }, options.runTimeoutMs ?? active.summary.limits.timeoutMs);
+            }, platform.runTimeoutMs ?? active.summary.limits.timeoutMs);
             await new Promise<void>((resolve) => {
                 child.once("error", (e) => {
                     finish("failed", errorMessage(e));
@@ -1206,18 +799,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             pendingLaunches++;
             try {
                 checkCancelled();
-                if (
-                    typeof input.name !== "string" ||
-                    !input.name ||
-                    input.name.length > 512 ||
-                    typeof input.sessionId !== "string" ||
-                    !input.sessionId ||
-                    input.sessionId.length > 256 ||
-                    typeof input.cwd !== "string" ||
-                    !input.cwd ||
-                    input.cwd.length > 4_000
-                )
-                    throw new Error("Invalid workflow launch metadata.");
+                validateLaunchMetadata(input);
                 preflightWorkflow(input.script, input.entrypoint);
                 input = { ...input, cwd: await worktrees.repository(input.cwd).catch(async () => realpath(input.cwd)) };
                 checkCancelled();
@@ -1228,34 +810,10 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 });
                 checkCancelled();
                 if (shuttingDown) throw new Error("Workflow backend is shutting down.");
-                const id = crypto.randomUUID(),
+                const id = platform.uuid(),
                     timestamp = now(),
                     controller = new AbortController(),
-                    requested = input.limits ?? {};
-                for (const [key, value] of Object.entries(requested))
-                    if (
-                        !["maxConcurrency", "maxAgents", "timeoutMs", "maxTokens", "maxCost"].includes(key) ||
-                        typeof value !== "number" ||
-                        !Number.isFinite(value) ||
-                        value < 0
-                    )
-                        throw new Error("Invalid workflow limits.");
-                const limits = {
-                    maxConcurrency: Math.min(
-                        16,
-                        Math.max(1, Math.floor(requested.maxConcurrency ?? DEFAULT_WORKFLOW_LIMITS.maxConcurrency)),
-                    ),
-                    maxAgents: Math.min(
-                        1_000,
-                        Math.max(1, Math.floor(requested.maxAgents ?? DEFAULT_WORKFLOW_LIMITS.maxAgents)),
-                    ),
-                    timeoutMs: Math.min(
-                        DEFAULT_WORKFLOW_LIMITS.timeoutMs,
-                        Math.max(1, requested.timeoutMs ?? DEFAULT_WORKFLOW_LIMITS.timeoutMs),
-                    ),
-                    maxTokens: requested.maxTokens ?? 0,
-                    maxCost: requested.maxCost ?? 0,
-                };
+                    limits = normalizeWorkflowLimits(input.limits ?? {});
                 const summary: WorkflowRunSummaryV1 = {
                     schema: "pi.workflow",
                     version: 1,
@@ -1489,7 +1047,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 await Promise.race([
                     new Promise<void>((resolve) => (pendingLaunchWaiter = resolve)),
                     new Promise<void>((resolve) => {
-                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                        timer = setTimeout(resolve, platform.shutdownGraceMs);
                     }),
                 ]);
                 if (timer) clearTimeout(timer);
@@ -1516,12 +1074,12 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 await Promise.race([
                     Promise.allSettled(cooperative),
                     new Promise<void>((resolve) => {
-                        timer = setTimeout(resolve, options.shutdownGraceMs ?? 2_000);
+                        timer = setTimeout(resolve, platform.shutdownGraceMs);
                     }),
                 ]);
                 if (timer) clearTimeout(timer);
                 if ([...runs.values()].some((r) => r.cooperativeTasks.size))
-                    console.error("Workflow executor shutdown grace expired; child cleanup may be incomplete.");
+                    platform.log("Workflow executor shutdown grace expired; child cleanup may be incomplete.");
             }
             listeners.clear();
         },

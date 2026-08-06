@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createExtensionApiHarness } from "../test-support/extension-api.ts";
+import { waitFor } from "../test-support/wait.js";
 import { workflowApprovalKey } from "./approval.js";
 import type { WorkflowBackend } from "./backend.js";
 import { registerWorkflowExtension } from "./index.js";
@@ -23,14 +25,9 @@ const summary = (status: "running" | "succeeded") => ({
 });
 
 function fixture(dependencies: { backend?: Partial<WorkflowBackend>; [key: string]: unknown } = {}) {
-    const handlers = new Map<string, (...args: any[]) => any>(),
-        eventHandlers = new Map<string, (payload: any) => void>(),
-        emitted: any[] = [],
-        messages: any[] = [],
+    const host = createExtensionApiHarness(),
         launches: any[] = [];
-    let tool: any,
-        command: any,
-        listener: ((run: any) => void) | undefined,
+    let listener: ((run: any) => void) | undefined,
         shutdowns = 0;
     const defaultBackend: WorkflowBackend = {
         async launch(input) {
@@ -54,41 +51,30 @@ function fixture(dependencies: { backend?: Partial<WorkflowBackend>; [key: strin
     };
     const { backend: backendOverrides, ...extensionDependencies } = dependencies,
         backend: WorkflowBackend = { ...defaultBackend, ...backendOverrides };
-    const pi: any = {
-        on: (name: string, fn: any) => handlers.set(name, fn),
-        registerTool: (value: any) => {
-            tool = value;
-        },
-        registerCommand: (_name: string, value: any) => {
-            command = value;
-        },
-        sendMessage: (message: any) => messages.push(message),
-        events: {
-            emit: (channel: string, payload: any) => emitted.push([channel, payload]),
-            on: (channel: string, fn: (payload: any) => void) => {
-                eventHandlers.set(channel, fn);
-                return () => eventHandlers.delete(channel);
-            },
-        },
-    };
-    registerWorkflowExtension(pi, {
+    registerWorkflowExtension(host.api, {
         backend,
         environment: {},
         instanceId: "instance-1",
         ...extensionDependencies,
     });
     return {
-        handlers,
-        eventHandlers,
-        emitted,
-        messages,
+        handlers: new Map([...host.handlers].map(([name, values]) => [name, values[0]!])),
+        get eventHandlers() {
+            return new Map([...host.eventHandlers].map(([channel, values]) => [channel, [...values][0]!]));
+        },
+        get emitted() {
+            return host.emitted.map(({ channel, payload }) => [channel, payload] as const);
+        },
+        get messages() {
+            return host.messages.map(([message]) => message);
+        },
         launches,
         backend,
         get tool() {
-            return tool;
+            return host.tool("workflow");
         },
         get command() {
-            return command;
+            return host.command("workflow");
         },
         emitRun: (run: any) => listener?.(run),
         shutdowns: () => shutdowns,
@@ -97,14 +83,6 @@ function fixture(dependencies: { backend?: Partial<WorkflowBackend>; [key: strin
 
 const workflowFile = (body = "return args;") =>
     `export default async function workflow(_context: unknown, args: unknown) { ${body} }`;
-
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        if (Date.now() >= deadline) throw new Error("Timed out waiting for workflow extension event.");
-        await Bun.sleep(5);
-    }
-}
 
 describe("workflow extension", () => {
     test("injects authoring documentation only for workflow-writing requests", () => {

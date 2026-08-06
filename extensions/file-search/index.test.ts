@@ -1,40 +1,30 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createExtensionApiHarness } from "../test-support/extension-api.ts";
 import { registerFileSearchExtension } from "./index.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-search.mjs", import.meta.url));
 const fixtureCwd = path.dirname(fixture);
 
 function setup(overrides: any = {}) {
-    const tools = new Map<string, any>();
-    const handlers = new Map<string, (...args: any[]) => unknown>();
-    registerFileSearchExtension(
-        {
-            registerTool(tool: any) {
-                tools.set(tool.name, tool);
-            },
-            on(event: string, handler: (...args: any[]) => unknown) {
-                handlers.set(event, handler);
-            },
-        } as any,
-        {
-            resolveFd: () => ({ command: "/bin/fd", source: "system" }),
-            resolveRg: () => ({ command: "/bin/rg", source: "system" }),
-            run: async () => ({
-                status: "succeeded",
-                output: "a.ts\n",
-                count: 1,
-                totalBytes: 5,
-                truncated: false,
-                stderr: "",
-                exitCode: 0,
-                signal: null,
-            }),
-            ...overrides,
-        },
-    );
-    return { tools, handlers };
+    const host = createExtensionApiHarness();
+    registerFileSearchExtension(host.api, {
+        resolveFd: () => ({ command: "/bin/fd", source: "system" }),
+        resolveRg: () => ({ command: "/bin/rg", source: "system" }),
+        run: async () => ({
+            status: "succeeded",
+            output: "a.ts\n",
+            count: 1,
+            totalBytes: 5,
+            truncated: false,
+            stderr: "",
+            exitCode: 0,
+            signal: null,
+        }),
+        ...overrides,
+    });
+    return host;
 }
 
 function execute(tool: any, params: any, signal?: AbortSignal) {
@@ -44,7 +34,7 @@ function execute(tool: any, params: any, signal?: AbortSignal) {
 describe("file-search extension", () => {
     test("registers fd and rg with direct safe runner arguments", async () => {
         const calls: any[] = [];
-        const { tools } = setup({
+        const { tools, tool } = setup({
             run: async (options: any) => {
                 calls.push(options);
                 return {
@@ -60,8 +50,8 @@ describe("file-search extension", () => {
             },
         });
         expect([...tools.keys()]).toEqual(["fd", "rg"]);
-        expect((await execute(tools.get("fd"), { pattern: "--help" })).content[0].text).toBe("No matches found.");
-        expect((await execute(tools.get("rg"), { pattern: "--version", fixed_strings: true })).content[0].text).toBe(
+        expect((await execute(tool("fd"), { pattern: "--help" })).content[0].text).toBe("No matches found.");
+        expect((await execute(tool("rg"), { pattern: "--version", fixed_strings: true })).content[0].text).toBe(
             "No matches found.",
         );
         expect(calls[0]).toMatchObject({
@@ -76,7 +66,7 @@ describe("file-search extension", () => {
     test("resolves each binary once per extension instance", async () => {
         let fdResolutions = 0;
         let rgResolutions = 0;
-        const { tools } = setup({
+        const { tool } = setup({
             resolveFd: () => {
                 fdResolutions++;
                 return { command: "/bin/fd", source: "system" };
@@ -86,10 +76,10 @@ describe("file-search extension", () => {
                 return { command: "/bin/rg", source: "system" };
             },
         });
-        await execute(tools.get("fd"), {});
-        await execute(tools.get("fd"), { pattern: "x" });
-        await execute(tools.get("rg"), { pattern: "x" });
-        await execute(tools.get("rg"), { pattern: "y" });
+        await execute(tool("fd"), {});
+        await execute(tool("fd"), { pattern: "x" });
+        await execute(tool("rg"), { pattern: "x" });
+        await execute(tool("rg"), { pattern: "y" });
         expect({ fdResolutions, rgResolutions }).toEqual({ fdResolutions: 1, rgResolutions: 1 });
     });
 
@@ -99,12 +89,12 @@ describe("file-search extension", () => {
                 throw new Error("Install fd and try again.");
             },
         });
-        await expect(execute(missing.tools.get("fd"), {})).rejects.toThrow("Install fd");
+        await expect(execute(missing.tool("fd"), {})).rejects.toThrow("Install fd");
         const spawned = setup({
             resolveRg: () => ({ command: path.join(fixtureCwd, "missing-rg"), source: "system" }),
             run: undefined,
         });
-        await expect(execute(spawned.tools.get("rg"), { pattern: "x" })).rejects.toThrow(
+        await expect(execute(spawned.tool("rg"), { pattern: "x" })).rejects.toThrow(
             /ENOENT.*missing-rg|missing-rg.*ENOENT/,
         );
         for (const [status, message] of [
@@ -112,7 +102,7 @@ describe("file-search extension", () => {
             ["cancelled", "cancelled"],
             ["failed", "permission denied"],
         ] as const) {
-            const { tools } = setup({
+            const { tool } = setup({
                 run: async () => ({
                     status,
                     output: "",
@@ -124,13 +114,13 @@ describe("file-search extension", () => {
                     signal: null,
                 }),
             });
-            await expect(execute(tools.get("rg"), { pattern: "x" })).rejects.toThrow(message);
+            await expect(execute(tool("rg"), { pattern: "x" })).rejects.toThrow(message);
         }
     });
 
     test("returns renderer-neutral details, retains full output through use, and cleans it on shutdown", async () => {
         let cleaned = false;
-        const { tools, handlers } = setup({
+        const { tool, handlers } = setup({
             run: async () => ({
                 status: "succeeded",
                 output: "head",
@@ -146,22 +136,24 @@ describe("file-search extension", () => {
                 signal: null,
             }),
         });
-        const value = await execute(tools.get("rg"), { pattern: "x" });
+        const value = await execute(tool("rg"), { pattern: "x" });
         expect(value.details).toEqual({
             binarySource: "system",
             count: 2001,
             truncated: true,
             fullOutputPath: "/private/output.txt",
         });
-        expect(value.content[0].text).toContain("Complete output: /private/output.txt");
+        expect(value.content[0].text).toContain(
+            '[Output truncated: 4 of 60000 bytes, 1 of 2001 lines. Complete output retained at: "/private/output.txt".]',
+        );
         expect(cleaned).toBe(false);
-        await handlers.get("session_shutdown")!();
+        await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, {} as never);
         expect(cleaned).toBe(true);
         const prompt = [
-            tools.get("fd").promptSnippet,
-            ...tools.get("fd").promptGuidelines,
-            tools.get("rg").promptSnippet,
-            ...tools.get("rg").promptGuidelines,
+            tool("fd").promptSnippet,
+            ...(tool("fd").promptGuidelines ?? []),
+            tool("rg").promptSnippet,
+            ...(tool("rg").promptGuidelines ?? []),
         ].join("\n");
         expect(prompt).toContain("fd");
         expect(prompt).toContain("rg");
@@ -169,21 +161,93 @@ describe("file-search extension", () => {
         expect(prompt).toContain("bash");
     });
 
+    test("immediately cleans spills rejected by result and session quotas and omits their paths", async () => {
+        const cleaned: string[] = [];
+        const outputs = [
+            { path: "/result-quota/output.txt", bytes: 6 },
+            { path: "/accepted/output.txt", bytes: 5 },
+            { path: "/session-quota/output.txt", bytes: 4 },
+        ];
+        const { tool, handlers } = setup({
+            retainedOutput: { maxResultBytes: 5, maxSessionBytes: 8 },
+            run: async () => {
+                const next = outputs.shift()!;
+                return {
+                    status: "succeeded",
+                    output: "head",
+                    count: 2,
+                    totalBytes: next.bytes,
+                    truncated: true,
+                    fullOutputPath: next.path,
+                    cleanup: async () => {
+                        cleaned.push(next.path);
+                    },
+                    stderr: "",
+                    exitCode: 0,
+                    signal: null,
+                };
+            },
+        });
+
+        const resultRejected = await execute(tool("rg"), { pattern: "x" });
+        const accepted = await execute(tool("rg"), { pattern: "x" });
+        const sessionRejected = await execute(tool("rg"), { pattern: "x" });
+        expect(resultRejected.details.fullOutputPath).toBeUndefined();
+        expect(accepted.details.fullOutputPath).toBe("/accepted/output.txt");
+        expect(sessionRejected.details.fullOutputPath).toBeUndefined();
+        expect(cleaned).toEqual(["/result-quota/output.txt", "/session-quota/output.txt"]);
+
+        await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, {} as never);
+        expect(cleaned).toEqual(["/result-quota/output.txt", "/session-quota/output.txt", "/accepted/output.txt"]);
+    });
+
+    test("reopens retention when the extension instance starts another session", async () => {
+        const cleaned: string[] = [];
+        let session = 0;
+        const { tool, handlers } = setup({
+            retainedOutput: { maxResultBytes: 5, maxSessionBytes: 5 },
+            run: async () => {
+                const path = `/session-${++session}/output.txt`;
+                return {
+                    status: "succeeded",
+                    output: "head",
+                    count: 2,
+                    totalBytes: 5,
+                    truncated: true,
+                    fullOutputPath: path,
+                    cleanup: async () => {
+                        cleaned.push(path);
+                    },
+                    stderr: "",
+                    exitCode: 0,
+                    signal: null,
+                };
+            },
+        });
+
+        expect((await execute(tool("rg"), { pattern: "x" })).details.fullOutputPath).toBe("/session-1/output.txt");
+        await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "reload" }, {} as never);
+        await handlers.get("session_start")![0]!({ type: "session_start" }, {} as never);
+        expect((await execute(tool("rg"), { pattern: "x" })).details.fullOutputPath).toBe("/session-2/output.txt");
+        await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, {} as never);
+        expect(cleaned).toEqual(["/session-1/output.txt", "/session-2/output.txt"]);
+    });
+
     test("cleans output that finishes after session shutdown", async () => {
         let cleaned = false;
         let finish!: (value: any) => void;
         let signalRunStarted!: () => void;
         const runStarted = new Promise<void>((resolve) => (signalRunStarted = resolve));
-        const { tools, handlers } = setup({
+        const { tool, handlers } = setup({
             run: () =>
                 new Promise((resolve) => {
                     finish = resolve;
                     signalRunStarted();
                 }),
         });
-        const execution = execute(tools.get("rg"), { pattern: "x" });
+        const execution = execute(tool("rg"), { pattern: "x" });
         await runStarted;
-        await handlers.get("session_shutdown")!();
+        await handlers.get("session_shutdown")![0]!({ type: "session_shutdown", reason: "quit" }, {} as never);
         finish({
             status: "succeeded",
             output: "head",
