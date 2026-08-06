@@ -14,12 +14,19 @@ export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): vo
                     stdio: "ignore",
                     windowsHide: true,
                 });
-                sweeper.once("error", () => {
+                let signalled = false;
+                const fallback = () => {
+                    if (signalled) return;
+                    signalled = true;
                     try {
                         child.kill(signal);
                     } catch {
                         // The child may have exited between the checks.
                     }
+                };
+                sweeper.once("error", fallback);
+                sweeper.once("close", (code) => {
+                    if (code !== 0) fallback();
                 });
                 sweeper.unref();
                 return;

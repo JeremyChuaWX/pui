@@ -59,7 +59,8 @@ export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagent
         typeof job.title !== "string" ||
         job.title.length === 0 ||
         job.title.length > MAX_JOB_TITLE ||
-        (job.prompt !== undefined && (typeof job.prompt !== "string" || job.prompt.length > MAX_JOB_PROMPT)) ||
+        (job.prompt !== undefined &&
+            (typeof job.prompt !== "string" || Buffer.byteLength(job.prompt, "utf8") > MAX_JOB_PROMPT)) ||
         !isSubagentDetailsV1({ schema: "pi.subagent", version: 1, run: job.run }) ||
         (job.run as SubagentRunV1).id !== job.id
     )

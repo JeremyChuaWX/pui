@@ -52,9 +52,13 @@ describe("background subagent event protocol", () => {
     });
 
     test("bounds job title and prompt lengths", () => {
+        const maxBytePrompt = "😀".repeat(16_384);
+        const overBytePrompt = "😀".repeat(16_385);
         expect(parseBackgroundSubagentEvent(upsert({}))).toBeDefined();
         expect(parseBackgroundSubagentEvent(upsert({ prompt: undefined }))).toBeDefined();
+        expect(parseBackgroundSubagentEvent(upsert({ prompt: maxBytePrompt }))).toBeDefined();
         expect(parseBackgroundSubagentEvent(upsert({ title: "x".repeat(4_097) }))).toBeUndefined();
         expect(parseBackgroundSubagentEvent(upsert({ prompt: "x".repeat(64 * 1024 + 1) }))).toBeUndefined();
+        expect(parseBackgroundSubagentEvent(upsert({ prompt: overBytePrompt }))).toBeUndefined();
     });
 });
