@@ -20,6 +20,9 @@ try {
         format: "esm",
         minify: true,
         sourcemap: "linked",
+        // Precompiled bytecode trades ~50 MiB of executable size for roughly a
+        // quarter off startup, which is dominated by parsing the module graph.
+        bytecode: true,
         define: {
             "process.env.NODE_ENV": JSON.stringify("production"),
         },

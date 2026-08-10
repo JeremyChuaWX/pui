@@ -7,9 +7,7 @@ import { render } from "@opentui/solid";
 import { errorMessage } from "../extensions/shared/validate.js";
 import { App } from "./app.js";
 import { type ControllerOptions, PuiController } from "./controller.js";
-import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./headless-workflow.js";
 import { syntaxStyle, theme } from "./theme.js";
-import { runCompiledWorkflowSmoke } from "./workflow-smoke.js";
 
 // pi-ai's OAuth implementations use bundler-opaque imports in source mode.
 // Register their static equivalents so Bun embeds them in the executable.
@@ -76,7 +74,10 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 async function main(): Promise<void> {
+    // The workflow subcommands are imported lazily so the interactive path never
+    // evaluates the workflow execution modules.
     if (process.argv[2] === "workflow") {
+        const { parseHeadlessWorkflowArgs, runHeadlessWorkflow } = await import("./headless-workflow.js");
         const result = await runHeadlessWorkflow({
             ...parseHeadlessWorkflowArgs(process.argv.slice(3)),
             onProgress: (message) => process.stderr.write(`pui workflow: ${message}\n`),
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
         return;
     }
     if (process.argv[2] === "--workflow-smoke") {
+        const { runCompiledWorkflowSmoke } = await import("./workflow-smoke.js");
         await runCompiledWorkflowSmoke();
         return;
     }
