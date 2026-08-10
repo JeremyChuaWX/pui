@@ -27,7 +27,7 @@ export function createDefaultWebDependencies(
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
     const resolved = createDefaultWebDependencies(dependencies);
     const outputRetention = resolved.outputRetentionOwner;
-    registerSearch(pi, resolved, outputRetention);
+    registerSearch(pi, { ...resolved, codexAuthPath: dependencies.codexAuthPath }, outputRetention);
     registerCrawl(pi, resolved, outputRetention);
     pi.on("session_start", () => outputRetention.startSession());
     pi.on("session_shutdown", async () => {

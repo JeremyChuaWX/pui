@@ -6,6 +6,8 @@ import type { WebOutputRetention } from "./output-retention.ts";
 export type WebToolDependencies = {
     fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
     environment?: Record<string, string | undefined>;
+    /** web_search only: overrides the Codex CLI credential file, default `~/.codex/auth.json`. */
+    codexAuthPath?: string;
 };
 
 /** Returns the trimmed string when `value` is a non-empty string. */

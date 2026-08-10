@@ -8,7 +8,7 @@ pi -e /absolute/path/to/pui/extensions/web/index.ts
 
 ## Configuration
 
-- `web_search` requires a Pi-authenticated OpenAI Responses or ChatGPT/Codex model with built-in web search. It uses the active model by default; set `WEB_SEARCH_MODEL=provider/model` to select another registered model.
+- `web_search` calls the ChatGPT Codex standalone search endpoint, which runs searches server-side without model inference, so searches consume no model tokens. It requires ChatGPT/Codex credentials, resolved in order: `CODEX_ACCESS_TOKEN` (with optional `CODEX_ACCOUNT_ID`), a Pi-authenticated ChatGPT/Codex model (the active model, or `WEB_SEARCH_MODEL=provider/model` to select another registered one), then the Codex CLI login at `~/.codex/auth.json`.
 - `web_crawl` requires `FIRECRAWL_API_KEY`. Set `FIRECRAWL_API_URL` only to override the default `https://api.firecrawl.dev` endpoint, including for self-hosted Firecrawl.
 
 Returned output is limited to 50KB and Pi's default line limit. `web_crawl` can request a lower `max_bytes`; `web_search` returns at most 10 sources.

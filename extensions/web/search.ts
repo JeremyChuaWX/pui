@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
     DEFAULT_MAX_BYTES,
@@ -14,74 +17,53 @@ const SEARCH_PARAMS = Type.Object({
 });
 
 type SearchParams = Static<typeof SEARCH_PARAMS>;
-type SearchProvider = "openai" | "chatgpt";
-type SearchModel = Model<"openai-responses" | "openai-codex-responses">;
+type CodexModel = Model<"openai-codex-responses">;
+
+type CodexAuth = {
+    accessToken: string;
+    accountId?: string;
+    /** Endpoint derived from the credential source; registry models use their configured base URL. */
+    endpoint: string;
+    headers?: Record<string, string>;
+};
 
 type SearchSource = {
     title: string;
     url: string;
 };
 
+type SearchResultItem = SearchSource & {
+    refId?: string;
+    snippet?: string;
+};
+
 type SearchResult = {
-    provider: SearchProvider;
-    model: string;
-    answer: string;
-    sources: SearchSource[];
+    output?: string;
+    results: SearchResultItem[];
 };
 
 type SearchDetails =
     | { status: "searching" }
     | {
           status: "complete";
-          provider: SearchProvider;
-          model: string;
           query: string;
           sources: SearchSource[];
           truncated: boolean;
           fullOutputPath?: string;
       };
 
-type ResponseOutputItem = {
-    type?: string;
-    action?: {
-        type?: string;
-        sources?: Array<{ title?: unknown; url?: unknown }>;
-    };
-    content?: Array<{
-        type?: string;
-        text?: unknown;
-        annotations?: Array<{ type?: string; title?: unknown; url?: unknown }>;
-    }>;
-};
+// The Codex standalone search endpoint executes searches server-side and returns structured
+// results without any model inference, so no input/output tokens are billed for a search.
+const DEFAULT_ENDPOINT = "https://chatgpt.com/backend-api/codex/alpha/search";
+const SEARCH_PAYLOAD_MODEL = "gpt-4o";
+const CODEX_USER_AGENT = "codex-cli/0.147.0-alpha.6.5";
+const MAX_RESULTS = 10;
 
-type ResponsePayload = {
-    output_text?: unknown;
-    output?: ResponseOutputItem[];
-};
-
-type SseData = {
-    type?: unknown;
-    delta?: unknown;
-    item?: ResponseOutputItem;
-    response?: ResponsePayload;
-};
-
-const SEARCH_INSTRUCTIONS =
-    "Use web search to answer the query. Return concise, useful findings grounded in current sources. Do not invent facts or URLs.";
-const MAX_OUTPUT_TOKENS = 8000;
-const MAX_SOURCES = 10;
-const CHATGPT_USER_AGENT = "pi-web-search";
-
-function normalizeEndpoint(baseUrl: string, suffix: string): string {
+function resolveCodexSearchUrl(baseUrl: string): string {
     const normalized = baseUrl.replace(/\/+$/, "");
-    return normalized.endsWith(suffix) ? normalized : `${normalized}${suffix}`;
-}
-
-function resolveCodexResponsesUrl(baseUrl: string): string {
-    const normalized = baseUrl.replace(/\/+$/, "");
-    if (normalized.endsWith("/codex/responses")) return normalized;
-    if (normalized.endsWith("/codex")) return `${normalized}/responses`;
-    return `${normalized}/codex/responses`;
+    if (normalized.endsWith("/codex/alpha/search")) return normalized;
+    if (normalized.endsWith("/codex")) return `${normalized}/alpha/search`;
+    return `${normalized}/codex/alpha/search`;
 }
 
 function extractChatGptAccountId(token: string): string | undefined {
@@ -96,136 +78,144 @@ function extractChatGptAccountId(token: string): string | undefined {
     }
 }
 
-function searchProvider(model: Model<Api>): SearchProvider | undefined {
-    if (model.provider === "openai" && model.api === "openai-responses") return "openai";
-    if (model.provider === "openai-codex" && model.api === "openai-codex-responses") return "chatgpt";
-    return undefined;
+function isCodexModel(model: Model<Api>): model is CodexModel {
+    return model.provider === "openai-codex" && model.api === "openai-codex-responses";
 }
 
-function resolveSearchModel(ctx: ExtensionContext, environment: Record<string, string | undefined>): SearchModel {
+function resolveCodexModel(
+    ctx: ExtensionContext,
+    environment: Record<string, string | undefined>,
+): CodexModel | undefined {
     const configured = environment.WEB_SEARCH_MODEL?.trim();
-    let model: Model<Api> | undefined;
-
     if (configured) {
         const slash = configured.indexOf("/");
         if (slash < 1 || slash === configured.length - 1) {
             throw new Error("WEB_SEARCH_MODEL must use provider/model format.");
         }
-        model = ctx.modelRegistry.find(configured.slice(0, slash), configured.slice(slash + 1));
+        const model = ctx.modelRegistry.find(configured.slice(0, slash), configured.slice(slash + 1));
         if (!model) throw new Error(`WEB_SEARCH_MODEL ${configured} is not registered in pi.`);
-    } else {
-        model = ctx.model;
-    }
-
-    if (!model) throw new Error("No active pi model is available for web_search.");
-    if (!searchProvider(model)) {
-        throw new Error(
-            `${model.provider}/${model.id} does not support GPT built-in web search. Select an OpenAI Responses or ChatGPT/Codex model, or set WEB_SEARCH_MODEL=provider/model.`,
-        );
-    }
-    return model as SearchModel;
-}
-
-function addSource(sources: SearchSource[], seen: Set<string>, title: unknown, url: unknown): void {
-    const resolvedUrl = nonEmptyString(url);
-    if (!resolvedUrl || seen.has(resolvedUrl)) return;
-    seen.add(resolvedUrl);
-    sources.push({ title: nonEmptyString(title) ?? resolvedUrl, url: resolvedUrl });
-}
-
-function collectResponseText(payload: ResponsePayload | undefined): string {
-    const direct = nonEmptyString(payload?.output_text);
-    if (direct) return direct;
-
-    const parts: string[] = [];
-    for (const item of payload?.output ?? []) {
-        if (item.type !== "message") continue;
-        for (const part of item.content ?? []) {
-            const text = nonEmptyString(part.text);
-            if (part.type === "output_text" && text) parts.push(text);
+        if (!isCodexModel(model)) {
+            throw new Error(
+                `${model.provider}/${model.id} cannot authenticate Codex web search. Set WEB_SEARCH_MODEL to a ChatGPT/Codex model.`,
+            );
         }
+        return model;
     }
-    return parts.join("\n\n");
+    return ctx.model && isCodexModel(ctx.model) ? ctx.model : undefined;
 }
 
-function collectResponseSources(output: ResponseOutputItem[] | undefined): SearchSource[] {
-    const sources: SearchSource[] = [];
-    const seen = new Set<string>();
-
-    // Put explicit citations first so the bounded source list preserves links used by the answer.
-    for (const item of output ?? []) {
-        if (item.type !== "message") continue;
-        for (const part of item.content ?? []) {
-            for (const annotation of part.annotations ?? []) {
-                if (annotation.type === "url_citation") addSource(sources, seen, annotation.title, annotation.url);
-            }
-        }
-    }
-
-    for (const item of output ?? []) {
-        if (item.type !== "web_search_call" || item.action?.type !== "search") continue;
-        for (const source of item.action.sources ?? []) addSource(sources, seen, source.title, source.url);
-    }
-
-    return sources;
-}
-
-function parseJsonResponse(text: string): ResponsePayload {
+function authFromFile(path: string): CodexAuth | undefined {
     try {
-        return text ? (JSON.parse(text) as ResponsePayload) : {};
+        const parsed = JSON.parse(readFileSync(path, "utf8"));
+        const accessToken = nonEmptyString(parsed?.tokens?.access_token);
+        if (!accessToken) return undefined;
+        return {
+            accessToken,
+            accountId: nonEmptyString(parsed?.tokens?.account_id) ?? extractChatGptAccountId(accessToken),
+            endpoint: DEFAULT_ENDPOINT,
+        };
     } catch {
-        throw new Error(`GPT web search returned invalid JSON: ${text.slice(0, 700)}`);
+        return undefined;
     }
 }
 
-function parseSseEvents(text: string): Array<{ event: string; data: SseData }> {
-    const events: Array<{ event: string; data: SseData }> = [];
-    for (const block of text.replace(/\r\n/g, "\n").split(/\n\n+/)) {
-        const lines = block.split("\n");
-        const eventHeader = lines
-            .find((line) => line.startsWith("event:"))
-            ?.slice(6)
-            .trim();
-        const dataText = lines
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-        if (!dataText || dataText === "[DONE]") continue;
-        try {
-            const data = JSON.parse(dataText) as SseData;
-            const event = eventHeader || nonEmptyString(data.type);
-            if (event) events.push({ event, data });
-        } catch {
-            // Ignore malformed or incomplete event fragments.
-        }
+/**
+ * Resolves ChatGPT/Codex credentials for the standalone search endpoint.
+ *
+ * Order: explicit `CODEX_ACCESS_TOKEN` environment override, then a pi-registered ChatGPT/Codex
+ * model (the active model, or `WEB_SEARCH_MODEL`), then the Codex CLI login at `~/.codex/auth.json`.
+ */
+async function resolveCodexAuth(
+    ctx: ExtensionContext,
+    environment: Record<string, string | undefined>,
+    codexAuthPath: string | undefined,
+): Promise<CodexAuth> {
+    const envToken = nonEmptyString(environment.CODEX_ACCESS_TOKEN);
+    if (envToken) {
+        return {
+            accessToken: envToken,
+            accountId: nonEmptyString(environment.CODEX_ACCOUNT_ID) ?? extractChatGptAccountId(envToken),
+            endpoint: DEFAULT_ENDPOINT,
+        };
     }
-    return events;
+
+    const model = resolveCodexModel(ctx, environment);
+    if (model) {
+        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) throw new Error(auth.error);
+        if (!auth.apiKey) throw new Error(`No API key is available for ${model.provider}/${model.id}.`);
+        return {
+            accessToken: auth.apiKey,
+            accountId: extractChatGptAccountId(auth.apiKey),
+            endpoint: resolveCodexSearchUrl(model.baseUrl),
+            headers: { ...model.headers, ...auth.headers },
+        };
+    }
+
+    const fileAuth = authFromFile(codexAuthPath ?? join(homedir(), ".codex", "auth.json"));
+    if (fileAuth) return fileAuth;
+
+    throw new Error(
+        "No ChatGPT/Codex credentials found for web_search. Sign in to a ChatGPT/Codex model in pi, set CODEX_ACCESS_TOKEN, or run `codex login`.",
+    );
 }
 
-function parseChatGptResponse(text: string): { answer: string; sources: SearchSource[] } {
-    let streamedAnswer = "";
-    let finalResponse: ResponsePayload | undefined;
-    const streamedSources: SearchSource[] = [];
-    const streamedSeen = new Set<string>();
-
-    for (const { event, data } of parseSseEvents(text)) {
-        if (event === "response.output_text.delta" && typeof data.delta === "string") streamedAnswer += data.delta;
-        if (data.response?.output) finalResponse = data.response;
-        if (data.item?.type === "web_search_call" && data.item.action?.type === "search") {
-            for (const source of data.item.action.sources ?? []) {
-                addSource(streamedSources, streamedSeen, source.title, source.url);
-            }
-        }
+function normalizeResults(raw: unknown): SearchResultItem[] {
+    if (!Array.isArray(raw)) return [];
+    const results: SearchResultItem[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+        if (typeof item !== "object" || item === null) continue;
+        const entry = item as Record<string, unknown>;
+        const url = nonEmptyString(entry.url);
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        results.push({
+            title: nonEmptyString(entry.title) ?? url,
+            url,
+            refId: nonEmptyString(entry.ref_id),
+            snippet: nonEmptyString(entry.snippet),
+        });
+        if (results.length >= MAX_RESULTS) break;
     }
+    return results;
+}
 
-    const sources = collectResponseSources(finalResponse?.output);
-    const seen = new Set(sources.map((source) => source.url));
-    for (const source of streamedSources) addSource(sources, seen, source.title, source.url);
-
-    return {
-        answer: streamedAnswer.trim() || collectResponseText(finalResponse),
-        sources,
+/**
+ * Rewrites Codex citation markers into plain numeric references.
+ *
+ * The endpoint's `output` text embeds private-Unicode markers (`citeturn0search0`)
+ * and bracketed turn references (`[turn0search0]`); both map to `[n]` entries in the source list.
+ */
+function cleanCitationMarkers(text: string, results: SearchResultItem[]): string {
+    const refIndex = new Map<string, number>();
+    results.forEach((result, index) => {
+        if (result.refId) refIndex.set(result.refId, index + 1);
+    });
+    const label = (ref: string): string => {
+        const num = refIndex.get(ref);
+        return num ? `[${num}]` : `[${ref}]`;
     };
+
+    return text
+        .replace(
+            /[\uE000-\uE2FF]?cite[\uE000-\uE2FF]?([^\uE000-\uE2FF\r\n]+)[\uE000-\uE2FF]?/gi,
+            (_match, inner: string) => {
+                const ref = inner.trim();
+                if (!ref) return "";
+                if (ref.includes("†")) {
+                    const suffix = ref.split("†").slice(1).join("†").trim();
+                    return suffix ? `[${suffix}]` : "";
+                }
+                return label(ref);
+            },
+        )
+        .replace(/\[(turn\d+[a-z0-9_,\s]*)\]/gi, (_match, inner: string) =>
+            inner
+                .split(",")
+                .map((ref) => label(ref.trim()))
+                .join(" "),
+        );
 }
 
 async function runSearch(
@@ -233,79 +223,68 @@ async function runSearch(
     ctx: ExtensionContext,
     signal: AbortSignal | undefined,
     dependencies: WebToolDependencies,
+    sessionId: string,
 ): Promise<SearchResult> {
-    const model = resolveSearchModel(ctx, dependencies.environment ?? process.env);
-    const provider = searchProvider(model);
-    if (!provider) throw new Error(`${model.provider}/${model.id} does not support GPT built-in web search.`);
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) throw new Error(auth.error);
-    if (!auth.apiKey) throw new Error(`No API key is available for ${model.provider}/${model.id}.`);
+    const environment = dependencies.environment ?? process.env;
+    const auth = await resolveCodexAuth(ctx, environment, dependencies.codexAuthPath);
 
     const headers: Record<string, string> = {
-        ...model.headers,
         ...auth.headers,
-        Authorization: `Bearer ${auth.apiKey}`,
+        Authorization: `Bearer ${auth.accessToken}`,
         "Content-Type": "application/json",
     };
-    const body: Record<string, unknown> = {
-        include: ["web_search_call.action.sources"],
-        input: params.query,
-        instructions: SEARCH_INSTRUCTIONS,
-        max_output_tokens: MAX_OUTPUT_TOKENS,
-        model: model.id,
-        store: false,
-        tool_choice: "required",
-        tools: [{ type: "web_search" }],
+    headers["User-Agent"] = headers["User-Agent"] ?? CODEX_USER_AGENT;
+    if (auth.accountId) headers["ChatGPT-Account-ID"] = headers["ChatGPT-Account-ID"] ?? auth.accountId;
+
+    const body = {
+        id: sessionId,
+        model: SEARCH_PAYLOAD_MODEL,
+        commands: { search_query: [{ q: params.query }] },
     };
-    let endpoint = normalizeEndpoint(model.baseUrl, "/responses");
 
-    if (provider === "chatgpt") {
-        endpoint = resolveCodexResponsesUrl(model.baseUrl);
-        const accountId = extractChatGptAccountId(auth.apiKey);
-        if (accountId) headers["chatgpt-account-id"] = accountId;
-        headers.Accept = headers.Accept ?? headers.accept ?? "text/event-stream";
-        headers["User-Agent"] = headers["User-Agent"] ?? CHATGPT_USER_AGENT;
-        delete headers.accept;
-        delete body.max_output_tokens;
-        body.input = [{ role: "user", content: [{ type: "input_text", text: params.query }] }];
-        body.stream = true;
-    }
-
-    const response = await (dependencies.fetch ?? globalThis.fetch)(endpoint, {
+    const response = await (dependencies.fetch ?? globalThis.fetch)(auth.endpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
         signal,
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`${provider} web search returned HTTP ${response.status}: ${text.slice(0, 700)}`);
+    if (response.status === 401 || response.status === 403) {
+        throw new Error(
+            "Codex web search authentication was rejected. Re-authenticate the ChatGPT/Codex model in pi, refresh CODEX_ACCESS_TOKEN, or run `codex login`.",
+        );
+    }
+    if (response.status === 429) throw new Error("Codex web search is rate limited; retry later.");
+    if (!response.ok) throw new Error(`Codex web search returned HTTP ${response.status}: ${text.slice(0, 700)}`);
 
-    const parsed =
-        provider === "chatgpt"
-            ? parseChatGptResponse(text)
-            : (() => {
-                  const payload = parseJsonResponse(text);
-                  return { answer: collectResponseText(payload), sources: collectResponseSources(payload.output) };
-              })();
+    let payload: Record<string, unknown>;
+    try {
+        payload = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    } catch {
+        throw new Error(`Codex web search returned invalid JSON: ${text.slice(0, 700)}`);
+    }
 
-    if (!parsed.answer) throw new Error("GPT web search returned an empty answer.");
-    return {
-        provider,
-        model: `${model.provider}/${model.id}`,
-        answer: parsed.answer,
-        sources: parsed.sources.slice(0, MAX_SOURCES),
-    };
+    const results = normalizeResults(payload.results);
+    const output = nonEmptyString(payload.output);
+    return { output: output ? cleanCitationMarkers(output, results) : undefined, results };
 }
 
 function formatSearchResult(query: string, result: SearchResult): string {
+    if (!result.output && result.results.length === 0) {
+        return `No web search results returned for ${JSON.stringify(query)}.`;
+    }
     return [
-        `Web search findings for ${JSON.stringify(query)}:`,
-        `Provider: ${result.provider}; model: ${result.model}`,
+        `Web search results for ${JSON.stringify(query)}:`,
+        ...(result.output ? ["", result.output] : []),
         "",
-        result.answer,
-        "",
-        result.sources.length ? "Sources:" : "Sources: none returned by provider",
-        ...result.sources.map((source, index) => `${index + 1}. ${source.title}\n   ${source.url}`),
+        result.results.length ? "Sources:" : "Sources: none returned by provider",
+        ...result.results.map((source, index) =>
+            [
+                `${index + 1}. ${source.title}`,
+                `   ${source.url}`,
+                ...(source.snippet ? [`   ${source.snippet}`] : []),
+            ].join("\n"),
+        ),
     ].join("\n");
 }
 
@@ -314,17 +293,18 @@ export default function webSearchExtension(
     dependencies: WebToolDependencies,
     outputRetention: WebOutputRetention,
 ) {
+    const sessionId = `search_session_${Math.random().toString(36).slice(2, 10)}`;
     pi.registerTool<typeof SEARCH_PARAMS, SearchDetails>({
         name: "web_search",
         label: "Web Search",
         description:
-            "Search the live web with GPT's built-in web search using a natural-language query. Returns a concise answer and provider source URLs. Output is capped at 50KB.",
-        promptSnippet: "Search the web with GPT built-in web search using a natural-language query.",
+            "Search the live web through the Codex standalone search endpoint using a natural-language query. Returns ranked results with snippets without spending model inference tokens. Output is capped at 50KB.",
+        promptSnippet: "Search the web with Codex standalone search using a natural-language query.",
         promptGuidelines: [
             "Use web_search when an answer depends on current, external, or recently changed information.",
             "Use web_search for discovery; use web_crawl when a specific URL must be extracted.",
             "When using web_search, cite the returned source URLs in the final answer.",
-            "Set WEB_SEARCH_MODEL=provider/model when the active model is not an OpenAI Responses or ChatGPT/Codex model.",
+            "web_search authenticates with ChatGPT/Codex credentials: the active Codex model, WEB_SEARCH_MODEL, CODEX_ACCESS_TOKEN, or `codex login`.",
         ],
         parameters: SEARCH_PARAMS,
         execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -337,15 +317,13 @@ export default function webSearchExtension(
                 starting: { text: `Searching the web for: ${params.query}`, details: { status: "searching" } },
                 limits: { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
                 async run() {
-                    const result = await runSearch(params, ctx, signal, dependencies);
+                    const result = await runSearch(params, ctx, signal, dependencies, sessionId);
                     return {
                         fullText: formatSearchResult(params.query, result),
                         details: {
                             status: "complete" as const,
-                            provider: result.provider,
-                            model: result.model,
                             query: params.query,
-                            sources: result.sources,
+                            sources: result.results.map(({ title, url }) => ({ title, url })),
                         },
                     };
                 },

@@ -39,10 +39,28 @@ afterEach(async () => {
     );
 });
 
-const openai = { provider: "openai", api: "openai-responses", id: "gpt-5", baseUrl: "https://api.openai.test/v1" };
+const codex = {
+    provider: "openai-codex",
+    api: "openai-codex-responses",
+    id: "codex",
+    baseUrl: "https://chatgpt.test/backend-api",
+};
+const anthropic = {
+    provider: "anthropic",
+    api: "anthropic-messages",
+    id: "claude",
+    baseUrl: "https://example.test",
+};
+const codexToken = [
+    "e30",
+    Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-123" } })).toString(
+        "base64url",
+    ),
+    "sig",
+].join(".");
 
 describe("web_search", () => {
-    test("uses Responses search and extracts citations before search sources", async () => {
+    test("sends a standalone search command with registry Codex credentials", async () => {
         let request: any;
         const tool = host({
             environment: {},
@@ -50,132 +68,155 @@ describe("web_search", () => {
                 request = { url, init, body: JSON.parse(String(init?.body)) };
                 return new Response(
                     JSON.stringify({
-                        output: [
-                            {
-                                type: "message",
-                                content: [
-                                    {
-                                        type: "output_text",
-                                        text: "Current answer",
-                                        annotations: [
-                                            { type: "url_citation", title: "Citation", url: "https://one.test" },
-                                        ],
-                                    },
-                                ],
-                            },
-                            {
-                                type: "web_search_call",
-                                action: {
-                                    type: "search",
-                                    sources: [
-                                        { title: "Duplicate", url: "https://one.test" },
-                                        { title: "Two", url: "https://two.test" },
-                                    ],
-                                },
-                            },
+                        results: [
+                            { title: "One", url: "https://one.test", ref_id: "turn0search0", snippet: "First hit" },
+                            { title: "Duplicate", url: "https://one.test" },
+                            { url: "https://two.test" },
                         ],
                     }),
                 );
             },
         })("web_search");
 
-        const result = await run(tool, { query: "what changed?" }, context(openai));
-        expect(request.url).toBe("https://api.openai.test/v1/responses");
-        expect(request.body.tools).toEqual([{ type: "web_search" }]);
-        expect(request.init.headers.Authorization).toBe("Bearer secret");
+        const result = await run(tool, { query: "what changed?" }, context(codex, codexToken));
+        expect(request.url).toBe("https://chatgpt.test/backend-api/codex/alpha/search");
+        expect(request.body.model).toBe("gpt-4o");
+        expect(request.body.commands).toEqual({ search_query: [{ q: "what changed?" }] });
+        expect(request.body.id).toStartWith("search_session_");
+        expect(request.init.headers.Authorization).toBe(`Bearer ${codexToken}`);
+        expect(request.init.headers["User-Agent"]).toStartWith("codex-cli/");
+        expect(request.init.headers["ChatGPT-Account-ID"]).toBe("acct-123");
         expect(result.details.sources).toEqual([
-            { title: "Citation", url: "https://one.test" },
-            { title: "Two", url: "https://two.test" },
+            { title: "One", url: "https://one.test" },
+            { title: "https://two.test", url: "https://two.test" },
         ]);
-        expect(result.content[0].text).toContain("Current answer");
+        expect(result.content[0].text).toContain("First hit");
     });
 
-    test("preserves the complete formatted search result when it fits", async () => {
+    test("rewrites citation markers and preserves the complete formatted result", async () => {
         const tool = host({
             environment: {},
             fetch: async () =>
                 new Response(
                     JSON.stringify({
-                        output: [
+                        output: "Answer \uE200cite\uE202turn0search0\uE201 and [turn0search0] done",
+                        results: [
                             {
-                                type: "message",
-                                content: [
-                                    {
-                                        type: "output_text",
-                                        text: "Formatted answer",
-                                        annotations: [
-                                            { type: "url_citation", title: "Source title", url: "https://source.test" },
-                                        ],
-                                    },
-                                ],
+                                title: "Source title",
+                                url: "https://source.test",
+                                ref_id: "turn0search0",
+                                snippet: "Snip",
                             },
                         ],
                     }),
                 ),
         })("web_search");
 
-        const result = await run(tool, { query: "format me" }, context(openai));
+        const result = await run(tool, { query: "format me" }, context(codex, codexToken));
         expect(result.content[0].text).toBe(
             [
-                'Web search findings for "format me":',
-                "Provider: openai; model: openai/gpt-5",
+                'Web search results for "format me":',
                 "",
-                "Formatted answer",
+                "Answer [1] and [1] done",
                 "",
                 "Sources:",
-                "1. Source title\n   https://source.test",
+                "1. Source title\n   https://source.test\n   Snip",
             ].join("\n"),
         );
     });
 
-    test("supports configured Codex models and SSE responses", async () => {
-        const codex = {
-            provider: "openai-codex",
-            api: "openai-codex-responses",
-            id: "codex",
-            baseUrl: "https://chatgpt.test/backend-api",
-        };
+    test("prefers CODEX_ACCESS_TOKEN over the model registry", async () => {
+        let request: any;
+        const tool = host({
+            environment: { CODEX_ACCESS_TOKEN: "env-token", CODEX_ACCOUNT_ID: "env-acct" },
+            fetch: async (url, init) => {
+                request = { url, init };
+                return new Response(JSON.stringify({ results: [] }));
+            },
+        })("web_search");
+
+        const result = await run(tool, { query: "anything" }, context(anthropic));
+        expect(request.url).toBe("https://chatgpt.com/backend-api/codex/alpha/search");
+        expect(request.init.headers.Authorization).toBe("Bearer env-token");
+        expect(request.init.headers["ChatGPT-Account-ID"]).toBe("env-acct");
+        expect(result.content[0].text).toBe('No web search results returned for "anything".');
+    });
+
+    test("selects the WEB_SEARCH_MODEL credentials when the active model is not Codex", async () => {
         let request: any;
         const tool = host({
             environment: { WEB_SEARCH_MODEL: "openai-codex/codex" },
             fetch: async (url, init) => {
-                request = { url, init, body: JSON.parse(String(init?.body)) };
-                const stream = [
-                    'event: response.output_text.delta\ndata: {"delta":"Streamed answer"}',
-                    'event: response.completed\ndata: {"response":{"output":[{"type":"web_search_call","action":{"type":"search","sources":[{"title":"Source","url":"https://source.test"}]}}]}}',
-                ].join("\n\n");
-                return new Response(stream);
+                request = { url, init };
+                return new Response(JSON.stringify({ results: [{ title: "Hit", url: "https://hit.test" }] }));
             },
         })("web_search");
-        const result = await run(tool, { query: "news" }, context(codex));
-        expect(request.url).toBe("https://chatgpt.test/backend-api/codex/responses");
-        expect(request.body.stream).toBe(true);
-        expect(request.body.max_output_tokens).toBeUndefined();
-        expect(request.init.headers.Accept).toBe("text/event-stream");
-        expect(result.content[0].text).toContain("Streamed answer");
-        expect(result.details.sources[0].url).toBe("https://source.test");
+        const ctx = {
+            model: anthropic,
+            modelRegistry: {
+                find: (provider: string, id: string) =>
+                    provider === "openai-codex" && id === "codex" ? codex : undefined,
+                getApiKeyAndHeaders: async () => ({ ok: true, apiKey: codexToken, headers: {} }),
+            },
+        } as any;
+
+        const result = await run(tool, { query: "news" }, ctx);
+        expect(request.url).toBe("https://chatgpt.test/backend-api/codex/alpha/search");
+        expect(result.details.sources).toEqual([{ title: "Hit", url: "https://hit.test" }]);
     });
 
-    test("reports unsupported configuration and cancellation", async () => {
-        const unsupported = {
-            provider: "anthropic",
-            api: "anthropic-messages",
-            id: "claude",
-            baseUrl: "https://example.test",
-        };
+    test("reads Codex CLI credentials from auth.json as a fallback", async () => {
+        const { mkdtempSync, writeFileSync } = await import("node:fs");
+        const { tmpdir } = await import("node:os");
+        const { join } = await import("node:path");
+        const authPath = join(mkdtempSync(join(tmpdir(), "pui-web-test-")), "auth.json");
+        writeFileSync(authPath, JSON.stringify({ tokens: { access_token: "file-token", account_id: "file-acct" } }));
+
+        let request: any;
         const tool = host({
             environment: {},
-            fetch: async () => {
-                throw new Error("should not fetch");
+            codexAuthPath: authPath,
+            fetch: async (url, init) => {
+                request = { url, init };
+                return new Response(JSON.stringify({ results: [] }));
             },
         })("web_search");
-        await expect(run(tool, { query: "x" }, context(unsupported))).rejects.toThrow(
-            "does not support GPT built-in web search",
+
+        await run(tool, { query: "x" }, context(anthropic));
+        expect(request.init.headers.Authorization).toBe("Bearer file-token");
+        expect(request.init.headers["ChatGPT-Account-ID"]).toBe("file-acct");
+    });
+
+    test("reports missing credentials, rejected auth, and cancellation", async () => {
+        let calls = 0;
+        const missing = host({
+            environment: {},
+            codexAuthPath: "/nonexistent/pui-web-test/auth.json",
+            fetch: async () => {
+                calls++;
+                return new Response();
+            },
+        })("web_search");
+        await expect(run(missing, { query: "x" }, context(anthropic))).rejects.toThrow(
+            "No ChatGPT/Codex credentials found",
+        );
+        expect(calls).toBe(0);
+
+        const rejected = host({
+            environment: {},
+            fetch: async () => new Response("denied", { status: 401 }),
+        })("web_search");
+        await expect(run(rejected, { query: "x" }, context(codex, codexToken))).rejects.toThrow(
+            "authentication was rejected",
         );
 
+        const cancelled = host({
+            environment: {},
+            fetch: async () => new Response(JSON.stringify({ results: [] })),
+        })("web_search");
         const controller = new AbortController();
         controller.abort();
-        await expect(run(tool, { query: "x" }, context(openai), controller.signal)).rejects.toThrow(
+        await expect(run(cancelled, { query: "x" }, context(codex, codexToken), controller.signal)).rejects.toThrow(
             "web_search failed: Search cancelled.",
         );
     });
