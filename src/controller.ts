@@ -22,7 +22,7 @@ import { resolveFdBinary } from "../extensions/file-search/binaries.js";
 import { errorMessage } from "../extensions/shared/validate.js";
 import { BackgroundSubagentBridge } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
-import { BUNDLED_SKILL_PATHS } from "./bundled-skills.js";
+import { type BundledSkillResources, createBundledSkillResources } from "./bundled-skills.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
@@ -58,19 +58,26 @@ export interface ControllerDependencies {
     eventBus?: EventBusController;
     extensionFactories?: InlineExtension[];
     readGitBranch?: (cwd: string) => string | undefined;
+    /** Prepared skill files whose ownership transfers to the controller. */
+    bundledSkillResources?: BundledSkillResources;
+}
+
+export interface PuiRuntimeFactoryOptions {
+    bundledSkillPaths: string[];
+    extensionFactories?: InlineExtension[];
 }
 
 export function createPuiRuntimeFactory(
     eventBus: EventBusController,
-    extensionFactories: InlineExtension[] = BUNDLED_EXTENSION_FACTORIES,
+    options: PuiRuntimeFactoryOptions,
 ): CreateAgentSessionRuntimeFactory {
     return async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
         const services = await createAgentSessionServices({
             cwd,
             agentDir,
             resourceLoaderOptions: {
-                additionalSkillPaths: BUNDLED_SKILL_PATHS,
-                extensionFactories,
+                additionalSkillPaths: options.bundledSkillPaths,
+                extensionFactories: options.extensionFactories ?? BUNDLED_EXTENSION_FACTORIES,
                 eventBus,
             },
         });
@@ -249,11 +256,13 @@ export class PuiController {
     private readonly workflows: WorkflowBridge;
     private readonly backgroundSubagents: BackgroundSubagentBridge;
     private readonly eventBus: EventBusController;
+    private readonly bundledSkillResources?: BundledSkillResources;
 
     constructor(runtime: AgentSessionRuntime, dependencies: ControllerDependencies = {}) {
         this.runtime = runtime;
         this.eventBus = dependencies.eventBus ?? createEventBus();
         this.readGitBranch = dependencies.readGitBranch ?? readGitBranch;
+        this.bundledSkillResources = dependencies.bundledSkillResources;
         this.workflows = new WorkflowBridge({ eventBus: this.eventBus, onChange: () => this.scheduleRefresh() });
         this.backgroundSubagents = new BackgroundSubagentBridge({
             eventBus: this.eventBus,
@@ -279,26 +288,43 @@ export class PuiController {
 
         const sessionCwd = options.sessionPath ? sessionManager.getCwd() || options.cwd : options.cwd;
         const eventBus = dependencies.eventBus ?? createEventBus();
-        const runtime = await createAgentSessionRuntime(
-            createPuiRuntimeFactory(eventBus, dependencies.extensionFactories),
-            {
-                cwd: sessionCwd,
-                agentDir,
-                sessionManager,
-                sessionStartEvent: { type: "session_start", reason: "startup" },
-            },
-        );
-        const controller = new PuiController(runtime, { ...dependencies, eventBus });
+        const bundledSkillResources = dependencies.bundledSkillResources ?? (await createBundledSkillResources());
+        let runtime: AgentSessionRuntime | undefined;
+        let controller: PuiController | undefined;
+        try {
+            runtime = await createAgentSessionRuntime(
+                createPuiRuntimeFactory(eventBus, {
+                    bundledSkillPaths: bundledSkillResources.skillPaths,
+                    extensionFactories: dependencies.extensionFactories,
+                }),
+                {
+                    cwd: sessionCwd,
+                    agentDir,
+                    sessionManager,
+                    sessionStartEvent: { type: "session_start", reason: "startup" },
+                },
+            );
+            const createdController = new PuiController(runtime, { ...dependencies, eventBus, bundledSkillResources });
+            controller = createdController;
 
-        runtime.setRebindSession(async (session) => controller.bindSession(session));
-        await controller.bindSession(runtime.session);
+            runtime.setRebindSession(async (session) => createdController.bindSession(session));
+            await createdController.bindSession(runtime.session);
 
-        for (const diagnostic of runtime.diagnostics) {
-            controller.notify(diagnostic.message, diagnostic.type === "error" ? "error" : diagnostic.type);
+            for (const diagnostic of runtime.diagnostics) {
+                createdController.notify(diagnostic.message, diagnostic.type === "error" ? "error" : diagnostic.type);
+            }
+            if (runtime.modelFallbackMessage) createdController.notify(runtime.modelFallbackMessage, "warning");
+
+            return createdController;
+        } catch (error) {
+            if (controller) {
+                await controller.dispose().catch(() => undefined);
+            } else {
+                await runtime?.dispose().catch(() => undefined);
+                await bundledSkillResources.dispose().catch(() => undefined);
+            }
+            throw error;
         }
-        if (runtime.modelFallbackMessage) controller.notify(runtime.modelFallbackMessage, "warning");
-
-        return controller;
     }
 
     get session(): AgentSession {
@@ -824,7 +850,14 @@ export class PuiController {
         if (this.refreshTimer) clearTimeout(this.refreshTimer);
         this.refreshTimer = undefined;
         this.toasts.dispose();
-        await this.runtime.dispose();
-        this.listeners.clear();
+        try {
+            await this.runtime.dispose();
+        } finally {
+            try {
+                await this.bundledSkillResources?.dispose();
+            } finally {
+                this.listeners.clear();
+            }
+        }
     }
 }

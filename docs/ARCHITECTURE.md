@@ -123,9 +123,11 @@ plain Pi with equivalent production wiring.
 ### Skills — `skills/`
 
 `skills/unslop/` contains the bundled writing skill and its upstream MIT license. `src/bundled-skills.ts`
-imports both with Bun's file loader, which gives Pi a readable source path during development and a
-`$bunfs` path in the standalone executable. The runtime supplies the skill through
-`additionalSkillPaths`, alongside Pi's normal global and trusted project discovery.
+imports both with Bun's file loader, then copies them to a private temporary directory owned by the
+controller. This gives Pi and its tools ordinary filesystem paths instead of Bun's `$bunfs` paths,
+which `fs.readFile` can read but `fs.access` cannot. The runtime supplies the copied `SKILL.md` through
+`additionalSkillPaths`, alongside Pi's normal global and trusted project discovery, and removes the
+temporary directory during controller disposal.
 
 ## Protocol ownership
 
@@ -167,8 +169,9 @@ and the view models bound every string.
 - Where the real boundary is a process or the filesystem, tests use the real thing: the subagent
   runner spawns a fixture child, the approval store races a real second process, worktree tests run
   real `git`, run-storage tests inject real corruption.
-- Bundled-skill tests load the real embedded path through Pi's public resource loader. The compiled
-  executable smoke test reads the skill and license back from Bun's virtual filesystem.
+- Bundled-skill tests materialize the real embedded assets and load the resulting path through Pi's
+  public resource loader. The compiled executable smoke test verifies that `fs.access` and reads work
+  against those ordinary files.
 - `bun run check` is the gate: Biome, `tsc`, the full test suite, a binary build, and a smoke test
   of the built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
 

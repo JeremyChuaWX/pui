@@ -17,6 +17,7 @@ import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { resolveFdBinary } from "../extensions/file-search/binaries.js";
 import { createExtensionApiHarness } from "../extensions/test-support/extension-api.js";
 import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./bundled-extensions.js";
+import { createBundledSkillResources } from "./bundled-skills.js";
 import { createPuiRuntimeFactory } from "./controller.js";
 
 const bundledTools = {
@@ -137,11 +138,15 @@ describe("bundled extensions", () => {
             fs.promises.mkdir(sessionDir, { recursive: true }),
         ]);
 
-        const runtime = await createAgentSessionRuntime(createPuiRuntimeFactory(createEventBus()), {
-            cwd: initialCwd,
-            agentDir,
-            sessionManager: SessionManager.inMemory(initialCwd),
-        });
+        const bundledSkillResources = await createBundledSkillResources({ temporaryDirectory: temp });
+        const runtime = await createAgentSessionRuntime(
+            createPuiRuntimeFactory(createEventBus(), { bundledSkillPaths: bundledSkillResources.skillPaths }),
+            {
+                cwd: initialCwd,
+                agentDir,
+                sessionManager: SessionManager.inMemory(initialCwd),
+            },
+        );
         try {
             expectBundledResources(runtime, initialCwd);
 
@@ -186,6 +191,7 @@ describe("bundled extensions", () => {
             expectBundledResources(runtime, resumedCwd);
         } finally {
             await runtime.dispose();
+            await bundledSkillResources.dispose();
             await fs.promises.rm(temp, { recursive: true, force: true });
         }
     });

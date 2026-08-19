@@ -4,7 +4,7 @@ import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-codin
 import { createWorkflowBackend } from "../extensions/workflow/backend.js";
 import { WorkflowRunManager } from "../extensions/workflow/manager.js";
 import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
-import { BUNDLED_SKILLS } from "./bundled-skills.js";
+import { BUNDLED_SKILLS, createBundledSkillResources } from "./bundled-skills.js";
 
 async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
     const end = Date.now() + timeout;
@@ -18,29 +18,36 @@ async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void
 export async function runCompiledWorkflowSmoke(): Promise<void> {
     const root = process.env.PUI_WORKFLOW_SMOKE_ROOT;
     if (process.env.PUI_WORKFLOW_SMOKE !== "1" || !root) throw new Error("Workflow smoke harness is test-only.");
+    await fs.promises.mkdir(root, { recursive: true });
     const bundledSkillNames = BUNDLED_SKILLS.map(({ name }) => name);
-    const bundledResourceLoader = new DefaultResourceLoader({
-        cwd: root,
-        agentDir: path.join(root, "agent"),
-        settingsManager: SettingsManager.inMemory(),
-        additionalSkillPaths: BUNDLED_SKILLS.map(({ skillPath }) => skillPath),
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        noContextFiles: true,
-    });
-    await bundledResourceLoader.reload();
-    const loadedBundledSkills = bundledResourceLoader.getSkills();
-    if (
-        loadedBundledSkills.diagnostics.length > 0 ||
-        JSON.stringify(loadedBundledSkills.skills.map(({ name }) => name)) !== JSON.stringify(bundledSkillNames)
-    ) {
-        throw new Error("Compiled bundled skills did not load through Pi.");
-    }
-    for (const bundled of BUNDLED_SKILLS) {
-        const license = await fs.promises.readFile(bundled.licensePath, "utf8");
-        if (!license.includes("MIT License")) throw new Error(`Compiled ${bundled.name} license is invalid.`);
+    const bundledSkillResources = await createBundledSkillResources({ temporaryDirectory: root });
+    try {
+        const bundledResourceLoader = new DefaultResourceLoader({
+            cwd: root,
+            agentDir: path.join(root, "agent"),
+            settingsManager: SettingsManager.inMemory(),
+            additionalSkillPaths: bundledSkillResources.skillPaths,
+            noExtensions: true,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+        });
+        await bundledResourceLoader.reload();
+        const loadedBundledSkills = bundledResourceLoader.getSkills();
+        if (
+            loadedBundledSkills.diagnostics.length > 0 ||
+            JSON.stringify(loadedBundledSkills.skills.map(({ name }) => name)) !== JSON.stringify(bundledSkillNames)
+        ) {
+            throw new Error("Compiled bundled skills did not load through Pi.");
+        }
+        for (const bundled of bundledSkillResources.skills) {
+            await fs.promises.access(bundled.skillPath, fs.constants.R_OK);
+            const license = await fs.promises.readFile(bundled.licensePath, "utf8");
+            if (!license.includes("MIT License")) throw new Error(`Compiled ${bundled.name} license is invalid.`);
+        }
+    } finally {
+        await bundledSkillResources.dispose();
     }
 
     const project = path.join(root, "project");

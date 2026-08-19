@@ -67,8 +67,9 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 pui bundles the [`unslop`](skills/unslop/SKILL.md) writing skill from
 [`backnotprop/pstack`](https://github.com/backnotprop/pstack/blob/main/skills/unslop/SKILL.md). The skill and its
-[MIT license](skills/unslop/LICENSE.txt) are embedded in the standalone executable. pui passes the embedded file to
-Pi as an additional skill, so normal global and trusted project skill discovery still works.
+[MIT license](skills/unslop/LICENSE.txt) are embedded in the standalone executable. At startup, pui copies them to a
+private temporary directory and passes its `SKILL.md` to Pi as an additional skill. This keeps the skill readable by
+Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 

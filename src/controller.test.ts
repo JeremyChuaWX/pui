@@ -5,7 +5,8 @@ import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import { waitFor } from "../extensions/test-support/wait.js";
-import { PuiController } from "./controller.js";
+import type { BundledSkillResources } from "./bundled-skills.js";
+import { type ControllerDependencies, PuiController } from "./controller.js";
 
 function usage() {
     return {
@@ -81,6 +82,7 @@ interface FakeSessionState {
 async function createController(
     messages: AgentMessage[],
     eventBus?: ReturnType<typeof createEventBus>,
+    bundledSkillResources?: BundledSkillResources,
 ): Promise<{
     controller: PuiController;
     state: FakeSessionState;
@@ -131,7 +133,10 @@ async function createController(
         setRebindSession: () => {},
         dispose: async () => {},
     } as unknown as AgentSessionRuntime;
-    const controller = new PuiController(runtime, eventBus ? { eventBus } : {});
+    const dependencies: ControllerDependencies = {};
+    if (eventBus) dependencies.eventBus = eventBus;
+    if (bundledSkillResources) dependencies.bundledSkillResources = bundledSkillResources;
+    const controller = new PuiController(runtime, dependencies);
     await controller.bindSession(runtime.session);
     const emit = (event: AgentSessionEvent) => {
         if (event.type === "tool_execution_start") state.pending.add(event.toolCallId);
@@ -142,9 +147,17 @@ async function createController(
 }
 
 describe("PuiController background event bridge", () => {
-    test("coalesces current-instance updates and clears the bus on disposal", async () => {
+    test("coalesces current-instance updates and clears owned resources on disposal", async () => {
         const bus = createEventBus();
-        const { controller } = await createController([], bus);
+        let skillDisposals = 0;
+        const bundledSkillResources: BundledSkillResources = {
+            skills: [],
+            skillPaths: [],
+            dispose: async () => {
+                skillDisposals++;
+            },
+        };
+        const { controller } = await createController([], bus, bundledSkillResources);
         let notifications = 0;
         controller.subscribe(() => notifications++);
         const envelope = (type: string, status = "running") => ({
@@ -184,6 +197,8 @@ describe("PuiController background event bridge", () => {
         }
         unsubscribeControl();
         await controller.dispose();
+        await controller.dispose();
+        expect(skillDisposals).toBe(1);
         bus.emit("pui.subagent.background", envelope("upsert", "succeeded"));
         expect(controller.snapshot().backgroundSubagents).toEqual([]);
     });
