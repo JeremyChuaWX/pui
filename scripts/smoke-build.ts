@@ -32,6 +32,7 @@ try {
     const result = JSON.parse(workflow.stdout.toString()) as Record<string, unknown>;
     if (
         result.hostExecutable !== executablePath ||
+        JSON.stringify(result.bundledSkills) !== JSON.stringify(["unslop"]) ||
         JSON.stringify(result.completed) !== JSON.stringify(["left-done", "right-done"]) ||
         result.stopped !== "cancelled" ||
         result.deliveries !== 2 ||

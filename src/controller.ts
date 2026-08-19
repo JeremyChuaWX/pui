@@ -22,6 +22,7 @@ import { resolveFdBinary } from "../extensions/file-search/binaries.js";
 import { errorMessage } from "../extensions/shared/validate.js";
 import { BackgroundSubagentBridge } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
+import { BUNDLED_SKILL_PATHS } from "./bundled-skills.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";
@@ -68,6 +69,7 @@ export function createPuiRuntimeFactory(
             cwd,
             agentDir,
             resourceLoaderOptions: {
+                additionalSkillPaths: BUNDLED_SKILL_PATHS,
                 extensionFactories,
                 eventBus,
             },

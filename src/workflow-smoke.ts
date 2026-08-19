@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createWorkflowBackend } from "../extensions/workflow/backend.js";
 import { WorkflowRunManager } from "../extensions/workflow/manager.js";
 import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
+import { BUNDLED_SKILLS } from "./bundled-skills.js";
 
 async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
     const end = Date.now() + timeout;
@@ -16,6 +18,31 @@ async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void
 export async function runCompiledWorkflowSmoke(): Promise<void> {
     const root = process.env.PUI_WORKFLOW_SMOKE_ROOT;
     if (process.env.PUI_WORKFLOW_SMOKE !== "1" || !root) throw new Error("Workflow smoke harness is test-only.");
+    const bundledSkillNames = BUNDLED_SKILLS.map(({ name }) => name);
+    const bundledResourceLoader = new DefaultResourceLoader({
+        cwd: root,
+        agentDir: path.join(root, "agent"),
+        settingsManager: SettingsManager.inMemory(),
+        additionalSkillPaths: BUNDLED_SKILLS.map(({ skillPath }) => skillPath),
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+    });
+    await bundledResourceLoader.reload();
+    const loadedBundledSkills = bundledResourceLoader.getSkills();
+    if (
+        loadedBundledSkills.diagnostics.length > 0 ||
+        JSON.stringify(loadedBundledSkills.skills.map(({ name }) => name)) !== JSON.stringify(bundledSkillNames)
+    ) {
+        throw new Error("Compiled bundled skills did not load through Pi.");
+    }
+    for (const bundled of BUNDLED_SKILLS) {
+        const license = await fs.promises.readFile(bundled.licensePath, "utf8");
+        if (!license.includes("MIT License")) throw new Error(`Compiled ${bundled.name} license is invalid.`);
+    }
+
     const project = path.join(root, "project");
     await fs.promises.mkdir(project, { recursive: true });
     const storage = new WorkflowRunStorage(path.join(root, "runs"));
@@ -62,7 +89,7 @@ export async function runCompiledWorkflowSmoke(): Promise<void> {
         try {
             const recovered = await recoveredManager.initialize(project);
             process.stdout.write(
-                `${JSON.stringify({ hostExecutable: process.execPath, completed: completedResult, stopped: "cancelled", deliveries, recovered: recovered.some(({ id }) => id === completed.runId) })}\n`,
+                `${JSON.stringify({ hostExecutable: process.execPath, bundledSkills: bundledSkillNames, completed: completedResult, stopped: "cancelled", deliveries, recovered: recovered.some(({ id }) => id === completed.runId) })}\n`,
             );
         } finally {
             await recoveredManager.shutdown();

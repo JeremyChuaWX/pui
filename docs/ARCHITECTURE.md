@@ -17,8 +17,9 @@ src/controller.ts (PuiController) ──────────── deep modu
       ▼  immutable PuiSnapshot via subscribe()
 src/app.tsx (App shell) + src/ui/* ─────────── view layer, renders snapshots only
       │
-      ▼  extension factories (src/bundled-extensions.ts)
-extensions/file-search  extensions/subagent  extensions/workflow  extensions/web
+      ▼  bundled resources
+extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
+extensions/file-search  extensions/subagent  extensions/workflow  extensions/web  skills/unslop
 ```
 
 ## Layers
@@ -119,6 +120,13 @@ plain Pi with equivalent production wiring.
   previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
   shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
 
+### Skills — `skills/`
+
+`skills/unslop/` contains the bundled writing skill and its upstream MIT license. `src/bundled-skills.ts`
+imports both with Bun's file loader, which gives Pi a readable source path during development and a
+`$bunfs` path in the standalone executable. The runtime supplies the skill through
+`additionalSkillPaths`, alongside Pi's normal global and trusted project discovery.
+
 ## Protocol ownership
 
 Wire formats have exactly one implementation, owned by the producing extension:
@@ -159,12 +167,14 @@ and the view models bound every string.
 - Where the real boundary is a process or the filesystem, tests use the real thing: the subagent
   runner spawns a fixture child, the approval store races a real second process, worktree tests run
   real `git`, run-storage tests inject real corruption.
+- Bundled-skill tests load the real embedded path through Pi's public resource loader. The compiled
+  executable smoke test reads the skill and license back from Bun's virtual filesystem.
 - `bun run check` is the gate: Biome, `tsc`, the full test suite, a binary build, and a smoke test
   of the built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
 
 ## Notes
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its
-`CombinedAutocompleteProvider`; pui's visible renderer remains OpenTUI. Bundled extensions augment
-normal Pi discovery — global and trusted project extensions still load from Pi's regular
+`CombinedAutocompleteProvider`; pui's visible renderer remains OpenTUI. Bundled resources augment
+normal Pi discovery. Global and trusted project extensions and skills still load from Pi's regular
 configuration, and the bundled extensions stay loadable in plain `pi` via `pi -e`.

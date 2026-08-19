@@ -33,7 +33,7 @@ const bundledTools = {
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
-function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): void {
+function expectBundledResources(runtime: AgentSessionRuntime, cwd: string): void {
     expect(runtime.cwd).toBe(cwd);
     const extensions = runtime.services.resourceLoader.getExtensions();
     expect(extensions.errors).toEqual([]);
@@ -43,6 +43,7 @@ function expectOneOfEachBundledTool(runtime: AgentSessionRuntime, cwd: string): 
             expect(runtime.session.getAllTools().filter((tool) => tool.name === name)).toHaveLength(1);
         }
     }
+    expect(runtime.services.resourceLoader.getSkills().skills.filter(({ name }) => name === "unslop")).toHaveLength(1);
 }
 
 describe("bundled extensions", () => {
@@ -123,7 +124,7 @@ describe("bundled extensions", () => {
         }
     });
 
-    test("the controller runtime factory preserves one of each bundled tool across session replacement", async () => {
+    test("the controller runtime factory preserves bundled resources across session replacement", async () => {
         const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-runtime-replacement-test-"));
         const initialCwd = path.join(temp, "initial-cwd");
         const resumedCwd = path.join(temp, "resumed-cwd");
@@ -142,10 +143,10 @@ describe("bundled extensions", () => {
             sessionManager: SessionManager.inMemory(initialCwd),
         });
         try {
-            expectOneOfEachBundledTool(runtime, initialCwd);
+            expectBundledResources(runtime, initialCwd);
 
             expect((await runtime.newSession()).cancelled).toBe(false);
-            expectOneOfEachBundledTool(runtime, initialCwd);
+            expectBundledResources(runtime, initialCwd);
 
             const forkEntryId = runtime.session.sessionManager.appendMessage({
                 role: "user",
@@ -153,7 +154,7 @@ describe("bundled extensions", () => {
                 timestamp: Date.now(),
             });
             expect((await runtime.fork(forkEntryId)).cancelled).toBe(false);
-            expectOneOfEachBundledTool(runtime, initialCwd);
+            expectBundledResources(runtime, initialCwd);
 
             const resumedManager = SessionManager.create(resumedCwd, sessionDir);
             resumedManager.appendMessage({
@@ -182,7 +183,7 @@ describe("bundled extensions", () => {
             if (!resumedPath) throw new Error("Expected a persisted session fixture");
 
             expect((await runtime.switchSession(resumedPath)).cancelled).toBe(false);
-            expectOneOfEachBundledTool(runtime, resumedCwd);
+            expectBundledResources(runtime, resumedCwd);
         } finally {
             await runtime.dispose();
             await fs.promises.rm(temp, { recursive: true, force: true });

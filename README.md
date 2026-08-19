@@ -60,7 +60,15 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
 - Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
+- Bundled `unslop` skill for removing AI writing patterns
 - `!command` and `!!command` shell execution
+
+## Skills
+
+pui bundles the [`unslop`](skills/unslop/SKILL.md) writing skill from
+[`backnotprop/pstack`](https://github.com/backnotprop/pstack/blob/main/skills/unslop/SKILL.md). The skill and its
+[MIT license](skills/unslop/LICENSE.txt) are embedded in the standalone executable. pui passes the embedded file to
+Pi as an additional skill, so normal global and trusted project skill discovery still works.
 
 ## Subagents
 
@@ -180,9 +188,10 @@ ownership, dependency-injection conventions, and the testing strategy. The short
 - `extensions/` holds the bundled application-owned Pi extensions (file-search, subagent, workflow,
   web), registered via `src/bundled-extensions.ts`. Each extension owns its wire protocol; `src/`
   consumes those protocols directly instead of maintaining mirrors.
-- `scripts/build.ts` compiles the Solid application and embeds the bundled extensions into
-  `dist/pui`.
+- `skills/` holds application-owned skills, registered via `src/bundled-skills.ts`.
+- `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
+  skill licenses into `dist/pui`.
 
-The bundled application-owned extensions augment normal Pi discovery: global and trusted project extensions and tools still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+The bundled application-owned resources augment normal Pi discovery: global and trusted project extensions, tools, and skills still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.
