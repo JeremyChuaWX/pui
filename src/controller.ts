@@ -109,7 +109,29 @@ interface RunningBash {
     excluded: boolean;
 }
 
-/** One entry drives autocomplete, dispatch, and the command's behavior. */
+/** Identifies a command-palette row so the view layer can attach its action. */
+export type PaletteCommandId =
+    | "models"
+    | "sessions"
+    | "subagents"
+    | "workflows"
+    | "new-session"
+    | "compact"
+    | "thinking"
+    | "tool-details"
+    | "external-editor"
+    | "help"
+    | "quit";
+
+/** One command-palette row; rows render in ascending rank order. */
+export interface CommandPaletteEntry {
+    id: PaletteCommandId;
+    rank: number;
+    label: string;
+    detail: string;
+}
+
+/** One entry drives autocomplete, dispatch, the command's behavior, and (when present) its palette row. */
 interface LocalCommand {
     name: string;
     description: string;
@@ -119,9 +141,18 @@ interface LocalCommand {
     /** Dispatchable but omitted from autocomplete (e.g. shadowed extension commands). */
     hidden?: boolean;
     run: (controller: PuiController, args: string) => PromptAction;
+    palette?: CommandPaletteEntry;
 }
 
-const LOCAL_COMMANDS: readonly LocalCommand[] = [
+/** Palette rows whose actions the view layer owns; they have no slash command. */
+interface PaletteOnlyCommand {
+    palette: CommandPaletteEntry;
+}
+
+type CommandDescriptor = LocalCommand | PaletteOnlyCommand;
+
+/** The single source for slash commands and the command palette. */
+const COMMANDS: readonly CommandDescriptor[] = [
     {
         name: "model",
         description: "Select the active model",
@@ -132,8 +163,15 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
             void controller.selectModelBySpec(args);
             return "sent";
         },
+        palette: { id: "models", rank: 1, label: "Models", detail: "Switch the active model" },
     },
-    { name: "resume", description: "Resume a previous session", aliases: ["sessions"], run: () => "sessions" },
+    {
+        name: "resume",
+        description: "Resume a previous session",
+        aliases: ["sessions"],
+        run: () => "sessions",
+        palette: { id: "sessions", rank: 2, label: "Sessions", detail: "Resume a previous session" },
+    },
     {
         name: "new",
         description: "Start a new session",
@@ -142,6 +180,7 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
             void controller.newSession();
             return "sent";
         },
+        palette: { id: "new-session", rank: 5, label: "New session", detail: "Start with a clean conversation" },
     },
     {
         name: "compact",
@@ -150,6 +189,7 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
             void controller.compact(args || undefined);
             return "sent";
         },
+        palette: { id: "compact", rank: 6, label: "Compact context", detail: "Summarize older conversation history" },
     },
     {
         name: "name",
@@ -181,8 +221,19 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
         },
     },
     { name: "commands", description: "Open the command palette", aliases: ["palette"], run: () => "commands" },
-    { name: "subagents", description: "Inspect or cancel background subagents", run: () => "subagents" },
-    { name: "workflows", description: "Inspect and control workflow runs", hidden: true, run: () => "workflows" },
+    {
+        name: "subagents",
+        description: "Inspect or cancel background subagents",
+        run: () => "subagents",
+        palette: { id: "subagents", rank: 3, label: "Subagents", detail: "Inspect or cancel background jobs" },
+    },
+    {
+        name: "workflows",
+        description: "Inspect and control workflow runs",
+        hidden: true,
+        run: () => "workflows",
+        palette: { id: "workflows", rank: 4, label: "Workflows", detail: "Inspect and control workflow runs" },
+    },
     {
         name: "thinking",
         description: "Cycle the thinking level",
@@ -190,8 +241,14 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
             controller.cycleThinking();
             return "sent";
         },
+        palette: { id: "thinking", rank: 7, label: "Thinking level", detail: "Cycle the current reasoning level" },
     },
-    { name: "help", description: "Show keyboard shortcuts", run: () => "help" },
+    {
+        name: "help",
+        description: "Show keyboard shortcuts",
+        run: () => "help",
+        palette: { id: "help", rank: 10, label: "Help", detail: "Show keyboard shortcuts" },
+    },
     { name: "hotkeys", description: "Show keyboard shortcuts", run: () => "help" },
     {
         name: "quit",
@@ -201,8 +258,27 @@ const LOCAL_COMMANDS: readonly LocalCommand[] = [
             controller.requestExit();
             return "sent";
         },
+        palette: { id: "quit", rank: 11, label: "Quit", detail: "Exit pui" },
+    },
+    { palette: { id: "tool-details", rank: 8, label: "Tool details", detail: "Expand or collapse tool output" } },
+    {
+        palette: {
+            id: "external-editor",
+            rank: 9,
+            label: "Edit in nvim",
+            detail: "Edit the prompt with the last agent response as reference",
+        },
     },
 ];
+
+const LOCAL_COMMANDS: readonly LocalCommand[] = COMMANDS.filter(
+    (command): command is LocalCommand => "name" in command,
+);
+
+/** Every command-palette row in display order. */
+export function commandPaletteEntries(): CommandPaletteEntry[] {
+    return COMMANDS.flatMap((command) => (command.palette ? [command.palette] : [])).sort((a, b) => a.rank - b.rank);
+}
 
 function findLocalCommand(name: string): LocalCommand | undefined {
     return LOCAL_COMMANDS.find((command) => command.name === name || command.aliases?.includes(name));

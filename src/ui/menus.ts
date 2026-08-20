@@ -1,6 +1,6 @@
 import { errorMessage } from "../../extensions/shared/validate.js";
 import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
-import type { PuiController } from "../controller.js";
+import { commandPaletteEntries, type PaletteCommandId, type PuiController } from "../controller.js";
 import { formatCount } from "../format.js";
 import { isTerminalSubagentStatus } from "../subagent.js";
 import type { PuiSnapshot } from "../types.js";
@@ -301,36 +301,38 @@ export function createMenus(host: MenuHost) {
         });
     }
 
+    /** Palette-row actions keyed by descriptor id; the rows themselves come from the controller's command list. */
+    const paletteActions: Record<PaletteCommandId, () => void> = {
+        models: () => void openModels(),
+        sessions: () => void openSessions(),
+        subagents: openSubagents,
+        workflows: openWorkflows,
+        "new-session": () => void controller.newSession(),
+        compact: () => void controller.compact(),
+        thinking: () => controller.cycleThinking(),
+        "tool-details": () => host.toggleToolDetails(),
+        "external-editor": () => host.openExternalEditor(),
+        help: () => host.openDialog({ kind: "help" }),
+        quit: () => controller.requestExit(),
+    };
+
     function openCommands(): void {
         host.closeCompletions();
-        const command = (label: string, detail: string, action: () => void): PickerItem => ({
-            label,
-            detail,
-            search: `${label} ${detail}`.toLowerCase(),
-            action: () => {
-                host.closeDialog();
-                action();
-            },
-        });
         host.openDialog({
             kind: "picker",
             title: "Commands",
             placeholder: "Search commands",
-            items: [
-                command("Models", "Switch the active model", () => void openModels()),
-                command("Sessions", "Resume a previous session", () => void openSessions()),
-                command("Subagents", "Inspect or cancel background jobs", openSubagents),
-                command("Workflows", "Inspect and control workflow runs", openWorkflows),
-                command("New session", "Start with a clean conversation", () => void controller.newSession()),
-                command("Compact context", "Summarize older conversation history", () => void controller.compact()),
-                command("Thinking level", "Cycle the current reasoning level", () => controller.cycleThinking()),
-                command("Tool details", "Expand or collapse tool output", () => host.toggleToolDetails()),
-                command("Edit in nvim", "Edit the prompt with the last agent response as reference", () =>
-                    host.openExternalEditor(),
-                ),
-                command("Help", "Show keyboard shortcuts", () => host.openDialog({ kind: "help" })),
-                command("Quit", "Exit pui", () => controller.requestExit()),
-            ],
+            items: commandPaletteEntries().map(
+                (entry): PickerItem => ({
+                    label: entry.label,
+                    detail: entry.detail,
+                    search: `${entry.label} ${entry.detail}`.toLowerCase(),
+                    action: () => {
+                        host.closeDialog();
+                        paletteActions[entry.id]();
+                    },
+                }),
+            ),
         });
     }
 

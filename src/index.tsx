@@ -117,18 +117,10 @@ async function main(): Promise<void> {
     process.once("SIGTERM", destroy);
     process.once("SIGHUP", destroy);
 
-    let initialPromptTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-        await render(() => <App controller={controller} />, renderer);
-        if (options.initialPrompt) {
-            const initialPrompt = options.initialPrompt;
-            initialPromptTimer = setTimeout(() => {
-                if (!renderer.isDestroyed) controller.handlePrompt(initialPrompt);
-            }, 0);
-        }
+        await render(() => <App controller={controller} initialPrompt={options.initialPrompt} />, renderer);
         await destroyed;
     } finally {
-        if (initialPromptTimer) clearTimeout(initialPromptTimer);
         process.off("SIGTERM", destroy);
         process.off("SIGHUP", destroy);
         destroy();

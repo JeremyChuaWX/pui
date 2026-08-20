@@ -8,7 +8,7 @@ import type { PuiController } from "./controller.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { isTerminalSubagentStatus } from "./subagent.js";
 import { theme } from "./theme.js";
-import type { PromptCompletions, PuiSnapshot } from "./types.js";
+import type { PromptAction, PromptCompletions, PuiSnapshot } from "./types.js";
 import { Dialog, type DialogState, type PickerItem } from "./ui/dialogs.js";
 import {
     canNavigatePromptHistory,
@@ -28,7 +28,7 @@ import { WorkflowPage } from "./ui/workflow-page.js";
 
 const WORKFLOW_REQUEST_TIMEOUT_MS = 30_000;
 
-export function App(props: { controller: PuiController }) {
+export function App(props: { controller: PuiController; initialPrompt?: string }) {
     const renderer = useRenderer();
     const dimensions = useTerminalDimensions();
     const [snapshot, setSnapshot] = createStore<PuiSnapshot>(props.controller.snapshot());
@@ -82,6 +82,12 @@ export function App(props: { controller: PuiController }) {
     let unsubscribe: (() => void) | undefined;
     onMount(() => {
         unsubscribe = props.controller.subscribe((next) => setSnapshot(reconcile(next)));
+        const initialPrompt = props.initialPrompt;
+        if (initialPrompt) {
+            // Defer past the first render so dialogs opened by the prompt land on a mounted UI.
+            const timer = setTimeout(() => dispatchPrompt(initialPrompt), 0);
+            onCleanup(() => clearTimeout(timer));
+        }
     });
     onCleanup(() => {
         dialogRequest += 1;
@@ -382,10 +388,7 @@ export function App(props: { controller: PuiController }) {
         openExternalEditor: () => void openExternalEditor(),
     });
 
-    function submit(delivery: "steer" | "followUp" = "steer"): void {
-        const value = prompt?.plainText ?? promptText();
-        if (!value.trim()) return;
-        promptHistory.add(value);
+    function dispatchPrompt(value: string, delivery: "steer" | "followUp" = "steer"): void {
         const workflowRequest = {
             ids: new Set(snapshot.workflows.map((run) => run.id)),
             requestedAt: Date.now(),
@@ -393,13 +396,25 @@ export function App(props: { controller: PuiController }) {
         };
         const action = props.controller.handlePrompt(value, delivery);
         clearPrompt();
-        if (action === "workflow") setPendingWorkflowRun(workflowRequest);
-        if (action === "models") void menus.openModels();
-        if (action === "sessions") void menus.openSessions();
-        if (action === "subagents") menus.openSubagents();
-        if (action === "workflows") menus.openWorkflows();
-        if (action === "commands") menus.openCommands();
-        if (action === "help") setDialog({ kind: "help" });
+        const promptActions: Record<PromptAction, () => void> = {
+            sent: () => {},
+            ignored: () => {},
+            workflow: () => setPendingWorkflowRun(workflowRequest),
+            models: () => void menus.openModels(),
+            sessions: () => void menus.openSessions(),
+            subagents: menus.openSubagents,
+            workflows: menus.openWorkflows,
+            commands: menus.openCommands,
+            help: () => setDialog({ kind: "help" }),
+        };
+        promptActions[action]();
+    }
+
+    function submit(delivery: "steer" | "followUp" = "steer"): void {
+        const value = prompt?.plainText ?? promptText();
+        if (!value.trim()) return;
+        promptHistory.add(value);
+        dispatchPrompt(value, delivery);
     }
 
     useKeyboard((key) => {
