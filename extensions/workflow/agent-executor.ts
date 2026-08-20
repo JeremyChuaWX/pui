@@ -1,5 +1,6 @@
-import { getPiInvocation, runChildAgent } from "../shared/child-agent.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE, runChildAgent } from "../shared/child-agent.js";
 import { agentPreset, childArgs, RESOLVED_AGENT_NAMES, resolveModel } from "../shared/presets.js";
+import type { AbortableSemaphore } from "../shared/semaphore.js";
 import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 
@@ -11,9 +12,16 @@ export function isHeadlessWorkflowSession(sessionId: string): boolean {
     return HEADLESS_WORKFLOW_SESSION_PATTERN.test(sessionId);
 }
 
+export interface WorkflowAgentExecutorOverrides {
+    semaphore?: AbortableSemaphore;
+    run?: typeof runChildAgent;
+    invocation?: typeof getPiInvocation;
+}
+
 /** The default agent executor: run each workflow agent as a child Pi process. */
 export function createWorkflowAgentExecutor(
     environment: NodeJS.ProcessEnv = process.env,
+    overrides: WorkflowAgentExecutorOverrides = {},
 ): WorkflowBackendOptions["agentExecutor"] {
     return async (request) => {
         const preset = agentPreset(request.role);
@@ -22,15 +30,21 @@ export function createWorkflowAgentExecutor(
         const prompt = request.schema
             ? `${request.prompt}\n\nReturn only JSON matching this schema:\n${JSON.stringify(request.schema)}`
             : request.prompt;
-        const invocation = getPiInvocation(childArgs(preset, model, prompt));
-        const result = await runChildAgent({
-            command: invocation.command,
-            args: invocation.args,
-            cwd: request.cwd,
-            timeoutMs: request.timeoutMs,
-            model: model ?? "default",
-            signal: request.signal,
-        });
+        const invocation = (overrides.invocation ?? getPiInvocation)(childArgs(preset, model, prompt));
+        const release = await (overrides.semaphore ?? PROCESS_CHILD_AGENT_SEMAPHORE).acquire(request.signal);
+        let result: Awaited<ReturnType<typeof runChildAgent>>;
+        try {
+            result = await (overrides.run ?? runChildAgent)({
+                command: invocation.command,
+                args: invocation.args,
+                cwd: request.cwd,
+                timeoutMs: request.timeoutMs,
+                model: model ?? "default",
+                signal: request.signal,
+            });
+        } finally {
+            release();
+        }
         if (result.status !== "succeeded") throw new Error(result.error ?? `Child Pi ${result.status}.`);
         let value: unknown = result.output;
         if (request.schema)
