@@ -37,20 +37,22 @@ export async function createBundledSkillResources(
     options: CreateBundledSkillResourcesOptions = {},
 ): Promise<BundledSkillResources> {
     const root = await fs.promises.mkdtemp(path.join(options.temporaryDirectory ?? os.tmpdir(), "pui-bundled-skills-"));
-    const skills = BUNDLED_SKILLS.map(({ name }) => {
-        const directory = path.join(root, name);
+    const pairs = BUNDLED_SKILLS.map((source) => {
+        const directory = path.join(root, source.name);
         return {
-            name,
-            skillPath: path.join(directory, "SKILL.md"),
-            licensePath: path.join(directory, "LICENSE.txt"),
+            source,
+            target: {
+                name: source.name,
+                skillPath: path.join(directory, "SKILL.md"),
+                licensePath: path.join(directory, "LICENSE.txt"),
+            },
         };
     });
+    const skills = pairs.map(({ target }) => target);
 
     try {
         await Promise.all(
-            skills.map(async (target, index) => {
-                const source = BUNDLED_SKILLS[index];
-                if (!source) throw new Error(`Missing bundled skill source for ${target.name}`);
+            pairs.map(async ({ source, target }) => {
                 const [skill, license] = await Promise.all([
                     fs.promises.readFile(source.skillPath),
                     fs.promises.readFile(source.licensePath),
