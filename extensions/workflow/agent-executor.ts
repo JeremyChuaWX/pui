@@ -1,6 +1,7 @@
+import { getPiInvocation } from "../shared/child-agent.js";
 import { AGENTS, childArgs, type ResolvedAgentName, resolveModel } from "../shared/presets.js";
 import { createInitialSubagentDetails } from "../subagent/protocol.js";
-import { getPiInvocation, runSubagent } from "../subagent/runner.js";
+import { runSubagent } from "../subagent/runner.js";
 import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 

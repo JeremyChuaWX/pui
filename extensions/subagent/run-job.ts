@@ -1,4 +1,5 @@
 import { DEFAULT_MAX_BYTES, truncateHead } from "@earendil-works/pi-coding-agent";
+import type { getPiInvocation } from "../shared/child-agent.js";
 import { type AgentPreset, childArgs } from "../shared/presets.js";
 import { truncateUtf8 } from "../shared/retained-output.js";
 import type { AbortableSemaphore, SemaphoreRelease } from "../shared/semaphore.js";
@@ -11,7 +12,7 @@ import {
     type SubagentStatus,
     updateSubagentDetails,
 } from "./protocol.js";
-import type { getPiInvocation, RunSubagentOptions, SubagentRunResult } from "./runner.js";
+import type { RunSubagentOptions, SubagentRunResult } from "./runner.js";
 
 const ERROR_PREVIEW_BYTES = 8 * 1024;
 const FAILURE_ACTIVITY_TITLE_BYTES = 512;

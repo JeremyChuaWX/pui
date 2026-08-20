@@ -195,41 +195,6 @@ export function appendSubagentActivity(
     );
 }
 
-function nonNegativeNumber(value: unknown): number {
-    return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
-function usageField(usage: unknown, field: string): number {
-    if (typeof usage !== "object" || usage === null) return 0;
-    return nonNegativeNumber((usage as Record<string, unknown>)[field]);
-}
-
-function usageCost(usage: unknown): number {
-    if (typeof usage !== "object" || usage === null) return 0;
-    const cost = (usage as Record<string, unknown>).cost;
-    if (typeof cost === "number") return nonNegativeNumber(cost);
-    if (typeof cost === "object" && cost !== null) return nonNegativeNumber((cost as Record<string, unknown>).total);
-    return 0;
-}
-
-/** Aggregate one finalized assistant message. Missing and non-finite fields count as zero. */
-export function aggregateSubagentUsage(current: SubagentUsageV1, assistantUsage: unknown, turns = 1): SubagentUsageV1 {
-    const input = usageField(assistantUsage, "input");
-    const output = usageField(assistantUsage, "output");
-    const cacheRead = usageField(assistantUsage, "cacheRead");
-    const cacheWrite = usageField(assistantUsage, "cacheWrite");
-    const reportedTotal = usageField(assistantUsage, "totalTokens");
-    return {
-        input: current.input + input,
-        output: current.output + output,
-        cacheRead: current.cacheRead + cacheRead,
-        cacheWrite: current.cacheWrite + cacheWrite,
-        totalTokens: current.totalTokens + (reportedTotal || input + output + cacheRead + cacheWrite),
-        cost: current.cost + usageCost(assistantUsage),
-        turns: current.turns + Math.max(0, Math.floor(nonNegativeNumber(turns))),
-    };
-}
-
 function isFiniteNonNegative(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }

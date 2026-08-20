@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { getPiInvocation } from "../shared/child-agent.js";
 import {
     AGENTS,
     type AgentName,
@@ -18,7 +19,7 @@ import {
 } from "./protocol.js";
 import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";
-import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;

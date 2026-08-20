@@ -17,7 +17,7 @@ import { registerSubagentExtension } from "../extensions/subagent/index.js";
 import { waitFor } from "../extensions/test-support/wait.js";
 import { PuiController } from "./controller.js";
 
-const fixtureChild = fileURLToPath(new URL("../extensions/subagent/fixtures/fake-child.mjs", import.meta.url));
+const fixtureChild = fileURLToPath(new URL("../extensions/shared/fixtures/fake-child.mjs", import.meta.url));
 
 const waitUntil = (predicate: () => boolean, description: string) =>
     waitFor(predicate, 10_000, `Timed out waiting for ${description}`);

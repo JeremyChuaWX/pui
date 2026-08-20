@@ -8,9 +8,9 @@ import {
     type SubagentDetailsV1,
     updateSubagentDetails,
 } from "./protocol.ts";
-import { getPiInvocation, runSubagent } from "./runner.ts";
+import { runSubagent } from "./runner.ts";
 
-const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
+const fixture = fileURLToPath(new URL("../shared/fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
 
 function startingDetails(id = "outer-id"): SubagentDetailsV1 {
@@ -188,41 +188,5 @@ describe("runSubagent", () => {
         }).then((result) => ({ result }));
         expect(result.details.run.status).toBe("failed");
         expect(result.details.run.error).toContain("Unable to start child Pi");
-    });
-});
-
-describe("getPiInvocation", () => {
-    test("does not reuse an SDK host entrypoint", () => {
-        const invocation = getPiInvocation(["--mode", "json"], fixture, process.execPath);
-        expect(invocation).toEqual({ command: "pi", args: ["--mode", "json"] });
-    });
-
-    test("does not reuse pui's compiled executable", () => {
-        const invocation = getPiInvocation(["--mode", "json"], "/$bunfs/root/pui", "/Users/test/.local/bin/pui");
-        expect(invocation).toEqual({ command: "pi", args: ["--mode", "json"] });
-    });
-
-    test("reuses Pi's standalone executable", () => {
-        const invocation = getPiInvocation(["--mode", "json"], "/$bunfs/root/pi", "/Users/test/.local/bin/pi");
-        expect(invocation).toEqual({
-            command: "/Users/test/.local/bin/pi",
-            args: ["--mode", "json"],
-        });
-    });
-
-    test("reuses Pi's own CLI entrypoint", () => {
-        const cli = path.join(
-            cwd,
-            "..",
-            "..",
-            "..",
-            "node_modules",
-            "@earendil-works",
-            "pi-coding-agent",
-            "dist",
-            "cli.js",
-        );
-        const invocation = getPiInvocation(["--mode", "json"], cli, "/usr/bin/node");
-        expect(invocation).toEqual({ command: "/usr/bin/node", args: [cli, "--mode", "json"] });
     });
 });

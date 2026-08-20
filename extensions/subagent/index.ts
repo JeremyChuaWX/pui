@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createBackgroundChannel } from "../shared/background-channel.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../shared/child-agent.js";
 import {
     AGENT_NAMES,
     AGENT_SUMMARY,
@@ -13,7 +14,7 @@ import {
     workingDirectoryCandidate,
 } from "../shared/presets.js";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
-import { AbortableSemaphore, configuredSubagentConcurrency } from "../shared/semaphore.js";
+import type { AbortableSemaphore } from "../shared/semaphore.js";
 import { errorMessage } from "../shared/validate.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
 import {
@@ -26,7 +27,7 @@ import {
 } from "./background-protocol.js";
 import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.js";
 import { runSubagentJob, synthesizeSubagentFailure } from "./run-job.js";
-import { getPiInvocation, type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 
@@ -62,13 +63,6 @@ const SubagentParams = Type.Object({
     ),
 });
 
-const processState = globalThis as typeof globalThis & {
-    __piSubagentSemaphoreV1?: AbortableSemaphore;
-};
-const PROCESS_SEMAPHORE =
-    processState.__piSubagentSemaphoreV1 ?? new AbortableSemaphore(configuredSubagentConcurrency());
-if (!processState.__piSubagentSemaphoreV1) processState.__piSubagentSemaphoreV1 = PROCESS_SEMAPHORE;
-
 export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
     run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
@@ -82,7 +76,7 @@ export function createDefaultSubagentDependencies(
     overrides: SubagentExtensionDependencies = {},
 ): Required<SubagentExtensionDependencies> {
     return {
-        semaphore: overrides.semaphore ?? PROCESS_SEMAPHORE,
+        semaphore: overrides.semaphore ?? PROCESS_CHILD_AGENT_SEMAPHORE,
         run: overrides.run ?? runSubagent,
         invocation: overrides.invocation ?? getPiInvocation,
         now: overrides.now ?? Date.now,

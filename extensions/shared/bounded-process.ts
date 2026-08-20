@@ -49,6 +49,44 @@ export function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): vo
     }
 }
 
+export interface GracefulTermination {
+    /** Send SIGTERM and arm SIGKILL escalation after the grace; without a grace, SIGKILL immediately. Idempotent. */
+    begin(): void;
+    /** Escalate once more as the direct child closes so no descendant that ignored SIGTERM survives. */
+    escalateOnClose(): void;
+    /** Clear the escalation timer once the run settles. */
+    dispose(): void;
+}
+
+/** The one SIGTERM-then-SIGKILL escalation policy shared by every child-process owner. */
+export function createGracefulTermination(
+    sendSignal: (signal: NodeJS.Signals) => void,
+    options: { graceMs?: number; unrefTimer?: boolean } = {},
+): GracefulTermination {
+    let killTimer: NodeJS.Timeout | undefined;
+    let begun = false;
+    return {
+        begin() {
+            if (begun) return;
+            begun = true;
+            if (options.graceMs === undefined) {
+                sendSignal("SIGKILL");
+                return;
+            }
+            sendSignal("SIGTERM");
+            killTimer = setTimeout(() => sendSignal("SIGKILL"), options.graceMs);
+            if (options.unrefTimer) killTimer.unref();
+        },
+        escalateOnClose() {
+            if (begun) sendSignal("SIGKILL");
+        },
+        dispose() {
+            if (killTimer) clearTimeout(killTimer);
+            killTimer = undefined;
+        },
+    };
+}
+
 export type BoundedProcessFailure = "timeout" | "cancelled" | "output" | "spawn";
 export class BoundedProcessError extends Error {
     constructor(
@@ -109,7 +147,6 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
             settled = false,
             closed = false,
             terminationReason: "cancelled" | "timeout" | "output" | undefined,
-            killTimer: NodeJS.Timeout | undefined,
             spawnError: Error | undefined;
         const sendSignal = (signal: NodeJS.Signals) => {
             if (closed) return;
@@ -119,20 +156,20 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
                 } catch {}
             } else killProcessTree(child, signal);
         };
+        const terminator = createGracefulTermination(sendSignal, {
+            graceMs: request.termination?.graceMs,
+            unrefTimer: true,
+        });
         const terminate = (reason: NonNullable<typeof terminationReason>) => {
             if (terminationReason || closed) return;
             terminationReason = reason;
-            if (request.termination) {
-                sendSignal("SIGTERM");
-                killTimer = setTimeout(() => sendSignal("SIGKILL"), request.termination.graceMs);
-                killTimer.unref();
-            } else sendSignal("SIGKILL");
+            terminator.begin();
         };
         const finish = (error?: Error, result?: BoundedProcessResult) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            if (killTimer) clearTimeout(killTimer);
+            terminator.dispose();
             if (abort) request.signal?.removeEventListener("abort", abort);
             if (error) reject(error);
             else if (result) resolve(result);
@@ -171,7 +208,7 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
         });
         child.once("close", (code) => {
             // The direct child can exit while one of its descendants ignores SIGTERM.
-            if (terminationReason) sendSignal("SIGKILL");
+            terminator.escalateOnClose();
             closed = true;
             if (spawnError) finish(new BoundedProcessError("spawn", spawnError.message));
             else if (terminationReason === "cancelled")

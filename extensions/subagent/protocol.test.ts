@@ -1,10 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
-    aggregateSubagentUsage,
     appendSubagentActivity,
     createInitialSubagentDetails,
     createTerminalSubagentDetails,
-    emptySubagentUsage,
     isSubagentDetailsV1,
     MAX_RECENT_ACTIVITY,
     MAX_SUBAGENT_ACTIVE_TOOLS,
@@ -86,29 +84,6 @@ describe("subagent protocol", () => {
             Array.from({ length: MAX_RECENT_ACTIVITY }, (_, index) => index + 8),
         );
         expect(isSubagentDetailsV1(details)).toBe(true);
-    });
-
-    test("aggregates missing, zero, and partial usage safely", () => {
-        let usage = aggregateSubagentUsage(emptySubagentUsage(), undefined);
-        usage = aggregateSubagentUsage(usage, {
-            input: 10,
-            output: 2,
-            cacheRead: 0,
-            cacheWrite: Number.NaN,
-            totalTokens: 0,
-            cost: { total: 0.25 },
-        });
-        usage = aggregateSubagentUsage(usage, { output: 3, totalTokens: 20, cost: 0.5 }, 0);
-
-        expect(usage).toEqual({
-            input: 10,
-            output: 5,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 32,
-            cost: 0.75,
-            turns: 2,
-        });
     });
 
     test("rejects malformed and unknown protocol values", () => {
