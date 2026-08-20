@@ -98,7 +98,8 @@ plain Pi with equivalent production wiring.
   temp-file spill (capture creation is an injectable seam). `args.ts` builds argv, `binaries.ts`
   resolves system binaries (also used by the controller for `@` completion).
 - `extensions/subagent/` — child-Pi subagents. `protocol.ts` owns the versioned `pi.subagent` wire
-  format (types, transitions, validator); `runner.ts` spawns and supervises one child;
+  format (types, transitions, validator); `runner.ts` is a thin adapter that folds shared
+  child-agent runtime events into `SubagentDetailsV1` snapshots;
   `run-job.ts` is the single run pipeline (queueing, semaphore, spawn, terminal synthesis, output
   spill) shared by the blocking tool and the background manager; `background-manager.ts` owns
   background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes.
@@ -117,15 +118,26 @@ plain Pi with equivalent production wiring.
   tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
   `session-lifecycle.ts` (session epoch/generation guards for `index.ts`), `worktree.ts`,
   `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts`
-  provides the default child-Pi agent executor and the shared production backend wiring used by
-  the extension, the headless CLI, and the smoke harness.
-- `extensions/shared/` — cross-extension primitives: `background-channel.ts` (producer-side
+  provides the default child-Pi agent executor — a thin adapter over the shared child-agent
+  runtime — and the shared production backend wiring used by
+  the extension, the headless CLI, and the smoke harness. The default policy's role allowlist,
+  model resolution, and per-role timeout defaults all derive from the presets in
+  `extensions/shared/presets.ts`, the single role definition.
+- `extensions/shared/` — cross-extension primitives: `child-agent.ts` (the one child-Pi runtime:
+  shell-free detached spawn, NDJSON parsing into throttled neutral `ChildAgentEvent` flushes,
+  bounded stderr, usage aggregation with fingerprint dedupe, model-label canonicalization,
+  terminal-status classification, SIGTERM→SIGKILL termination, and the process-wide child-Pi
+  semaphore; the subagent runner and the workflow agent executor are both adapters over it),
+  `background-channel.ts` (producer-side
   ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
-  `killProcessTree` group signaling used by every child supervisor), `retained-output.ts` (quota-bounded
+  `createGracefulTermination` SIGTERM→SIGKILL escalation and
+  `killProcessTree` group signaling used by every child supervisor), `json-events.ts` (the JSONL
+  splitter for child NDJSON streams), `retained-output.ts` (quota-bounded
   spill storage plus `composeBoundedOutput`, the single fixed-point composer that fits a truncated
-  preview and its accurate truncation notice inside one byte/line budget for every extension), `presets.ts` (child-agent presets
-  used by subagents and workflows), `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
+  preview and its accurate truncation notice inside one byte/line budget for every extension), `presets.ts` (child-agent presets,
+  the single role allowlist, and model/timeout resolution used by subagents and workflows; the
+  bundled agent guidance lives in `shared/agents/`), `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
   (record, error-message, and Unicode-safe bounded-string helpers).
 - `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
   previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
@@ -168,8 +180,9 @@ and the view models bound every string.
 - Narrow seams are preferred over mocks: `MenuController` is a `Pick<>` of the controller, the web
   retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, the workflow
   extension accepts a whole `backend`.
-- One deliberate exception: the subagent extension caches its process-wide shared semaphore on
-  `globalThis` so a duplicated module instance still shares one concurrency limit.
+- One deliberate exception: the shared child-agent runtime caches its process-wide semaphore on
+  `globalThis` so a duplicated module instance still shares one concurrency limit. Subagents and
+  workflow agents draw from the same slots.
 
 ## Testing strategy
 
@@ -177,9 +190,9 @@ and the view models bound every string.
   tested as functions. Stateful modules are driven through their public interface with injected
   fakes (`controller.test.ts` binds a fake session and emits session events; `menus.test.ts`
   drives `createMenus` with a fake host).
-- Where the real boundary is a process or the filesystem, tests use the real thing: the subagent
-  runner spawns a fixture child, the approval store races a real second process, worktree tests run
-  real `git`, run-storage tests inject real corruption.
+- Where the real boundary is a process or the filesystem, tests use the real thing: the shared
+  child-agent runtime and the subagent runner spawn a fixture child, the approval store races a
+  real second process, worktree tests run real `git`, run-storage tests inject real corruption.
 - Bundled-skill tests materialize the real embedded assets and load the resulting path through Pi's
   public resource loader. The compiled executable smoke test verifies that `fs.access` and reads work
   against those ordinary files.
