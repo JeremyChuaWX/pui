@@ -12,13 +12,15 @@ export type WebExtensionDependencies = WebToolDependencies & {
     outputRetentionOwner?: WebOutputRetention;
 };
 
-/** Production fetch, environment, and session retention owner. */
+/** Production fetch, environment, Codex auth path, and session retention owner. */
 export function createDefaultWebDependencies(
     overrides: WebExtensionDependencies = {},
-): Required<Pick<WebExtensionDependencies, "fetch" | "environment" | "outputRetentionOwner">> {
+): Required<Pick<WebExtensionDependencies, "fetch" | "environment" | "outputRetentionOwner">> &
+    Pick<WebExtensionDependencies, "codexAuthPath"> {
     return {
         fetch: overrides.fetch ?? globalThis.fetch,
         environment: overrides.environment ?? process.env,
+        codexAuthPath: overrides.codexAuthPath,
         outputRetentionOwner: overrides.outputRetentionOwner ?? new WebOutputRetention(overrides.outputRetention),
     };
 }
@@ -27,7 +29,7 @@ export function createDefaultWebDependencies(
 export function registerWebExtension(pi: ExtensionAPI, dependencies: WebExtensionDependencies = {}): void {
     const resolved = createDefaultWebDependencies(dependencies);
     const outputRetention = resolved.outputRetentionOwner;
-    registerSearch(pi, { ...resolved, codexAuthPath: dependencies.codexAuthPath }, outputRetention);
+    registerSearch(pi, resolved, outputRetention);
     registerCrawl(pi, resolved, outputRetention);
     pi.on("session_start", () => outputRetention.startSession());
     pi.on("session_shutdown", async () => {

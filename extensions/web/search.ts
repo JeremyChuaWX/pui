@@ -293,7 +293,11 @@ export default function webSearchExtension(
     dependencies: WebToolDependencies,
     outputRetention: WebOutputRetention,
 ) {
-    const sessionId = `search_session_${Math.random().toString(36).slice(2, 10)}`;
+    const newSessionId = () => `search_session_${Math.random().toString(36).slice(2, 10)}`;
+    let sessionId = newSessionId();
+    pi.on("session_start", () => {
+        sessionId = newSessionId();
+    });
     pi.registerTool<typeof SEARCH_PARAMS, SearchDetails>({
         name: "web_search",
         label: "Web Search",
