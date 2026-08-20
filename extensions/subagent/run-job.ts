@@ -1,5 +1,6 @@
 import { DEFAULT_MAX_BYTES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { type AgentPreset, childArgs } from "../shared/presets.js";
+import { truncateUtf8 } from "../shared/retained-output.js";
 import type { AbortableSemaphore, SemaphoreRelease } from "../shared/semaphore.js";
 import { errorMessage } from "../shared/validate.js";
 import {
@@ -8,7 +9,6 @@ import {
     isTerminalSubagentStatus,
     type SubagentDetailsV1,
     type SubagentStatus,
-    truncateUtf8,
     updateSubagentDetails,
 } from "./protocol.js";
 import type { getPiInvocation, RunSubagentOptions, SubagentRunResult } from "./runner.js";

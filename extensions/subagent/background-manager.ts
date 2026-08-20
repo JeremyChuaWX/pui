@@ -7,7 +7,7 @@ import {
     resolveModel,
     resolveWorkingDirectory,
 } from "../shared/presets.js";
-import { formatTruncationNotice, RetainedOutputStore } from "../shared/retained-output.js";
+import { formatTruncationNotice, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
 import type { AbortableSemaphore } from "../shared/semaphore.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import {
@@ -15,7 +15,6 @@ import {
     SUBAGENT_PROTOCOL_VERSION,
     SUBAGENT_SCHEMA,
     type SubagentDetailsV1,
-    truncateUtf8,
 } from "./protocol.js";
 import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";

@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
     aggregateSubagentUsage,
-    appendBoundedUtf8,
     appendSubagentActivity,
     createInitialSubagentDetails,
     createTerminalSubagentDetails,
@@ -9,8 +8,6 @@ import {
     isSubagentDetailsV1,
     MAX_RECENT_ACTIVITY,
     MAX_SUBAGENT_ACTIVE_TOOLS,
-    truncateUtf8,
-    truncateUtf8Tail,
     updateSubagentDetails,
 } from "./protocol.ts";
 
@@ -112,22 +109,6 @@ describe("subagent protocol", () => {
             cost: 0.75,
             turns: 2,
         });
-    });
-
-    test("truncates Unicode only at UTF-8 code-point boundaries", () => {
-        const text = "A😀界B";
-        expect(Buffer.byteLength(text, "utf8")).toBe(9);
-
-        expect(truncateUtf8(text, 5)).toEqual({
-            content: "A😀",
-            truncated: true,
-            outputBytes: 5,
-            totalBytes: 9,
-        });
-        expect(truncateUtf8(text, 4).content).toBe("A");
-        expect(truncateUtf8Tail(text, 5).content).toBe("界B");
-        expect(appendBoundedUtf8("old-", "😀new", 7)).toBe("😀new");
-        expect(truncateUtf8(text, 9).truncated).toBe(false);
     });
 
     test("rejects malformed and unknown protocol values", () => {

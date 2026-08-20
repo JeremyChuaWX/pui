@@ -12,8 +12,6 @@ import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
 import type { SubagentViewModel } from "./subagent.js";
 import { isTerminalSubagentStatus, normalizeSubagentDetails } from "./subagent.js";
 
-export { BACKGROUND_SUBAGENT_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_CHANNEL, BACKGROUND_SUBAGENT_CONTROL_SCHEMA };
-
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;
 const MAX_JOBS = 64;

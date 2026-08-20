@@ -1,8 +1,4 @@
-import { appendBoundedUtf8, truncateUtf8, truncateUtf8Tail } from "../shared/retained-output.js";
 import { isRecord } from "../shared/validate.js";
-
-// Producer protocol compatibility: existing consumers may continue importing these helpers here.
-export { appendBoundedUtf8, truncateUtf8, truncateUtf8Tail };
 
 export const SUBAGENT_SCHEMA = "pi.subagent" as const;
 export const SUBAGENT_PROTOCOL_VERSION = 1 as const;

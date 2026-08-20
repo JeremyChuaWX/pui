@@ -4,11 +4,11 @@ import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { killProcessTree } from "../shared/bounded-process.js";
+import { appendBoundedUtf8, truncateUtf8 } from "../shared/retained-output.js";
 import { errorMessage, isRecord } from "../shared/validate.js";
 import { JsonLineParser } from "./json-events.js";
 import {
     aggregateSubagentUsage,
-    appendBoundedUtf8,
     appendSubagentActivity,
     createTerminalSubagentDetails,
     isSubagentDetailsV1,
@@ -16,7 +16,6 @@ import {
     type SubagentDetailsV1,
     type SubagentPhase,
     type SubagentTerminalStatus,
-    truncateUtf8,
     updateSubagentDetails,
 } from "./protocol.js";
 

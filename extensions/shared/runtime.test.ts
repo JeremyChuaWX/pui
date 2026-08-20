@@ -14,6 +14,19 @@ describe("retained-output presentation", () => {
         expect(truncateUtf8("A界B", 4).content).toBe("A界");
         expect(truncateUtf8Tail("A界B", 4).content).toBe("界B");
         expect(appendBoundedUtf8("A界", "B", 4)).toBe("界B");
+
+        const text = "A😀界B";
+        expect(Buffer.byteLength(text, "utf8")).toBe(9);
+        expect(truncateUtf8(text, 5)).toEqual({
+            content: "A😀",
+            truncated: true,
+            outputBytes: 5,
+            totalBytes: 9,
+        });
+        expect(truncateUtf8(text, 4).content).toBe("A");
+        expect(truncateUtf8Tail(text, 5).content).toBe("界B");
+        expect(appendBoundedUtf8("old-", "😀new", 7)).toBe("😀new");
+        expect(truncateUtf8(text, 9).truncated).toBe(false);
     });
 
     test("formats retained and explicitly non-retained bounded notices", () => {
