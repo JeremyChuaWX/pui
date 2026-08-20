@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { truncateHead } from "@earendil-works/pi-coding-agent";
 
 /** Maximum complete-output bytes retained for a single result. */
 export const MAX_RETAINED_RESULT_BYTES = 10 * 1024 * 1024;
@@ -90,6 +91,78 @@ export function formatTruncationNotice(options: TruncationNoticeOptions): string
         ? `"${truncateUtf8Tail(options.retainedPath, Math.max(0, budget - 2)).content}"`
         : truncateUtf8(detail, budget).content;
     return `${frame.slice(0, -2)}${bounded}.]`;
+}
+
+export interface BoundedOutputLimits {
+    /** Maximum UTF-8 bytes in the composed text, notice included. */
+    maxBytes: number;
+    /** When present, previews keep whole lines and the notice reports line counts. */
+    maxLines?: number;
+}
+
+export interface BoundedOutputNoticeOptions {
+    /** Total size the notice reports; defaults to the byte length of fullText. */
+    totalBytes?: number;
+    /** Total lines the notice reports; defaults to the line count of fullText. */
+    totalLines?: number;
+    retainedPath?: string;
+    nonRetentionReason?: string;
+}
+
+function countLines(text: string): number {
+    return text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+}
+
+/**
+ * Compose a bounded preview plus its truncation notice inside one byte/line budget.
+ *
+ * The notice's own size shrinks the preview budget, so the composition iterates to a
+ * fixed point where the notice describes exactly the preview that is emitted.
+ */
+export function composeBoundedOutput(
+    fullText: string,
+    limits: BoundedOutputLimits,
+    options: BoundedOutputNoticeOptions = {},
+): string {
+    const totalBytes = options.totalBytes ?? Buffer.byteLength(fullText, "utf8");
+    const source = options.retainedPath
+        ? { retainedPath: options.retainedPath }
+        : { nonRetentionReason: options.nonRetentionReason };
+    if (limits.maxLines === undefined) {
+        const cap = normalizedLimit(limits.maxBytes);
+        const noticeFor = (outputBytes: number) => formatTruncationNotice({ outputBytes, totalBytes, ...source });
+        let notice = noticeFor(0);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const separator = cap >= Buffer.byteLength(notice, "utf8") + 2 ? "\n\n" : "";
+            const bodyBudget = Math.max(0, cap - Buffer.byteLength(separator + notice, "utf8"));
+            const body = truncateUtf8(fullText, bodyBudget).content;
+            const next = noticeFor(Buffer.byteLength(body, "utf8"));
+            if (next === notice) return `${body}${separator}${notice}`;
+            notice = next;
+        }
+        const boundedNotice = truncateUtf8(notice, cap).content;
+        const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8") - 2);
+        const body = truncateUtf8(fullText, bodyBudget).content;
+        return body ? `${body}\n\n${boundedNotice}` : boundedNotice;
+    }
+    const maxBytes = limits.maxBytes;
+    const maxLines = limits.maxLines;
+    const totalLines = options.totalLines ?? countLines(fullText);
+    const noticeFor = (outputBytes: number, outputLines: number) =>
+        formatTruncationNotice({ outputBytes, totalBytes, outputLines, totalLines, ...source });
+    let notice = noticeFor(0, 0);
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const noticeBytes = Buffer.byteLength(notice, "utf8");
+        if (maxLines < 3 || noticeBytes > maxBytes) return truncateUtf8(notice, maxBytes).content;
+        const preview = truncateHead(fullText, {
+            maxBytes: Math.max(0, maxBytes - noticeBytes - 2),
+            maxLines: maxLines - 2,
+        });
+        const next = noticeFor(preview.outputBytes, preview.outputLines);
+        if (next === notice) return preview.content ? `${preview.content}\n\n${notice}` : notice;
+        notice = next;
+    }
+    return truncateUtf8(notice, maxBytes).content;
 }
 
 /** Injectable filesystem operations used to create and remove private retained-output files. */

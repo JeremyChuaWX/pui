@@ -118,7 +118,9 @@ plain Pi with equivalent production wiring.
 - `extensions/shared/` — cross-extension primitives: `background-channel.ts` (producer-side
   ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
-  `killProcessTree` group signaling used by every child supervisor), `retained-output.ts` (quota-bounded spill storage), `presets.ts` (child-agent presets
+  `killProcessTree` group signaling used by every child supervisor), `retained-output.ts` (quota-bounded
+  spill storage plus `composeBoundedOutput`, the single fixed-point composer that fits a truncated
+  preview and its accurate truncation notice inside one byte/line budget for every extension), `presets.ts` (child-agent presets
   used by subagents and workflows), `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
   (record, error-message, and Unicode-safe bounded-string helpers).
 - `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded

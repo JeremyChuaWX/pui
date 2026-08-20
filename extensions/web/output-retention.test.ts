@@ -98,6 +98,15 @@ describe("WebOutputRetention", () => {
         expect(result.text.split("\n")).toHaveLength(5);
     });
 
+    test("the notice reports the preview that is actually shown", async () => {
+        const retention = store();
+        const result = await retention.retain("content\n".repeat(100), { maxBytes: 10_000, maxLines: 5 });
+
+        const [preview, notice] = result.text.split("\n\n");
+        expect(preview).toBe("content\ncontent\ncontent");
+        expect(notice).toContain(", 3 of 100 lines");
+    });
+
     test("keeps tiny results bounded and carries a retained path in details", async () => {
         const retention = store();
         const result = await retention.retain("large output!", { maxBytes: 12, maxLines: 1 });

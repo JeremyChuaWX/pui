@@ -7,7 +7,7 @@ import {
     resolveModel,
     resolveWorkingDirectory,
 } from "../shared/presets.js";
-import { formatTruncationNotice, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
 import type { AbortableSemaphore } from "../shared/semaphore.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import {
@@ -77,30 +77,15 @@ function copyJob(job: Job): BackgroundSubagentJobV1 {
 }
 function boundedResult(result: BackgroundTerminalResult, bytes: number): BackgroundTerminalResult {
     const cap = Math.max(0, bytes);
-    const truncation = truncateUtf8(result.text, cap);
-    if (!truncation.truncated) return result;
-    const noticeFor = (outputBytes: number) =>
-        formatTruncationNotice({
-            outputBytes,
-            totalBytes: truncation.totalBytes,
-            ...(result.fullOutputPath
-                ? { retainedPath: result.fullOutputPath }
-                : { nonRetentionReason: "complete output was not retained by the subagent" }),
-        });
-    let notice = noticeFor(0);
-    let body = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const separator = cap >= Buffer.byteLength(notice, "utf8") + 2 ? "\n\n" : "";
-        const bodyBudget = Math.max(0, cap - Buffer.byteLength(separator + notice, "utf8"));
-        body = truncateUtf8(result.text, bodyBudget).content;
-        const next = noticeFor(Buffer.byteLength(body, "utf8"));
-        if (next === notice) return { ...result, text: `${body}${separator}${notice}` };
-        notice = next;
-    }
-    const boundedNotice = truncateUtf8(notice, cap).content;
-    const bodyBudget = Math.max(0, cap - Buffer.byteLength(boundedNotice, "utf8") - 2);
-    body = truncateUtf8(result.text, bodyBudget).content;
-    return { ...result, text: body ? `${body}\n\n${boundedNotice}` : boundedNotice };
+    if (!truncateUtf8(result.text, cap).truncated) return result;
+    const text = composeBoundedOutput(
+        result.text,
+        { maxBytes: cap },
+        result.fullOutputPath
+            ? { retainedPath: result.fullOutputPath }
+            : { nonRetentionReason: "complete output was not retained by the subagent" },
+    );
+    return { ...result, text };
 }
 
 export class BackgroundSubagentManager {

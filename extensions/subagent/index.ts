@@ -12,7 +12,7 @@ import {
     resolveWorkingDirectory,
     workingDirectoryCandidate,
 } from "../shared/presets.js";
-import { formatTruncationNotice, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
 import { AbortableSemaphore, configuredSubagentConcurrency } from "../shared/semaphore.js";
 import { errorMessage } from "../shared/validate.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
@@ -101,42 +101,6 @@ function lifecycleText(details: SubagentDetailsV1): string {
 
 function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal): AbortSignal {
     return first ? AbortSignal.any([first, second]) : second;
-}
-
-function presentTruncated(
-    fullText: string,
-    limits: { maxBytes: number; maxLines: number },
-    retainedPath?: string,
-    nonRetentionReason = "complete output retention was unavailable",
-): string {
-    const totalBytes = Buffer.byteLength(fullText, "utf8");
-    const totalLines = fullText.length === 0 ? 0 : fullText.split("\n").length - (fullText.endsWith("\n") ? 1 : 0);
-    let notice = formatTruncationNotice({
-        outputBytes: 0,
-        totalBytes,
-        outputLines: 0,
-        totalLines,
-        ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
-    });
-    let preview = truncateHead(fullText, { maxBytes: 0, maxLines: 0 });
-    for (let attempt = 0; attempt < 3; attempt++) {
-        const noticeBytes = Buffer.byteLength(notice, "utf8");
-        if (limits.maxLines < 3 || noticeBytes > limits.maxBytes) return truncateUtf8(notice, limits.maxBytes).content;
-        preview = truncateHead(fullText, {
-            maxBytes: Math.max(0, limits.maxBytes - noticeBytes - 2),
-            maxLines: limits.maxLines - 2,
-        });
-        const next = formatTruncationNotice({
-            outputBytes: preview.outputBytes,
-            totalBytes,
-            outputLines: preview.outputLines,
-            totalLines,
-            ...(retainedPath ? { retainedPath } : { nonRetentionReason }),
-        });
-        if (next === notice) return preview.content ? `${preview.content}\n\n${notice}` : notice;
-        notice = next;
-    }
-    return truncateUtf8(notice, limits.maxBytes).content;
 }
 
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
@@ -243,11 +207,13 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             .join("\n\n");
         const truncation = truncateHead(content, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
         return truncation.truncated
-            ? presentTruncated(
+            ? composeBoundedOutput(
                   content,
                   { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
-                  undefined,
-                  "the combined wait presentation is not retained; use each job's retained path when available",
+                  {
+                      nonRetentionReason:
+                          "the combined wait presentation is not retained; use each job's retained path when available",
+                  },
               )
             : content;
     };
@@ -409,10 +375,12 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
 
             const { truncation } = outcome;
             const resultText = truncation.truncated
-                ? presentTruncated(
+                ? composeBoundedOutput(
                       outcome.delivered,
                       { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
-                      outcome.fullOutputPath,
+                      outcome.fullOutputPath
+                          ? { retainedPath: outcome.fullOutputPath }
+                          : { nonRetentionReason: "complete output retention was unavailable" },
                   )
                 : truncation.content;
             details = updateSubagentDetails(

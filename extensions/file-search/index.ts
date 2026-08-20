@@ -2,12 +2,11 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-    formatTruncationNotice,
+    composeBoundedOutput,
     MAX_RETAINED_RESULT_BYTES,
     MAX_RETAINED_SESSION_BYTES,
     RetainedOutputQuota,
     type RetainedOutputQuotaOptions,
-    truncateUtf8,
 } from "../shared/retained-output.js";
 import { buildFdArgs, buildRgArgs, type FdArgs, type RgArgs } from "./args.js";
 import { resolveFdBinary, resolveRgBinary, type SystemBinary } from "./binaries.js";
@@ -90,36 +89,17 @@ function result(binary: SystemBinary, execution: FileSearchProcessResult) {
     }
     let text = execution.output || "No matches found.";
     if (execution.truncated) {
-        const totalLines = execution.count;
-        const noticeFor = (outputBytes: number, outputLines: number) =>
-            formatTruncationNotice({
-                outputBytes,
+        text = composeBoundedOutput(
+            execution.output,
+            { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
+            {
                 totalBytes: execution.totalBytes,
-                outputLines,
-                totalLines,
+                totalLines: execution.count,
                 ...(execution.fullOutputPath
                     ? { retainedPath: execution.fullOutputPath }
                     : { nonRetentionReason: "the file-search retention quota was unavailable" }),
-            });
-        let notice = noticeFor(0, 0);
-        const tooFewLines = DEFAULT_MAX_LINES < 3;
-        for (let attempt = 0; attempt < 3; attempt++) {
-            if (tooFewLines || Buffer.byteLength(notice, "utf8") > DEFAULT_MAX_BYTES) {
-                text = truncateUtf8(notice, DEFAULT_MAX_BYTES).content;
-                break;
-            }
-            const visible = truncateHead(execution.output, {
-                maxBytes: Math.max(0, DEFAULT_MAX_BYTES - Buffer.byteLength(notice, "utf8") - 2),
-                maxLines: Math.max(1, DEFAULT_MAX_LINES - 2),
-            });
-            const next = noticeFor(visible.outputBytes, visible.outputLines);
-            if (next === notice) {
-                text = visible.content ? `${visible.content}\n\n${notice}` : notice;
-                break;
-            }
-            notice = next;
-            if (attempt === 2) text = truncateUtf8(notice, DEFAULT_MAX_BYTES).content;
-        }
+            },
+        );
     }
     return {
         content: [{ type: "text" as const, text }],

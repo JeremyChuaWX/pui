@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { BoundedProcessError, runBoundedProcess } from "./bounded-process.js";
 import {
     appendBoundedUtf8,
+    composeBoundedOutput,
     formatTruncationNotice,
     type RetainedOutputFileSystem,
     RetainedOutputStore,
@@ -53,6 +54,74 @@ describe("retained-output presentation", () => {
         expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(100);
         expect(bounded.endsWith('".]')).toBe(true);
         expect(bounded).toContain("result.md");
+    });
+});
+
+describe("composeBoundedOutput", () => {
+    test("line-aware notices describe exactly the emitted preview", () => {
+        const fullText = "content\n".repeat(100);
+        const text = composeBoundedOutput(
+            fullText,
+            { maxBytes: 10_000, maxLines: 5 },
+            { retainedPath: "/tmp/result.md" },
+        );
+        const [preview, notice] = text.split("\n\n");
+        expect(preview).toBe("content\ncontent\ncontent");
+        const counts = notice!.match(/^\[Output truncated: (\d+) of 800 bytes, (\d+) of 100 lines\./);
+        expect(counts).not.toBeNull();
+        expect(Number(counts![1])).toBe(Buffer.byteLength(preview!, "utf8"));
+        expect(Number(counts![2])).toBe(3);
+        expect(notice).toContain('retained at: "/tmp/result.md"');
+    });
+
+    test("keeps the whole composition within the byte budget as the notice grows", () => {
+        for (let maxBytes = 1; maxBytes <= 200; maxBytes++) {
+            const text = composeBoundedOutput(
+                "π界\n".repeat(400),
+                { maxBytes, maxLines: 6 },
+                { nonRetentionReason: "retention was unavailable" },
+            );
+            expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(maxBytes);
+            expect(text).not.toContain("�");
+        }
+    });
+
+    test("returns only a bounded notice when lines cannot fit a preview plus separator", () => {
+        const text = composeBoundedOutput(
+            "wide output",
+            { maxBytes: 30, maxLines: 2 },
+            { totalBytes: 5_000, retainedPath: "/tmp/result.md" },
+        );
+        expect(text).toBe(
+            truncateUtf8(
+                '[Output truncated: 0 of 5000 bytes, 0 of 1 lines. Complete output retained at: "/tmp/result.md".]',
+                30,
+            ).content,
+        );
+        expect(text).not.toContain("\n");
+    });
+
+    test("byte-only mode omits line counts and honors total overrides", () => {
+        const text = composeBoundedOutput(
+            "abcdefghij".repeat(50),
+            { maxBytes: 200 },
+            { totalBytes: 9_999, nonRetentionReason: "the producer kept no copy" },
+        );
+        const notice = text.split("\n\n").at(-1);
+        expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(200);
+        expect(notice).toMatch(/^\[Output truncated: \d+ of 9999 bytes\./);
+        expect(notice).not.toContain("lines");
+        expect(notice).toContain("the producer kept no copy");
+    });
+
+    test("byte-only mode drops the separator when the budget only fits the notice", () => {
+        const notice = formatTruncationNotice({ outputBytes: 0, totalBytes: 300, retainedPath: "/tmp/out" });
+        const text = composeBoundedOutput(
+            "z".repeat(300),
+            { maxBytes: Buffer.byteLength(notice, "utf8") },
+            { retainedPath: "/tmp/out" },
+        );
+        expect(text).toBe(notice);
     });
 });
 

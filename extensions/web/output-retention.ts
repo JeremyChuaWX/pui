@@ -1,10 +1,9 @@
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import {
-    formatTruncationNotice,
+    composeBoundedOutput,
     type RetainedOutputFileSystem,
     RetainedOutputStore,
     type RetentionFailure,
-    truncateUtf8,
 } from "../shared/retained-output.js";
 
 /** A bounded tool result and, when retained successfully, its complete-output file. */
@@ -98,38 +97,13 @@ export class WebOutputRetention {
         fullOutputPath?: string,
         failure?: RetentionFailure,
     ): RetainedWebOutput {
-        const totalBytes = Buffer.byteLength(fullText, "utf8");
-        const totalLines = fullText.length === 0 ? 0 : fullText.split("\n").length - (fullText.endsWith("\n") ? 1 : 0);
-        const initial = truncateHead(fullText, limits);
-        const notice = formatTruncationNotice({
-            outputBytes: initial.outputBytes,
-            totalBytes,
-            outputLines: initial.outputLines,
-            totalLines,
-            ...(fullOutputPath
+        const text = composeBoundedOutput(
+            fullText,
+            limits,
+            fullOutputPath
                 ? { retainedPath: fullOutputPath }
-                : { nonRetentionReason: this.failureReason(failure ?? "storage") }),
-        });
-        const noticeText = truncateUtf8(notice, limits.maxBytes).content;
-
-        if (limits.maxLines < 1 || limits.maxBytes < 1) {
-            return { text: "", truncated: true, ...(fullOutputPath && { fullOutputPath }) };
-        }
-        if (noticeText !== notice || limits.maxLines < 3) {
-            return { text: noticeText, truncated: true, ...(fullOutputPath && { fullOutputPath }) };
-        }
-
-        const separator = "\n\n";
-        const previewMaxBytes =
-            limits.maxBytes - Buffer.byteLength(notice, "utf8") - Buffer.byteLength(separator, "utf8");
-        const preview =
-            previewMaxBytes > 0
-                ? truncateHead(fullText, {
-                      maxBytes: previewMaxBytes,
-                      maxLines: limits.maxLines - 2,
-                  }).content
-                : "";
-        const text = preview ? `${preview}${separator}${notice}` : notice;
+                : { nonRetentionReason: this.failureReason(failure ?? "storage") },
+        );
         return { text, truncated: true, ...(fullOutputPath && { fullOutputPath }) };
     }
 
