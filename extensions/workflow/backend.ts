@@ -68,6 +68,8 @@ export interface WorkflowHostPolicy {
     allowUnsafeSharedCheckout?: boolean;
     models?: readonly string[];
     resolveModel?: (role: string, requested?: string) => string | undefined;
+    /** Default agent timeout when the workflow requests none; still clamped by the workflow limit. */
+    defaultTimeoutMs?: (role: string) => number | undefined;
 }
 /**
  * Host facilities and supervision timings with production defaults; tests inject overrides here

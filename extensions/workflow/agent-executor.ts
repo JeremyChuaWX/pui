@@ -65,6 +65,7 @@ export function defaultWorkflowPolicy(environment: NodeJS.ProcessEnv): WorkflowB
             if (!preset) throw new Error(`Agent role is not allowed by host policy: ${role}`);
             return resolveModel(preset, requested, environment);
         },
+        defaultTimeoutMs: (role) => agentPreset(role)?.timeoutMs,
     };
 }
 

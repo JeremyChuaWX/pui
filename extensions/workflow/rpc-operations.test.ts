@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AbortableSemaphore } from "../shared/semaphore.js";
-import { type DurableOperationRun, runDurableOperation } from "./rpc-operations.js";
+import { defaultWorkflowPolicy } from "./agent-executor.js";
+import { type DurableOperationRun, runDurableOperation, validateAgentRequest } from "./rpc-operations.js";
 
 function makeRun(limit = 1): DurableOperationRun {
     return {
@@ -19,6 +20,27 @@ const baseOperation = (run: DurableOperationRun) => ({
     cooperative: false,
     now: () => 0,
     validateResult: (result: unknown) => result,
+});
+
+describe("validateAgentRequest timeout defaults", () => {
+    const agentPayload = (options: Record<string, unknown>) => ({ prompt: "look around", options });
+
+    test("takes the preset default from the host policy when the workflow requests none", () => {
+        const context = { policy: defaultWorkflowPolicy({}), activeSharedWriters: 0 };
+        expect(validateAgentRequest(agentPayload({ role: "explore" }), context).timeoutMs).toBe(120_000);
+        expect(validateAgentRequest(agentPayload({ role: "worker" }), context).timeoutMs).toBe(600_000);
+    });
+
+    test("keeps an explicit workflow timeout over the preset default", () => {
+        const context = { policy: defaultWorkflowPolicy({}), activeSharedWriters: 0 };
+        const request = validateAgentRequest(agentPayload({ role: "explore", timeoutMs: 5_000 }), context);
+        expect(request.timeoutMs).toBe(5_000);
+    });
+
+    test("falls back to the workflow limit without a policy default", () => {
+        const context = { activeSharedWriters: 0 };
+        expect(validateAgentRequest(agentPayload({ role: "explore" }), context).timeoutMs).toBe(600_000);
+    });
 });
 
 describe("runDurableOperation", () => {

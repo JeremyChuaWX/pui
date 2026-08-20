@@ -242,7 +242,7 @@ export function validateAgentRequest(
         schema,
         isolation,
         retries: Math.min(3, Math.max(0, Number(opts.retries) || 0)),
-        timeoutMs: clampTimeout(opts.timeoutMs),
+        timeoutMs: clampTimeout(opts.timeoutMs ?? context.policy?.defaultTimeoutMs?.(role)),
         writeCapable,
     };
 }
