@@ -1,7 +1,5 @@
-import { getPiInvocation } from "../shared/child-agent.js";
-import { AGENTS, childArgs, type ResolvedAgentName, resolveModel } from "../shared/presets.js";
-import { createInitialSubagentDetails } from "../subagent/protocol.js";
-import { runSubagent } from "../subagent/runner.js";
+import { getPiInvocation, runChildAgent } from "../shared/child-agent.js";
+import { agentPreset, childArgs, RESOLVED_AGENT_NAMES, resolveModel } from "../shared/presets.js";
 import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 
@@ -18,30 +16,22 @@ export function createWorkflowAgentExecutor(
     environment: NodeJS.ProcessEnv = process.env,
 ): WorkflowBackendOptions["agentExecutor"] {
     return async (request) => {
-        if (!Object.hasOwn(AGENTS, request.role))
-            throw new Error(`Agent role is not allowed by host policy: ${request.role}`);
-        const role = request.role as ResolvedAgentName;
-        const preset = AGENTS[role];
+        const preset = agentPreset(request.role);
+        if (!preset) throw new Error(`Agent role is not allowed by host policy: ${request.role}`);
         const model = resolveModel(preset, request.model, environment);
         const prompt = request.schema
             ? `${request.prompt}\n\nReturn only JSON matching this schema:\n${JSON.stringify(request.schema)}`
             : request.prompt;
         const invocation = getPiInvocation(childArgs(preset, model, prompt));
-        const result = await runSubagent({
-            details: createInitialSubagentDetails({
-                id: crypto.randomUUID(),
-                agent: role,
-                model: model ?? "default",
-                cwd: request.cwd,
-            }),
+        const result = await runChildAgent({
             command: invocation.command,
             args: invocation.args,
             cwd: request.cwd,
             timeoutMs: request.timeoutMs,
+            model: model ?? "default",
             signal: request.signal,
         });
-        if (result.details.run.status !== "succeeded")
-            throw new Error(result.details.run.error ?? `Child Pi ${result.details.run.status}.`);
+        if (result.status !== "succeeded") throw new Error(result.error ?? `Child Pi ${result.status}.`);
         let value: unknown = result.output;
         if (request.schema)
             try {
@@ -49,14 +39,18 @@ export function createWorkflowAgentExecutor(
             } catch {
                 throw new Error("Child Pi returned invalid structured JSON.");
             }
-        return { value, usage: result.details.run.usage };
+        return { value, usage: result.usage };
     };
 }
 
 export function defaultWorkflowPolicy(environment: NodeJS.ProcessEnv): WorkflowBackendOptions["policy"] {
     return {
-        roles: ["generic", "worker", "explore"],
-        resolveModel: (role, requested) => resolveModel(AGENTS[role as ResolvedAgentName], requested, environment),
+        roles: [...RESOLVED_AGENT_NAMES],
+        resolveModel: (role, requested) => {
+            const preset = agentPreset(role);
+            if (!preset) throw new Error(`Agent role is not allowed by host policy: ${role}`);
+            return resolveModel(preset, requested, environment);
+        },
     };
 }
 
