@@ -1,45 +1,24 @@
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { killProcessTree } from "../shared/bounded-process.js";
 import { AbortableSemaphore } from "../shared/semaphore.js";
 import { errorMessage } from "../shared/validate.js";
 import { resolveWorkflowNode, runWorkflowShell } from "./node-resolution.js";
 import { preflightWorkflow } from "./preflight.js";
-import type {
-    WorkflowActivityV1,
-    WorkflowAgentSummaryV1,
-    WorkflowEntrypoint,
-    WorkflowLimitsV1,
-    WorkflowRunSummaryV1,
-    WorkflowUsageV1,
-} from "./protocol.js";
-import {
-    boundedJson,
-    DEFAULT_WORKFLOW_LIMITS,
-    normalizeWorkflowLimits,
-    runDurableOperation,
-    schemaValid,
-    validateAgentRequest,
-    validateLaunchMetadata,
-    validateShellRequest,
-    validateShellResult,
-    workflowOperationId,
-} from "./rpc-operations.js";
+import type { WorkflowEntrypoint, WorkflowLimitsV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
+import { createRpcHandler, emptyWorkflowUsage } from "./rpc-handler.js";
+import { DEFAULT_WORKFLOW_LIMITS, normalizeWorkflowLimits, validateLaunchMetadata } from "./rpc-operations.js";
 import type { ImmutableRunLaunch, StoredRun } from "./run-storage.js";
 import { executableWorkflowScript } from "./source.js";
-import { parseWorkerFrame, WORKER_SOURCE, WorkerFrameDecoder } from "./worker-protocol.js";
+import { WorkflowWorker } from "./worker-host.js";
+import { WORKER_SOURCE } from "./worker-protocol.js";
 import { type OwnedWorktree, WorkflowWorktreeManager } from "./worktree.js";
 
 export { DEFAULT_WORKFLOW_LIMITS };
 
-const STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
-    HEARTBEAT_TIMEOUT_MS = 5_000,
-    LARGE_RUN_WARNING_AGENTS = 25,
-    MAX_SHELL_INVOCATIONS = 1_000;
+    HEARTBEAT_TIMEOUT_MS = 5_000;
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 const INTERRUPTION_WARNING = "Workflow interrupted by host shutdown; resume after restart.";
 
@@ -167,7 +146,7 @@ interface ActiveRun {
     summary: WorkflowRunSummaryV1;
     script: string;
     controller: AbortController;
-    child?: ReturnType<typeof spawn>;
+    worker?: WorkflowWorker;
     result?: string;
     settlement: Promise<void>;
     cooperativeTasks: Set<Promise<unknown>>;
@@ -182,19 +161,6 @@ interface ActiveRun {
     interrupted?: boolean;
     stopping?: boolean;
 }
-
-const emptyUsage = (): WorkflowUsageV1 => ({
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: 0,
-    turns: 0,
-});
-const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {}) => {
-    for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
-};
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const home = fs.realpathSync(os.homedir()),
@@ -279,9 +245,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
         }
     };
     const execute = async (active: ActiveRun, input: WorkflowLaunch, node: string) => {
-        let directory: string | undefined,
-            terminal = false,
-            stderr = "";
+        let terminal = false;
         const finish = (status: "succeeded" | "failed" | "cancelled", error?: string, json?: string) => {
             if (terminal || active.interrupted) return;
             let result: unknown = null;
@@ -301,352 +265,80 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
             finishPhase(active, status, error);
             publishTerminal(active, result);
         };
+        let worker: WorkflowWorker | undefined;
         try {
-            directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-"));
-            const worker = path.join(directory, "worker.mjs");
-            await fs.promises.writeFile(worker, platform.workerSource, { mode: 0o600 });
-            const canonical = await realpath(worker);
-            const child = spawn(
+            let pending = 0;
+            const handleRpc = createRpcHandler({
+                run: active,
+                cwd: input.cwd,
+                send: (frame) => worker?.send(frame) ?? false,
+                now,
+                uuid: platform.uuid,
+                publish: () => publish(active),
+                finishCurrentPhase: () => finishPhase(active, "succeeded"),
+                waitWhilePaused: () => waitWhilePaused(active),
+                shellExecutor,
+                agentExecutor: options.agentExecutor,
+                cooperativeExecutor: options.cooperativeExecutor === true,
+                policy: options.policy,
+                storage: options.storage,
+                worktrees,
+            });
+            worker = await WorkflowWorker.spawn({
                 node,
-                ["--permission", `--allow-fs-read=${canonical}`, "--max-old-space-size=128", canonical],
-                { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", env: {} },
-            );
-            active.child = child;
-            const terminate = () => {
-                killProcessTree(child, "SIGTERM");
-                setTimeout(() => killProcessTree(child, "SIGKILL"), 500).unref();
-            };
-            active.controller.signal.addEventListener("abort", terminate, { once: true });
-            if (active.controller.signal.aborted) terminate();
-            else {
+                workerSource: platform.workerSource,
+                signal: active.controller.signal,
+                now,
+                readyTimeoutMs: platform.readyTimeoutMs,
+                watchdogMs: platform.watchdogMs,
+                runTimeoutMs: platform.runTimeoutMs ?? active.summary.limits.timeoutMs,
+                startFrame: () => ({
+                    v: 1,
+                    t: "start",
+                    script: executableWorkflowScript(input.script, input.entrypoint ?? "script"),
+                    args: input.args,
+                    entrypoint: input.entrypoint ?? "script",
+                }),
+                pending: () => pending,
+                onFrame: (frame) => {
+                    if (frame.t === "terminal") {
+                        frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", frame.error);
+                        return;
+                    }
+                    pending++;
+                    void handleRpc(frame)
+                        .finally(() => pending--)
+                        .catch((e) => {
+                            finish("failed", errorMessage(e));
+                            active.controller.abort();
+                        });
+                },
+                onFailure: (message, failure) => {
+                    finish("failed", message);
+                    if (failure?.abort !== false) active.controller.abort();
+                },
+            });
+            active.worker = worker;
+            if (!active.controller.signal.aborted) {
                 active.summary.status = "running";
                 active.summary.startedAt = now();
                 publish(active);
             }
-            if (!child.stdin || !child.stdout) throw new Error("Workflow worker pipes were not created.");
-            let pending = 0,
-                agents = 0,
-                shells = 0,
-                phaseId: string | undefined,
-                ready = false,
-                lastBeat = now();
-            child.stdin.on("error", (error: NodeJS.ErrnoException) => {
-                if (error.code !== "EPIPE") finish("failed", errorMessage(error));
-            });
-            const send = (frame: unknown) => {
-                const payload = `${boundedJson(frame)}\n`;
-                if (!child.stdin.writable || child.stdin.writableEnded || child.stdin.destroyed) return false;
-                return child.stdin.write(payload);
-            };
-            const handle = async (inputFrame: unknown) => {
-                const frame = parseWorkerFrame(inputFrame, { ready, pending });
-                if (frame.t === "ready") {
-                    ready = true;
-                    lastBeat = now();
-                    send({
-                        v: 1,
-                        t: "start",
-                        script: executableWorkflowScript(input.script, input.entrypoint ?? "script"),
-                        args: input.args,
-                        entrypoint: input.entrypoint ?? "script",
-                    });
-                    return;
-                }
-                if (frame.t === "heartbeat") {
-                    lastBeat = now();
-                    return;
-                }
-                if (frame.t === "terminal") {
-                    frame.ok ? finish("succeeded", undefined, frame.json) : finish("failed", frame.error);
-                    child.stdin.end();
-                    child.kill("SIGTERM");
-                    return;
-                }
-                pending++;
-                try {
-                    let value: unknown = null;
-                    if (frame.method === "phase") {
-                        finishPhase(active, "succeeded");
-                        const data =
-                                frame.value && typeof frame.value === "object" && !Array.isArray(frame.value)
-                                    ? (frame.value as Record<string, unknown>)
-                                    : {},
-                            name = String(data.name ?? "").slice(0, 512);
-                        if (!name) throw new Error("Invalid phase");
-                        phaseId = `phase-${active.summary.phases.length + 1}`;
-                        active.summary.currentPhase = phaseId;
-                        active.summary.phases.push({
-                            id: phaseId,
-                            name,
-                            status: "running",
-                            startedAt: now(),
-                            updatedAt: now(),
-                            agentIds: [],
-                        });
-                        publish(active);
-                    } else if (frame.method === "log") {
-                        const data =
-                            frame.value && typeof frame.value === "object" && !Array.isArray(frame.value)
-                                ? (frame.value as Record<string, unknown>)
-                                : {};
-                        active.summary.recentActivity.push({
-                            sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
-                            timestamp: now(),
-                            kind: "log",
-                            title: String(data.message ?? "").slice(0, 2000),
-                        });
-                        active.summary.recentActivity = active.summary.recentActivity.slice(-20);
-                        publish(active);
-                    } else if (frame.method === "shell") {
-                        if (++shells > MAX_SHELL_INVOCATIONS) throw new Error("Workflow shell cap exceeded.");
-                        const operationId = workflowOperationId("shell", frame.identity);
-                        if (active.completions.has(operationId)) {
-                            value = structuredClone(active.completions.get(operationId));
-                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
-                            return;
-                        }
-                        await waitWhilePaused(active);
-                        const request = validateShellRequest(frame.value);
-                        const activity: WorkflowActivityV1 = {
-                            sequence: (active.summary.recentActivity.at(-1)?.sequence ?? 0) + 1,
-                            timestamp: now(),
-                            kind: "tool" as const,
-                            title: `$ ${request.command}`.slice(0, 2000),
-                        };
-                        active.summary.recentActivity.push(activity);
-                        active.summary.recentActivity = active.summary.recentActivity.slice(-20);
-                        publish(active);
-                        value = await runDurableOperation({
-                            run: active,
-                            operationId,
-                            timeoutMs: request.timeoutMs,
-                            timeoutMessage: "Shell command timed out.",
-                            cooperative: true,
-                            now,
-                            execute: (signal) =>
-                                Promise.resolve(
-                                    shellExecutor({
-                                        command: request.command,
-                                        cwd: input.cwd,
-                                        env: request.env,
-                                        signal,
-                                        timeoutMs: request.timeoutMs,
-                                    }),
-                                ),
-                            validateResult: (result) => {
-                                validateShellResult(result);
-                                boundedJson(result);
-                                return result;
-                            },
-                            journal: async (durable, at) => {
-                                if (active.directory)
-                                    await options.storage?.complete(active.directory, operationId, durable, at);
-                            },
-                            onSettled: (failure) => {
-                                if (failure) activity.isError = true;
-                                publish(active);
-                            },
-                        });
-                    } else if (frame.method === "agent") {
-                        if (++agents > active.summary.limits.maxAgents) throw new Error("Workflow agent cap exceeded.");
-                        if (agents === LARGE_RUN_WARNING_AGENTS) {
-                            active.summary.warning = `Large workflow run: ${LARGE_RUN_WARNING_AGENTS} agents scheduled.`;
-                            publish(active);
-                        }
-                        const operationId = workflowOperationId("agent", frame.identity);
-                        if (active.completions.has(operationId)) {
-                            value = structuredClone(active.completions.get(operationId));
-                            send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
-                            return;
-                        }
-                        await waitWhilePaused(active);
-                        const request = validateAgentRequest(frame.value, {
-                            policy: options.policy,
-                            activeSharedWriters: active.activeSharedWriters,
-                        });
-                        const agent: WorkflowAgentSummaryV1 = {
-                            id: operationId,
-                            label: request.label,
-                            role: request.role,
-                            ...(request.model ? { model: request.model } : {}),
-                            status: "running",
-                            phaseId,
-                            startedAt: now(),
-                            updatedAt: now(),
-                            usage: emptyUsage(),
-                            prompt: request.prompt.slice(0, 8000),
-                            recentActivity: [],
-                        };
-                        active.summary.agents.push(agent);
-                        if (phaseId) active.summary.phases.find((p) => p.id === phaseId)?.agentIds.push(agent.id);
-                        publish(active);
-                        let sharedWriter = false,
-                            owned: Awaited<ReturnType<WorkflowWorktreeManager["create"]>> | undefined,
-                            operationKey: string | undefined;
-                        value = await runDurableOperation({
-                            run: active,
-                            operationId,
-                            timeoutMs: request.timeoutMs,
-                            timeoutMessage: "Agent timed out.",
-                            cooperative: options.cooperativeExecutor === true,
-                            now,
-                            beforeExecute: async () => {
-                                if (request.writeCapable && request.isolation !== "worktree") {
-                                    if (active.activeSharedWriters > 0 && !options.policy?.allowUnsafeSharedCheckout)
-                                        throw new Error("Concurrent write-capable agents require worktree isolation.");
-                                    active.activeSharedWriters++;
-                                    sharedWriter = true;
-                                }
-                                await waitWhilePaused(active);
-                            },
-                            setup: async () => {
-                                if (request.isolation !== "worktree") return;
-                                operationKey = `${operationId.slice(0, 35)}-${platform.uuid().slice(0, 8)}`;
-                                owned = await worktrees.create(input.cwd, active.summary.id.slice(0, 63), operationKey);
-                                if (active.directory && options.storage)
-                                    await options.storage.worktree(active.directory, operationKey, owned, now());
-                                agent.worktree = { cwd: owned.cwd, branch: owned.branch };
-                                agent.recentActivity.push({
-                                    sequence: 1,
-                                    timestamp: now(),
-                                    kind: "diagnostic",
-                                    title: `Worktree ${owned.branch} at ${owned.cwd}`.slice(0, 2000),
-                                });
-                                publish(active);
-                            },
-                            execute: async (signal) => {
-                                let result: AgentResult | undefined;
-                                // Every attempt reuses the worktree created in `setup`, so for
-                                // isolation "worktree" agents retries are resume-style: they start
-                                // from whatever state the failed attempt left, not a clean branch.
-                                for (let attempt = 0; attempt <= request.retries; attempt++)
-                                    try {
-                                        result = await options.agentExecutor({
-                                            prompt: request.prompt,
-                                            role: request.role,
-                                            model: request.model,
-                                            schema: request.schema,
-                                            signal,
-                                            timeoutMs: request.timeoutMs,
-                                            cwd: owned?.cwd ?? input.cwd,
-                                        });
-                                        if (!schemaValid(result.value, request.schema))
-                                            throw new Error("Agent result does not match schema.");
-                                        break;
-                                    } catch (e) {
-                                        if (attempt === request.retries || signal.aborted) throw e;
-                                    }
-                                if (!result) throw new Error("Agent produced no result.");
-                                return result;
-                            },
-                            validateResult: (result) => {
-                                const durable = result.value;
-                                boundedJson(durable);
-                                const nextTokens =
-                                        active.summary.usage.totalTokens + (Number(result.usage?.totalTokens) || 0),
-                                    nextCost = active.summary.usage.cost + (Number(result.usage?.cost) || 0);
-                                addUsage(agent.usage, result.usage);
-                                addUsage(active.summary.usage, result.usage);
-                                if (active.summary.limits.maxTokens && nextTokens > active.summary.limits.maxTokens)
-                                    throw new Error(
-                                        `Workflow token budget exceeded (${nextTokens}/${active.summary.limits.maxTokens}).`,
-                                    );
-                                if (active.summary.limits.maxCost && nextCost > active.summary.limits.maxCost)
-                                    throw new Error(
-                                        `Workflow cost budget exceeded (${nextCost}/${active.summary.limits.maxCost}).`,
-                                    );
-                                return durable;
-                            },
-                            journal: async (durable, at) => {
-                                if (active.directory)
-                                    await options.storage?.complete(active.directory, operationId, durable, at);
-                            },
-                            onSuccess: () => {
-                                agent.status = "succeeded";
-                            },
-                            cleanup: async () => {
-                                if (!owned) return;
-                                await worktrees.cleanup(input.cwd, owned);
-                                if (operationKey && active.directory && options.storage)
-                                    await options.storage.worktree(active.directory, operationKey, null, now());
-                            },
-                            onSettled: (failure) => {
-                                if (failure) {
-                                    agent.status = active.controller.signal.aborted
-                                        ? "cancelled"
-                                        : errorMessage(failure.error).includes("timed out")
-                                          ? "timed_out"
-                                          : "failed";
-                                    agent.error = errorMessage(failure.error).slice(0, 2000);
-                                }
-                                if (sharedWriter) active.activeSharedWriters--;
-                                agent.endedAt = agent.updatedAt = now();
-                                publish(active);
-                            },
-                        });
-                    } else throw new Error(`Unknown workflow RPC method: ${frame.method}`);
-                    send({ v: 1, t: "reply", id: frame.id, ok: true, json: boundedJson(value) });
-                } catch (e) {
-                    send({ v: 1, t: "reply", id: frame.id, ok: false, error: errorMessage(e).slice(0, 2000) });
-                } finally {
-                    pending--;
-                }
-            };
-            child.stderr?.on("data", (c) => {
-                stderr = Buffer.from(`${stderr}${c}`).subarray(-STDERR_BYTES).toString();
-            });
-            child.stdout.setEncoding("utf8");
-            const decoder = new WorkerFrameDecoder();
-            child.stdout.on("data", (chunk) => {
-                try {
-                    for (const parsed of decoder.decode(chunk))
-                        void handle(parsed).catch((e) => {
-                            finish("failed", errorMessage(e));
-                            active.controller.abort();
-                        });
-                } catch (e) {
-                    finish("failed", errorMessage(e));
-                    active.controller.abort();
-                }
-            });
-            const watchdog = setInterval(() => {
-                const limit = ready ? platform.watchdogMs : platform.readyTimeoutMs;
-                if (now() - lastBeat > limit) {
-                    finish(
-                        "failed",
-                        ready ? "Workflow worker heartbeat timed out." : "Workflow worker did not become ready.",
-                    );
-                    active.controller.abort();
-                }
-            }, 250);
-            const total = setTimeout(() => {
-                finish("failed", "Workflow run timed out.");
-                active.controller.abort();
-            }, platform.runTimeoutMs ?? active.summary.limits.timeoutMs);
-            await new Promise<void>((resolve) => {
-                child.once("error", (e) => {
-                    finish("failed", errorMessage(e));
-                    resolve();
-                });
-                child.once("close", () => {
-                    if (!terminal)
-                        finish(
-                            active.controller.signal.aborted ? "cancelled" : "failed",
-                            active.controller.signal.aborted
-                                ? undefined
-                                : `Workflow worker exited without a terminal result.${stderr ? ` ${stderr}` : ""}`,
-                        );
-                    resolve();
-                });
-            });
-            clearInterval(watchdog);
-            clearTimeout(total);
+            const exit = await worker.closed;
+            if (exit.error !== undefined) finish("failed", errorMessage(exit.error));
+            else
+                finish(
+                    active.controller.signal.aborted ? "cancelled" : "failed",
+                    active.controller.signal.aborted
+                        ? undefined
+                        : `Workflow worker exited without a terminal result.${exit.stderr ? ` ${exit.stderr}` : ""}`,
+                );
         } catch (e) {
             finish(active.controller.signal.aborted ? "cancelled" : "failed", errorMessage(e));
         } finally {
-            active.child = undefined;
+            active.worker = undefined;
             await active.persistence;
-            if (directory) await fs.promises.rm(directory, { recursive: true, force: true });
+            await worker?.dispose();
         }
     };
     return {
@@ -684,7 +376,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                     status: "queued",
                     phases: [],
                     agents: [],
-                    usage: emptyUsage(),
+                    usage: emptyWorkflowUsage(),
                     limits,
                     recentActivity: [],
                     updatedAt: timestamp,
@@ -845,7 +537,7 @@ export function createWorkflowBackend(options: WorkflowBackendOptions): Workflow
                 if (TERMINAL.has(run.summary.status)) return;
                 run.stopping = true;
                 run.controller.abort();
-                if (!run.child) {
+                if (!run.worker) {
                     run.summary.status = "cancelled";
                     run.summary.endedAt = now();
                     publishTerminal(run, null);

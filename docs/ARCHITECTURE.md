@@ -102,9 +102,13 @@ plain Pi with equivalent production wiring.
   `run-job.ts` is the single run pipeline (queueing, semaphore, spawn, terminal synthesis, output
   spill) shared by the blocking tool and the background manager; `background-manager.ts` owns
   background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes.
-- `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle + sandboxed worker
-  supervision; collaborators are injectable through an options bag, including a `WorkflowPlatform`
+- `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle and active-run
+  state; collaborators are injectable through an options bag, including a `WorkflowPlatform`
   seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
+  `preflight.ts` (launch-time script vetting), `node-resolution.ts` (sandbox Node discovery and
+  the default host shell executor), `worker-host.ts` (`WorkflowWorker`: sandboxed spawn, frame
+  decoding, stderr tail, and watchdog/timeout supervision of one worker process),
+  `rpc-handler.ts` (the phase/log/shell/agent RPC dispatch and reply framing for one run),
   `worker-protocol.ts` + `worker/*.js.txt` (untrusted worker-frame validation, NDJSON decoding,
   and sandboxed worker source), `rpc-operations.ts` (pure request/result validators and the one
   durable-operation pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories),
