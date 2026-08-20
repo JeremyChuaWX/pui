@@ -1,6 +1,6 @@
 import { createMemo, For, Match, Show, Switch } from "solid-js";
 import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
-import { formatCount, formatWorkflowSummary, workflowStatusTone } from "../format.js";
+import { formatCount } from "../format.js";
 import { isTerminalSubagentStatus, type SubagentViewModel } from "../subagent.js";
 import { syntaxStyle, theme } from "../theme.js";
 import type { DisplayItem, ToolDisplayItem } from "../types.js";
@@ -12,6 +12,7 @@ import {
     subagentStatusLabel,
     subagentSummary,
 } from "./subagent-view.js";
+import { formatWorkflowSummary, workflowStatusTone } from "./workflow-view.js";
 
 export function Welcome(props: { cwd: string }) {
     return (

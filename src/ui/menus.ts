@@ -1,11 +1,12 @@
 import { errorMessage } from "../../extensions/shared/validate.js";
 import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
 import type { PuiController } from "../controller.js";
-import { formatCount, formatWorkflowSummary, workflowStatusPresentation } from "../format.js";
+import { formatCount } from "../format.js";
 import { isTerminalSubagentStatus } from "../subagent.js";
 import type { PuiSnapshot } from "../types.js";
 import type { DialogState, PickerItem } from "./dialogs.js";
 import { compactSubagentUsage, subagentElapsed, subagentStatusIcon, subagentStatusLabel } from "./subagent-view.js";
+import { formatWorkflowSummary, workflowStatusPresentation } from "./workflow-view.js";
 
 /** The controller surface the menus depend on; a fake satisfies it in tests. */
 export type MenuController = Pick<

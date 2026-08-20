@@ -70,6 +70,7 @@ handling) and renders snapshots. Rendering and menu construction live in `src/ui
 | `src/ui/sidebar.tsx` | session sidebar and toast stack |
 | `src/ui/keys.ts` | all keyboard predicates: dismissal, enter detection, list cycling, prompt-history keys, extension-confirm intents (and the hint strings derived from them) |
 | `src/ui/subagent-view.ts` | subagent presentation: status icons/labels/colors, elapsed, usage summaries |
+| `src/ui/workflow-view.ts` | workflow presentation: status icons/labels/tones and run summaries |
 
 Supporting view-adjacent modules stay in `src/`: `format.ts` (message → `DisplayItem` projection
 with identity-preserving reconciliation), `tool-executions.ts` (tool lifecycle reducer),

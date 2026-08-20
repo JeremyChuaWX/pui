@@ -1,5 +1,5 @@
 import { createMemo, For, Show } from "solid-js";
-import { formatCount, formatWorkflowSummary, workflowStatusTone } from "../format.js";
+import { formatCount } from "../format.js";
 import { isTerminalSubagentStatus, type SubagentViewModel } from "../subagent.js";
 import { theme } from "../theme.js";
 import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../types.js";
@@ -10,6 +10,7 @@ import {
     subagentStatusIcon,
     subagentStatusLabel,
 } from "./subagent-view.js";
+import { formatWorkflowSummary, workflowStatusTone } from "./workflow-view.js";
 
 export interface SubagentDisplayItem extends ToolDisplayItem {
     subagent: SubagentViewModel;

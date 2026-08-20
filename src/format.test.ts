@@ -5,11 +5,8 @@ import {
     buildDisplayItems,
     formatCount,
     formatToolTitle,
-    formatWorkflowSummary,
     reconcileDisplayItems,
     resolveWorkflowRun,
-    workflowStatusPresentation,
-    workflowStatusTone,
 } from "./format.js";
 import { reduceToolExecutions, type ToolExecutionState } from "./tool-executions.js";
 
@@ -97,12 +94,6 @@ describe("pui formatting", () => {
     test("formats compact token counts and tool labels", () => {
         expect(formatCount(1_250)).toBe("1.3k");
         expect(formatToolTitle("bash", { command: "git status" })).toBe("bash  git status");
-    });
-
-    test("formats workflow status", () => {
-        expect(workflowStatusPresentation("timed_out")).toEqual({ icon: "×", label: "Timed out" });
-        expect(workflowStatusTone("failed")).toBe("error");
-        expect(formatWorkflowSummary(workflowRun())).toBe("◌ Review · Running · 0/1 agents · review");
     });
 
     test("resolves embedded summaries and actual v1 launch details against authoritative runs", () => {
