@@ -29,7 +29,9 @@ extensions/file-search  extensions/subagent  extensions/workflow  extensions/web
 Parses CLI flags and dispatches: the interactive TUI (`PuiController.create` + Solid render),
 `pui workflow …` (headless, via `src/headless-workflow.ts`, no TUI or Pi session), or the
 compiled-binary smoke harness (`src/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1` but
-statically linked so the built executable can self-test).
+statically linked so the built executable can self-test). A prompt argument is handed to the App as
+`initialPrompt` and dispatched through the same prompt-action record as interactive input, so
+command-line slash invocations (`pui "/models"`) perform their action.
 
 ### Controller — `src/controller.ts`
 
@@ -52,8 +54,10 @@ The controller delegates to focused collaborators rather than owning every conce
 | `src/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
 | `src/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
-The controller's local command table is the single source for slash-command autocomplete, aliases,
-and dispatch.
+The controller's command descriptor list is the single source for slash-command autocomplete,
+aliases, dispatch, and the command palette: palette rows (including palette-only entries) live on
+the same descriptors, `src/ui/menus.ts` renders them rank-sorted and binds each row's action through
+an exhaustive record, so the two surfaces cannot drift.
 
 ### View — `src/app.tsx` and `src/ui/`
 
@@ -63,14 +67,14 @@ handling) and renders snapshots. Rendering and menu construction live in `src/ui
 | Module | Contents |
 |---|---|
 | `src/ui/menus.ts` | every picker/palette, built behind the `MenuHost` seam (`openDialog`, `openAsyncPicker`, a narrow `MenuController` slice of the controller) — pure data, unit-tested with fakes |
-| `src/ui/dialogs.tsx` | `DialogState`, modal `Dialog` (picker / confirm / input / help) |
+| `src/ui/dialogs.tsx` | `DialogState`, modal `Dialog` (picker / confirm / input / help), and the pure `extensionDialogState` derivation from extension dialog requests |
 | `src/ui/transcript.tsx` | message, tool, subagent, bash, and summary cards |
 | `src/ui/workflow-page.tsx` | the read-only workflow status page |
 | `src/ui/prompt.tsx` | prompt textarea + autocomplete popover |
 | `src/ui/sidebar.tsx` | session sidebar and toast stack |
-| `src/ui/keys.ts` | all keyboard predicates: dismissal, enter detection, list cycling, prompt-history keys, extension-confirm intents (and the hint strings derived from them) |
+| `src/ui/keys.ts` | all keyboard knowledge: the global shortcut table (one entry per binding drives `globalKeyIntent` dispatch in the app and the Help dialog's `globalKeyHelp` lines), `listNavigationDirection` list cycling, dismissal, enter detection, prompt-history keys, extension-confirm intents (and the hint strings derived from them) |
 | `src/ui/subagent-view.ts` | subagent presentation: status icons/labels/colors, elapsed, usage summaries |
-| `src/ui/workflow-view.ts` | workflow presentation: status icons/labels/tones and run summaries |
+| `src/ui/workflow-view.ts` | workflow presentation (status icons/labels/tones, run summaries) and the pure `resolveWorkflowNavigation` routing for pending workflow-page navigation |
 
 Supporting view-adjacent modules stay in `src/`: `format.ts` (message → `DisplayItem` projection
 with identity-preserving reconciliation), `tool-executions.ts` (tool lifecycle reducer),
