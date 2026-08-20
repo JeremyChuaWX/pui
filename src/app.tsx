@@ -9,7 +9,7 @@ import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
 import { isTerminalSubagentStatus } from "./subagent.js";
 import { theme } from "./theme.js";
 import type { PromptAction, PromptCompletions, PuiSnapshot } from "./types.js";
-import { Dialog, type DialogState, type PickerItem } from "./ui/dialogs.js";
+import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./ui/dialogs.js";
 import {
     canNavigatePromptHistory,
     cycleIndex,
@@ -25,8 +25,7 @@ import { Prompt, PromptAutocomplete } from "./ui/prompt.js";
 import { activeSubagentItems, Sidebar, ToastStack } from "./ui/sidebar.js";
 import { ExtensionConfirmation, MessageItem, QueuedMessage, Welcome } from "./ui/transcript.js";
 import { WorkflowPage } from "./ui/workflow-page.js";
-
-const WORKFLOW_REQUEST_TIMEOUT_MS = 30_000;
+import { type PendingWorkflowNavigation, resolveWorkflowNavigation } from "./ui/workflow-view.js";
 
 export function App(props: { controller: PuiController; initialPrompt?: string }) {
     const renderer = useRenderer();
@@ -40,11 +39,7 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     const [toolsExpanded, setToolsExpanded] = createSignal(false);
     const [thinkingExpanded, setThinkingExpanded] = createSignal(false);
     const [activeWorkflowRunId, setActiveWorkflowRunId] = createSignal<string>();
-    const [pendingWorkflowRun, setPendingWorkflowRun] = createSignal<{
-        ids: ReadonlySet<string>;
-        requestedAt: number;
-        sessionId: string;
-    }>();
+    const [pendingWorkflowRun, setPendingWorkflowRun] = createSignal<PendingWorkflowNavigation>();
     const [elapsedNow, setElapsedNow] = createSignal(Date.now());
     const promptHistory = new PromptHistory();
     let prompt: TextareaRenderable | undefined;
@@ -106,35 +101,12 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
             return;
         }
         if (owner === request.id) return;
-        if (request.kind === "confirm") {
-            if (owner !== undefined) setDialog(undefined);
-        } else if (request.kind === "select") {
-            setDialog({
-                kind: "picker",
-                title: request.title,
-                placeholder: "Choose an option",
-                extensionRequestId: request.id,
-                items: request.options.map((option) => ({
-                    label: option,
-                    search: option.toLowerCase(),
-                    action: () => {
-                        props.controller.resolveExtensionDialog(request.id, option);
-                        setDialog(undefined);
-                    },
-                })),
-            });
-        } else {
-            setDialog({
-                kind: "input",
-                title: request.title,
-                placeholder: request.placeholder,
-                extensionRequestId: request.id,
-                action: (value) => {
-                    props.controller.resolveExtensionDialog(request.id, value);
-                    setDialog(undefined);
-                },
-            });
-        }
+        const next = extensionDialogState(request, {
+            resolve: (id, value) => props.controller.resolveExtensionDialog(id, value),
+            close: () => setDialog(undefined),
+        });
+        if (next) setDialog(next);
+        else if (owner !== undefined) setDialog(undefined);
     });
 
     createEffect(() => {
@@ -147,24 +119,19 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     createEffect(() => {
         const pending = pendingWorkflowRun();
         if (!pending) return;
-        if (
-            pending.sessionId !== snapshot.sessionId ||
-            Date.now() - pending.requestedAt >= WORKFLOW_REQUEST_TIMEOUT_MS
-        ) {
+        const resolution = resolveWorkflowNavigation(pending, snapshot, Date.now());
+        if (resolution.kind === "expire") {
             setPendingWorkflowRun(undefined);
             return;
         }
-        const run = snapshot.workflows
-            .filter((candidate) => !pending.ids.has(candidate.id) && candidate.updatedAt >= pending.requestedAt)
-            .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-        if (run) {
-            setActiveWorkflowRunId(run.id);
+        if (resolution.kind === "navigate") {
+            setActiveWorkflowRunId(resolution.runId);
             setPendingWorkflowRun(undefined);
             return;
         }
         const timer = setTimeout(
             () => setPendingWorkflowRun((current) => (current === pending ? undefined : current)),
-            WORKFLOW_REQUEST_TIMEOUT_MS - (Date.now() - pending.requestedAt),
+            resolution.recheckInMs,
         );
         onCleanup(() => clearTimeout(timer));
     });

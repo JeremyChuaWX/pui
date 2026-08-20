@@ -2,6 +2,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, Index, Match, Show, Switch } from "solid-js";
 import { theme } from "../theme.js";
+import type { ExtensionDialog } from "../types.js";
 import { cycleIndex, globalKeyHelp, isDismissKey, isEnterKey, listNavigationDirection } from "./keys.js";
 
 export interface PickerItem {
@@ -23,6 +24,45 @@ export type DialogState = (
     | { kind: "confirm"; title: string; message: string; confirmLabel: string; action: () => void }
     | { kind: "input"; title: string; placeholder?: string; action: (value: string) => void }
 ) & { extensionRequestId?: number };
+
+export interface ExtensionDialogCallbacks {
+    resolve: (id: number, value: string) => void;
+    close: () => void;
+}
+
+/** Derive the modal dialog state for an extension request; confirm requests render inline and yield none. */
+export function extensionDialogState(
+    request: ExtensionDialog,
+    callbacks: ExtensionDialogCallbacks,
+): DialogState | undefined {
+    if (request.kind === "confirm") return undefined;
+    if (request.kind === "select") {
+        return {
+            kind: "picker",
+            title: request.title,
+            placeholder: "Choose an option",
+            extensionRequestId: request.id,
+            items: request.options.map((option) => ({
+                label: option,
+                search: option.toLowerCase(),
+                action: () => {
+                    callbacks.resolve(request.id, option);
+                    callbacks.close();
+                },
+            })),
+        };
+    }
+    return {
+        kind: "input",
+        title: request.title,
+        placeholder: request.placeholder,
+        extensionRequestId: request.id,
+        action: (value) => {
+            callbacks.resolve(request.id, value);
+            callbacks.close();
+        },
+    };
+}
 
 export function Dialog(props: { state: DialogState; width: number; height: number; onClose: () => void }) {
     return (

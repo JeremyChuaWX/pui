@@ -4,6 +4,39 @@ import type {
     WorkflowRunSummaryV1,
 } from "../../extensions/workflow/protocol.js";
 
+export const WORKFLOW_NAVIGATION_TIMEOUT_MS = 30_000;
+
+export interface PendingWorkflowNavigation {
+    /** Runs that already existed when navigation was requested. */
+    ids: ReadonlySet<string>;
+    requestedAt: number;
+    sessionId: string;
+}
+
+export type WorkflowNavigationResolution =
+    | { kind: "expire" }
+    | { kind: "navigate"; runId: string }
+    | { kind: "wait"; recheckInMs: number };
+
+/**
+ * Route a pending workflow-page navigation: expire when the session changed or the
+ * request timed out, navigate to the most recently updated new run, otherwise wait
+ * for the remainder of the timeout window.
+ */
+export function resolveWorkflowNavigation(
+    pending: PendingWorkflowNavigation,
+    snapshot: { sessionId: string; workflows: readonly WorkflowRunSummaryV1[] },
+    now: number,
+): WorkflowNavigationResolution {
+    if (pending.sessionId !== snapshot.sessionId || now - pending.requestedAt >= WORKFLOW_NAVIGATION_TIMEOUT_MS)
+        return { kind: "expire" };
+    const run = snapshot.workflows
+        .filter((candidate) => !pending.ids.has(candidate.id) && candidate.updatedAt >= pending.requestedAt)
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (run) return { kind: "navigate", runId: run.id };
+    return { kind: "wait", recheckInMs: WORKFLOW_NAVIGATION_TIMEOUT_MS - (now - pending.requestedAt) };
+}
+
 const WORKFLOW_STATUS_PRESENTATION: Record<WorkflowRunStatus | WorkflowAgentStatus, { icon: string; label: string }> = {
     queued: { icon: "·", label: "Queued" },
     running: { icon: "◌", label: "Running" },
