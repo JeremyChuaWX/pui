@@ -2,7 +2,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, Index, Match, Show, Switch } from "solid-js";
 import { theme } from "../theme.js";
-import { cycleIndex, isDismissKey, isEnterKey } from "./keys.js";
+import { cycleIndex, globalKeyHelp, isDismissKey, isEnterKey, listNavigationDirection } from "./keys.js";
 
 export interface PickerItem {
     label: string;
@@ -105,16 +105,11 @@ function Picker(props: {
             props.onClose();
             return;
         }
-        if (key.name === "up" || (key.ctrl && key.name === "p")) {
+        const direction = listNavigationDirection(key);
+        if (direction !== undefined) {
             key.preventDefault();
             key.stopPropagation();
-            setSelected((value) => cycleIndex(value, -1, filtered().length));
-            return;
-        }
-        if (key.name === "down" || (key.ctrl && key.name === "n")) {
-            key.preventDefault();
-            key.stopPropagation();
-            setSelected((value) => cycleIndex(value, 1, filtered().length));
+            setSelected((value) => cycleIndex(value, direction, filtered().length));
             return;
         }
         if (isEnterKey(key.name)) {
@@ -249,24 +244,9 @@ function Help(props: { width: number; onClose: () => void }) {
             <text fg={theme.text}>
                 <strong>Keyboard shortcuts</strong>
             </text>
-            <text fg={theme.muted}>Enter send / steer while working</text>
-            <text fg={theme.muted}>Shift+Enter insert a new line</text>
-            <text fg={theme.muted}>Alt+Enter queue a follow-up</text>
-            <text fg={theme.muted}>Up / Down or Ctrl+P / Ctrl+N prompt history</text>
-            <text fg={theme.muted}>Ctrl+G edit in nvim with last agent response</text>
-            <text fg={theme.muted}>Escape abort the current operation</text>
-            <text fg={theme.muted}>Esc/Ctrl+C return from workflow status</text>
-            <text fg={theme.muted}>Shift+Tab cycle thinking level</text>
-            <text fg={theme.muted}>Alt+N / Alt+P cycle models</text>
-            <text fg={theme.muted}>Ctrl+L model picker</text>
-            <text fg={theme.muted}>Ctrl+R session picker</text>
-            <text fg={theme.muted}>Ctrl+K command palette</text>
-            <text fg={theme.muted}>Ctrl+O tool output</text>
-            <text fg={theme.muted}>Ctrl+T reasoning blocks</text>
-            <text fg={theme.muted}>Ctrl+B sidebar</text>
-            <text fg={theme.muted}>PageUp/Down scroll transcript</text>
-            <text fg={theme.muted}>Ctrl+Shift+C copy highlighted text</text>
-            <text fg={theme.muted}>Ctrl+C/D abort, clear, or quit</text>
+            <Index each={globalKeyHelp}>
+                {(entry) => <text fg={theme.muted}>{`${entry().label} ${entry().description}`}</text>}
+            </Index>
             <text fg={theme.primary}>Slash commands and !shell commands are supported.</text>
             <text fg={theme.muted}>Press Esc or Enter to close.</text>
         </box>

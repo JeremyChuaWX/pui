@@ -5,7 +5,10 @@ import {
     dismissKeyHint,
     extensionConfirmKeyHint,
     extensionConfirmKeyIntent,
+    globalKeyHelp,
+    globalKeyIntent,
     isDismissKey,
+    listNavigationDirection,
     promptHistoryDirection,
 } from "./keys.js";
 
@@ -23,6 +26,91 @@ describe("list cycling", () => {
     test("stays at zero for an empty list", () => {
         expect(cycleIndex(0, 1, 0)).toBe(0);
         expect(cycleIndex(0, -1, 0)).toBe(0);
+    });
+});
+
+describe("listNavigationDirection", () => {
+    test.each([
+        [{ name: "up" }, -1],
+        [{ name: "p", ctrl: true }, -1],
+        [{ name: "down" }, 1],
+        [{ name: "n", ctrl: true }, 1],
+        [{ name: "p", ctrl: true, shift: true }, -1],
+    ] as const)("maps %o to %i", (key, direction) => {
+        expect(listNavigationDirection(key)).toBe(direction);
+    });
+
+    test.each([{ name: "p" }, { name: "n" }, { name: "left" }, { name: "escape" }])("ignores %o", (key) => {
+        expect(listNavigationDirection(key)).toBeUndefined();
+    });
+});
+
+describe("global key intents", () => {
+    test.each([
+        [{ name: "return", option: true }, "queue-follow-up"],
+        [{ name: "enter", meta: true }, "queue-follow-up"],
+        [{ name: "linefeed", option: true }, "queue-follow-up"],
+        [{ name: "g", ctrl: true }, "external-editor"],
+        [{ name: "escape" }, "abort"],
+        [{ name: "tab", shift: true }, "cycle-thinking"],
+        [{ name: "n", option: true }, "cycle-model-forward"],
+        [{ name: "p", meta: true }, "cycle-model-backward"],
+        [{ name: "l", ctrl: true }, "open-models"],
+        [{ name: "r", ctrl: true }, "open-sessions"],
+        [{ name: "k", ctrl: true }, "open-commands"],
+        [{ name: "o", ctrl: true }, "toggle-tool-details"],
+        [{ name: "t", ctrl: true }, "toggle-thinking-details"],
+        [{ name: "b", ctrl: true }, "toggle-sidebar"],
+        [{ name: "pageup" }, "page-up"],
+        [{ name: "pagedown" }, "page-down"],
+        [{ name: "c", ctrl: true }, "interrupt"],
+        [{ name: "d", ctrl: true }, "quit"],
+    ] as const)("maps %o to %s", (key, intent) => {
+        expect(globalKeyIntent(key)).toBe(intent);
+    });
+
+    test("ignores unspecified modifiers, matching the historical if-chain", () => {
+        expect(globalKeyIntent({ name: "l", ctrl: true, shift: true })).toBe("open-models");
+        expect(globalKeyIntent({ name: "p", ctrl: true, option: true })).toBe("cycle-model-backward");
+        expect(globalKeyIntent({ name: "pageup", ctrl: true })).toBe("page-up");
+        expect(globalKeyIntent({ name: "escape", ctrl: true })).toBe("abort");
+        expect(globalKeyIntent({ name: "c", ctrl: true, shift: true })).toBe("interrupt");
+    });
+
+    test.each([
+        { name: "l" },
+        { name: "tab" },
+        { name: "c" },
+        { name: "n", ctrl: true },
+        { name: "p", ctrl: true },
+        { name: "return" },
+        { name: "return", shift: true },
+        { name: "a" },
+    ])("does not consume %o", (key) => {
+        expect(globalKeyIntent(key)).toBeUndefined();
+    });
+
+    test("derives the Help shortcut list from the same table", () => {
+        expect(globalKeyHelp.map(({ label, description }) => `${label} ${description}`)).toEqual([
+            "Enter send / steer while working",
+            "Shift+Enter insert a new line",
+            "Alt+Enter queue a follow-up",
+            "Up / Down or Ctrl+P / Ctrl+N prompt history",
+            "Ctrl+G edit in nvim with last agent response",
+            "Escape abort the current operation",
+            "Esc/Ctrl+C return from workflow status",
+            "Shift+Tab cycle thinking level",
+            "Alt+N / Alt+P cycle models",
+            "Ctrl+L model picker",
+            "Ctrl+R session picker",
+            "Ctrl+K command palette",
+            "Ctrl+O tool output",
+            "Ctrl+T reasoning blocks",
+            "Ctrl+B sidebar",
+            "PageUp/Down scroll transcript",
+            "Ctrl+Shift+C copy highlighted text",
+            "Ctrl+C/D abort, clear, or quit",
+        ]);
     });
 });
 

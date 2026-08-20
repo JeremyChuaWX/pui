@@ -9,13 +9,22 @@ export function isDismissKey(key: Pick<KeyEvent, "name" | "ctrl">): boolean {
     return key.name.toLowerCase() === "escape" || (key.ctrl && key.name.toLowerCase() === "c");
 }
 
+const enterKeyNames = ["return", "enter", "linefeed"] as const;
+
 export function isEnterKey(name: string): boolean {
-    return ["return", "enter", "linefeed"].includes(name);
+    return (enterKeyNames as readonly string[]).includes(name);
 }
 
 export function cycleIndex(index: number, delta: -1 | 1, itemCount: number): number {
     if (itemCount <= 0) return 0;
     return (((index + delta) % itemCount) + itemCount) % itemCount;
+}
+
+/** Up/Ctrl+P and Down/Ctrl+N list cycling shared by pickers and the autocomplete popover. */
+export function listNavigationDirection(key: { name: string; ctrl?: boolean }): -1 | 1 | undefined {
+    if (key.name === "up" || (key.ctrl && key.name === "p")) return -1;
+    if (key.name === "down" || (key.ctrl && key.name === "n")) return 1;
+    return undefined;
 }
 
 export type PromptHistoryDirection = "previous" | "next";
@@ -116,4 +125,140 @@ export function extensionConfirmKeyIntent(key: ExtensionConfirmKey): ExtensionCo
         }
     }
     return "suppress";
+}
+
+export type GlobalKeyIntent =
+    | "queue-follow-up"
+    | "external-editor"
+    | "abort"
+    | "cycle-thinking"
+    | "cycle-model-forward"
+    | "cycle-model-backward"
+    | "open-models"
+    | "open-sessions"
+    | "open-commands"
+    | "toggle-tool-details"
+    | "toggle-thinking-details"
+    | "toggle-sidebar"
+    | "page-up"
+    | "page-down"
+    | "interrupt"
+    | "quit";
+
+interface GlobalShortcut {
+    names: readonly string[];
+    intent: GlobalKeyIntent;
+    /** When set, the modifier must be held; unset modifiers are ignored, matching the app's historical checks. */
+    ctrl?: boolean;
+    shift?: boolean;
+    metaOrOption?: boolean;
+}
+
+/**
+ * Every global shortcut, in Help display order. Groups without shortcuts are handled contextually
+ * (prompt submission, history, workflow-page dismissal, selection copy) but still document their
+ * bindings here so Help and the handlers cannot drift.
+ */
+const globalShortcutGroups: readonly {
+    label: string;
+    description: string;
+    shortcuts: readonly GlobalShortcut[];
+}[] = [
+    { label: "Enter", description: "send / steer while working", shortcuts: [] },
+    { label: "Shift+Enter", description: "insert a new line", shortcuts: [] },
+    {
+        label: "Alt+Enter",
+        description: "queue a follow-up",
+        shortcuts: [{ names: enterKeyNames, metaOrOption: true, intent: "queue-follow-up" }],
+    },
+    { label: "Up / Down or Ctrl+P / Ctrl+N", description: "prompt history", shortcuts: [] },
+    {
+        label: "Ctrl+G",
+        description: "edit in nvim with last agent response",
+        shortcuts: [{ names: ["g"], ctrl: true, intent: "external-editor" }],
+    },
+    {
+        label: "Escape",
+        description: "abort the current operation",
+        shortcuts: [{ names: ["escape"], intent: "abort" }],
+    },
+    { label: dismissKeyHint, description: "return from workflow status", shortcuts: [] },
+    {
+        label: "Shift+Tab",
+        description: "cycle thinking level",
+        shortcuts: [{ names: ["tab"], shift: true, intent: "cycle-thinking" }],
+    },
+    {
+        label: "Alt+N / Alt+P",
+        description: "cycle models",
+        shortcuts: [
+            { names: ["n"], metaOrOption: true, intent: "cycle-model-forward" },
+            { names: ["p"], metaOrOption: true, intent: "cycle-model-backward" },
+        ],
+    },
+    { label: "Ctrl+L", description: "model picker", shortcuts: [{ names: ["l"], ctrl: true, intent: "open-models" }] },
+    {
+        label: "Ctrl+R",
+        description: "session picker",
+        shortcuts: [{ names: ["r"], ctrl: true, intent: "open-sessions" }],
+    },
+    {
+        label: "Ctrl+K",
+        description: "command palette",
+        shortcuts: [{ names: ["k"], ctrl: true, intent: "open-commands" }],
+    },
+    {
+        label: "Ctrl+O",
+        description: "tool output",
+        shortcuts: [{ names: ["o"], ctrl: true, intent: "toggle-tool-details" }],
+    },
+    {
+        label: "Ctrl+T",
+        description: "reasoning blocks",
+        shortcuts: [{ names: ["t"], ctrl: true, intent: "toggle-thinking-details" }],
+    },
+    { label: "Ctrl+B", description: "sidebar", shortcuts: [{ names: ["b"], ctrl: true, intent: "toggle-sidebar" }] },
+    {
+        label: "PageUp/Down",
+        description: "scroll transcript",
+        shortcuts: [
+            { names: ["pageup"], intent: "page-up" },
+            { names: ["pagedown"], intent: "page-down" },
+        ],
+    },
+    { label: "Ctrl+Shift+C", description: "copy highlighted text", shortcuts: [] },
+    {
+        label: "Ctrl+C/D",
+        description: "abort, clear, or quit",
+        shortcuts: [
+            { names: ["c"], ctrl: true, intent: "interrupt" },
+            { names: ["d"], ctrl: true, intent: "quit" },
+        ],
+    },
+];
+
+/** Help dialog lines, derived from the same table that dispatches the shortcuts. */
+export const globalKeyHelp: readonly { label: string; description: string }[] = globalShortcutGroups.map(
+    ({ label, description }) => ({ label, description }),
+);
+
+export function globalKeyIntent(key: {
+    name: string;
+    ctrl?: boolean;
+    shift?: boolean;
+    meta?: boolean;
+    option?: boolean;
+}): GlobalKeyIntent | undefined {
+    for (const { shortcuts } of globalShortcutGroups) {
+        for (const shortcut of shortcuts) {
+            if (
+                shortcut.names.includes(key.name) &&
+                (!shortcut.ctrl || key.ctrl) &&
+                (!shortcut.shift || key.shift) &&
+                (!shortcut.metaOrOption || key.meta || key.option)
+            )
+                return shortcut.intent;
+        }
+    }
+    return undefined;
 }

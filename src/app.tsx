@@ -14,8 +14,10 @@ import {
     canNavigatePromptHistory,
     cycleIndex,
     extensionConfirmKeyIntent,
+    globalKeyIntent,
     isDismissKey,
     isEnterKey,
+    listNavigationDirection,
     promptHistoryDirection,
 } from "./ui/keys.js";
 import { createMenus } from "./ui/menus.js";
@@ -451,16 +453,11 @@ export function App(props: { controller: PuiController }) {
                 closePromptCompletions();
                 return;
             }
-            if (key.name === "up" || (key.ctrl && key.name === "p")) {
+            const completionDirection = listNavigationDirection(key);
+            if (completionDirection !== undefined) {
                 key.preventDefault();
                 key.stopPropagation();
-                setCompletionIndex((index) => cycleIndex(index, -1, completions.items.length));
-                return;
-            }
-            if (key.name === "down" || (key.ctrl && key.name === "n")) {
-                key.preventDefault();
-                key.stopPropagation();
-                setCompletionIndex((index) => cycleIndex(index, 1, completions.items.length));
+                setCompletionIndex((index) => cycleIndex(index, completionDirection, completions.items.length));
                 return;
             }
             const confirm =
@@ -482,83 +479,81 @@ export function App(props: { controller: PuiController }) {
             key.stopPropagation();
             return;
         }
-        if ((key.meta || key.option) && isEnterKey(key.name)) {
-            key.preventDefault();
-            key.stopPropagation();
-            submit("followUp");
-            return;
-        }
-        if (key.ctrl && key.name === "c") {
-            key.preventDefault();
-            if (snapshot.isStreaming || snapshot.isCompacting) void props.controller.abort();
-            else if ((prompt?.plainText ?? promptText()).length > 0) clearPrompt();
-            else props.controller.requestExit();
-            return;
-        }
-        if (key.ctrl && key.name === "d" && !(prompt?.plainText ?? promptText())) {
-            key.preventDefault();
-            props.controller.requestExit();
-            return;
-        }
-        if (key.ctrl && key.name === "g") {
-            key.preventDefault();
-            key.stopPropagation();
-            void openExternalEditor();
-            return;
-        }
-        if (key.name === "escape" && (snapshot.isStreaming || snapshot.isCompacting)) {
-            key.preventDefault();
-            void props.controller.abort();
-            return;
-        }
-        if (key.shift && key.name === "tab") {
-            key.preventDefault();
-            props.controller.cycleThinking();
-            return;
-        }
-        if (key.ctrl && key.name === "l") {
-            key.preventDefault();
-            void menus.openModels();
-            return;
-        }
-        if (key.ctrl && key.name === "r") {
-            key.preventDefault();
-            void menus.openSessions();
-            return;
-        }
-        if (key.ctrl && key.name === "k") {
-            key.preventDefault();
-            menus.openCommands();
-            return;
-        }
-        if (key.ctrl && key.name === "b") {
-            key.preventDefault();
-            setSidebarOverride(!sidebarVisible());
-            return;
-        }
-        if (key.ctrl && key.name === "o") {
-            key.preventDefault();
-            setToolsExpanded((value) => !value);
-            return;
-        }
-        if (key.ctrl && key.name === "t") {
-            key.preventDefault();
-            setThinkingExpanded((value) => !value);
-            return;
-        }
-        if ((key.meta || key.option) && (key.name === "n" || key.name === "p")) {
-            key.preventDefault();
-            void props.controller.cycleModel(key.name === "n" ? "forward" : "backward");
-            return;
-        }
-        if (key.name === "pageup" && transcript) {
-            key.preventDefault();
-            transcript.scrollBy(-Math.max(4, transcript.height - 4));
-            return;
-        }
-        if (key.name === "pagedown" && transcript) {
-            key.preventDefault();
-            transcript.scrollBy(Math.max(4, transcript.height - 4));
+        switch (globalKeyIntent(key)) {
+            case "queue-follow-up":
+                key.preventDefault();
+                key.stopPropagation();
+                submit("followUp");
+                return;
+            case "interrupt":
+                key.preventDefault();
+                if (snapshot.isStreaming || snapshot.isCompacting) void props.controller.abort();
+                else if ((prompt?.plainText ?? promptText()).length > 0) clearPrompt();
+                else props.controller.requestExit();
+                return;
+            case "quit":
+                if (prompt?.plainText ?? promptText()) return;
+                key.preventDefault();
+                props.controller.requestExit();
+                return;
+            case "external-editor":
+                key.preventDefault();
+                key.stopPropagation();
+                void openExternalEditor();
+                return;
+            case "abort":
+                if (!snapshot.isStreaming && !snapshot.isCompacting) return;
+                key.preventDefault();
+                void props.controller.abort();
+                return;
+            case "cycle-thinking":
+                key.preventDefault();
+                props.controller.cycleThinking();
+                return;
+            case "open-models":
+                key.preventDefault();
+                void menus.openModels();
+                return;
+            case "open-sessions":
+                key.preventDefault();
+                void menus.openSessions();
+                return;
+            case "open-commands":
+                key.preventDefault();
+                menus.openCommands();
+                return;
+            case "toggle-sidebar":
+                key.preventDefault();
+                setSidebarOverride(!sidebarVisible());
+                return;
+            case "toggle-tool-details":
+                key.preventDefault();
+                setToolsExpanded((value) => !value);
+                return;
+            case "toggle-thinking-details":
+                key.preventDefault();
+                setThinkingExpanded((value) => !value);
+                return;
+            case "cycle-model-forward":
+                key.preventDefault();
+                void props.controller.cycleModel("forward");
+                return;
+            case "cycle-model-backward":
+                key.preventDefault();
+                void props.controller.cycleModel("backward");
+                return;
+            case "page-up":
+                if (!transcript) return;
+                key.preventDefault();
+                transcript.scrollBy(-Math.max(4, transcript.height - 4));
+                return;
+            case "page-down":
+                if (!transcript) return;
+                key.preventDefault();
+                transcript.scrollBy(Math.max(4, transcript.height - 4));
+                return;
+            default:
+                return;
         }
     });
 
