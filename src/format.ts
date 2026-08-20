@@ -7,7 +7,7 @@ import {
     type WorkflowRunSummaryV1,
 } from "../extensions/workflow/protocol.js";
 import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
-import type { ToolExecution, ToolExecutionState } from "./tool-executions.js";
+import { recordArgs, type ToolExecution, type ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 
 const MAX_TOOL_TEXT = 8_000;
@@ -79,12 +79,6 @@ function safeJson(value: unknown): string {
     } catch {
         return String(value);
     }
-}
-
-function recordArgs(value: unknown): Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {};
 }
 
 function toolResultDetails(value: unknown): unknown {

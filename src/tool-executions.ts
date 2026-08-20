@@ -20,7 +20,7 @@ export interface ToolExecution {
 
 export type ToolExecutionState = ReadonlyMap<string, ToolExecution>;
 
-function recordArgs(value: unknown): Record<string, unknown> {
+export function recordArgs(value: unknown): Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value)
         ? (value as Record<string, unknown>)
         : {};

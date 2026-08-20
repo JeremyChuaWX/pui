@@ -6,7 +6,7 @@
         "useIgnoreFile": true
     },
     "files": {
-        "includes": ["**", "!!**/dist", "!!**/.pui"]
+        "includes": ["**", "!!**/dist", "!!**/.pui", "!!**/.scratch"]
     },
     "formatter": {
         "enabled": true,
