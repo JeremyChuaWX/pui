@@ -4,7 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { waitFor } from "../test-support/wait.js";
 import type { AgentExecutor, WorkflowBackend, WorkflowBackendOptions } from "./backend.js";
-import { createWorkflowBackend as createBackend, preflightWorkflow, resolveWorkflowNode } from "./backend.js";
+import { createWorkflowBackend as createBackend } from "./backend.js";
+import { resolveWorkflowNode } from "./node-resolution.js";
+import { preflightWorkflow } from "./preflight.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 

@@ -3,10 +3,11 @@ import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { BoundedProcessError, killProcessTree, runBoundedProcess } from "../shared/bounded-process.js";
+import { killProcessTree } from "../shared/bounded-process.js";
 import { AbortableSemaphore } from "../shared/semaphore.js";
 import { errorMessage } from "../shared/validate.js";
-import { maskLiterals } from "./js-scan.js";
+import { resolveWorkflowNode, runWorkflowShell } from "./node-resolution.js";
+import { preflightWorkflow } from "./preflight.js";
 import type {
     WorkflowActivityV1,
     WorkflowAgentSummaryV1,
@@ -18,7 +19,6 @@ import type {
 import {
     boundedJson,
     DEFAULT_WORKFLOW_LIMITS,
-    MAX_SHELL_OUTPUT_BYTES,
     normalizeWorkflowLimits,
     runDurableOperation,
     schemaValid,
@@ -35,8 +35,7 @@ import { type OwnedWorktree, WorkflowWorktreeManager } from "./worktree.js";
 
 export { DEFAULT_WORKFLOW_LIMITS };
 
-const MAX_SCRIPT_BYTES = 64 * 1024,
-    STDERR_BYTES = 8 * 1024;
+const STDERR_BYTES = 8 * 1024;
 const READY_TIMEOUT_MS = 5_000,
     HEARTBEAT_TIMEOUT_MS = 5_000,
     LARGE_RUN_WARNING_AGENTS = 25,
@@ -196,145 +195,6 @@ const emptyUsage = (): WorkflowUsageV1 => ({
 const addUsage = (target: WorkflowUsageV1, value: Partial<WorkflowUsageV1> = {}) => {
     for (const key of Object.keys(target) as (keyof WorkflowUsageV1)[]) target[key] += Number(value[key]) || 0;
 };
-
-function eraseTypeOnlyNamespaces(source: string): string {
-    const code = maskLiterals(source, { preserveTemplateInterpolations: true }),
-        output = [...source];
-    for (const match of code.matchAll(/\bnamespace\s+[A-Za-z_$][\w$]*\s*\{/g)) {
-        const start = match.index,
-            open = start + match[0].lastIndexOf("{");
-        let depth = 1,
-            end = open + 1;
-        while (end < code.length && depth) {
-            if (code[end] === "{") depth++;
-            else if (code[end] === "}") depth--;
-            end++;
-        }
-        if (depth || new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end)).trim())
-            throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
-        for (let index = start; index < end; index++)
-            if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
-    }
-    return output.join("");
-}
-
-export function preflightWorkflow(
-    script: string,
-    entrypoint: WorkflowEntrypoint = "script",
-): { phases: string[]; agents: number; shells: number } {
-    if (!script.trim()) throw new Error("Workflow script must not be empty.");
-    if (Buffer.byteLength(script) > MAX_SCRIPT_BYTES) throw new Error("Workflow script exceeds the 64 KiB limit.");
-    if (entrypoint !== "script" && entrypoint !== "function") throw new Error("Invalid workflow entrypoint.");
-    const executable = executableWorkflowScript(script, entrypoint),
-        erasableExecutable = eraseTypeOnlyNamespaces(executable);
-    // Node executes workflows with strip-only type erasure, so reject syntax Bun would otherwise transform.
-    const sourceCode = maskLiterals(executable, { preserveTemplateInterpolations: true });
-    if (
-        /\benum\s+[A-Za-z_$]/.test(sourceCode) ||
-        /\bmodule\s+[A-Za-z_$]/.test(sourceCode) ||
-        /@[A-Za-z_$]/.test(sourceCode) ||
-        /\bconstructor\s*\([^)]*\b(?:public|private|protected|readonly)\s+(?:readonly\s+)?[#A-Za-z_$]/.test(sourceCode)
-    )
-        throw new Error("Workflow script uses TypeScript syntax unsupported in strip-only mode.");
-    // Defense in depth only: process isolation, Node permissions, a stripped realm, and host validation
-    // remain authoritative. Reject obvious and obfuscated ambient-authority probes before approval.
-    const forbidden =
-        /(?:\b(?:process|require|eval|Function|WebSocket|fetch|XMLHttpRequest|Deno|Bun|child_process)\b|\bimport\b|\bexport\s|__proto__)/;
-    // Match the worker's type erasure before scanning; Bun hosts cannot import Node's stripTypeScriptTypes.
-    const code = maskLiterals(
-        new Bun.Transpiler({ loader: "ts" }).transformSync(`(async()=>{${erasableExecutable}\n})()`),
-        {
-            preserveTemplateInterpolations: true,
-        },
-    );
-    if (forbidden.test(code)) throw new Error("Workflow script uses a forbidden runtime capability.");
-    return {
-        phases: [...executable.matchAll(/\bphase\s*\(\s*(["'`])([^"'`]{1,512})\1/g)]
-            .map((m) => m[2] ?? "")
-            .slice(0, 100),
-        agents: [...executable.matchAll(/\bagent\s*\(/g)].length,
-        shells: [...executable.matchAll(/\bshell\s*\(/g)].length,
-    };
-}
-async function commandVersion(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-    const windowsScript = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command),
-        executable = windowsScript ? (environment.ComSpec ?? "cmd.exe") : command,
-        args = windowsScript ? ["/d", "/s", "/c", `"${command}" --version`] : ["--version"];
-    let result: Awaited<ReturnType<typeof runBoundedProcess>>;
-    try {
-        result = await runBoundedProcess({
-            command: executable,
-            args,
-            env: environment,
-            timeoutMs: 2_000,
-            directChildOnly: true,
-            output: { maxBytes: 1024, overflow: "keep-head" },
-        });
-    } catch (error) {
-        if (error instanceof BoundedProcessError && error.reason === "timeout")
-            throw new Error("version probe timed out");
-        throw error;
-    }
-    if (result.exitCode !== 0) throw new Error(`exit code ${result.exitCode}`);
-    return result.stdout.trim();
-}
-export async function resolveWorkflowNode(
-    options: { environment?: NodeJS.ProcessEnv; configuredPath?: string } = {},
-): Promise<string> {
-    const env = options.environment ?? process.env,
-        failures: string[] = [];
-    for (const [source, candidate] of [
-        ["PUI_WORKFLOW_NODE", env.PUI_WORKFLOW_NODE],
-        ["configured path", options.configuredPath],
-        ["PATH", "node"],
-    ] as const) {
-        if (!candidate) continue;
-        try {
-            const version = await commandVersion(candidate, env),
-                match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version);
-            if (!match || Number(match[1]) < 22 || (Number(match[1]) === 22 && Number(match[2]) < 19))
-                throw new Error(`found ${version}; need >=22.19.0`);
-            if (candidate.includes(path.sep)) return await realpath(candidate);
-            const extensions = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
-            for (const directory of (env.PATH ?? "").split(path.delimiter))
-                for (const extension of extensions) {
-                    const located = path.join(directory || ".", `${candidate}${extension}`);
-                    try {
-                        await fs.promises.access(located, fs.constants.X_OK);
-                        return await realpath(located);
-                    } catch {}
-                }
-            return candidate;
-        } catch (e) {
-            failures.push(`${source} (${candidate}): ${errorMessage(e)}`);
-        }
-    }
-    throw new Error(
-        `Workflows require an external Node >=22.19. Set PUI_WORKFLOW_NODE. Attempts: ${failures.join("; ") || "none"}`,
-    );
-}
-
-async function runWorkflowShell(request: ShellRequest, environment: NodeJS.ProcessEnv): Promise<ShellResult> {
-    try {
-        return await runBoundedProcess({
-            command: request.command,
-            cwd: request.cwd,
-            env: { ...environment, ...request.env },
-            shell: true,
-            timeoutMs: request.timeoutMs,
-            signal: request.signal,
-            termination: { graceMs: 500 },
-            output: { maxBytes: MAX_SHELL_OUTPUT_BYTES, overflow: "fail", scope: "combined" },
-        });
-    } catch (error) {
-        if (!(error instanceof BoundedProcessError)) throw error;
-        if (error.reason === "cancelled") throw new Error("Shell command was cancelled.");
-        if (error.reason === "timeout") throw new Error("Shell command timed out.");
-        if (error.reason === "output")
-            throw new Error(`Shell command output exceeds the ${MAX_SHELL_OUTPUT_BYTES / 1024} KiB limit.`);
-        throw new Error(error.message);
-    }
-}
 
 export function createWorkflowBackend(options: WorkflowBackendOptions): WorkflowBackend {
     const home = fs.realpathSync(os.homedir()),

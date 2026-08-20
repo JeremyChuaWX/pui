@@ -11,13 +11,9 @@ import { createBackgroundChannel } from "../shared/background-channel.js";
 import { errorMessage } from "../shared/validate.js";
 import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
-import {
-    createWorkflowBackend,
-    preflightWorkflow,
-    type WorkflowBackend,
-    type WorkflowBackendOptions,
-} from "./backend.js";
+import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
 import { WorkflowRunManager } from "./manager.js";
+import { preflightWorkflow } from "./preflight.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
