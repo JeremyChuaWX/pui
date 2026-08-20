@@ -36,34 +36,18 @@ export function MessageItem(props: {
     thinkingExpanded: boolean;
     now: number;
 }) {
-    const userItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "user" ? item : undefined;
-    });
-    const assistantItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "assistant" ? item : undefined;
-    });
-    const thinkingItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "thinking" ? item : undefined;
-    });
-    const toolItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "tool" ? item : undefined;
-    });
-    const bashItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "bash" ? item : undefined;
-    });
-    const summaryItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "summary" ? item : undefined;
-    });
-    const customItem = createMemo(() => {
-        const item = props.item();
-        return item.kind === "custom" ? item : undefined;
-    });
+    const itemOfKind = <K extends DisplayItem["kind"]>(kind: K) =>
+        createMemo(() => {
+            const item = props.item();
+            return item.kind === kind ? (item as Extract<DisplayItem, { kind: K }>) : undefined;
+        });
+    const userItem = itemOfKind("user");
+    const assistantItem = itemOfKind("assistant");
+    const thinkingItem = itemOfKind("thinking");
+    const toolItem = itemOfKind("tool");
+    const bashItem = itemOfKind("bash");
+    const summaryItem = itemOfKind("summary");
+    const customItem = itemOfKind("custom");
     const isSubagentResult = createMemo(() => customItem()?.label === "subagent-result");
     const toolColor = () => (toolItem()?.isError ? theme.error : toolItem()?.running ? theme.warning : theme.success);
     const bashColor = () =>
