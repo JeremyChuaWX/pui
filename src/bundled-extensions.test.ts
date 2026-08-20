@@ -354,15 +354,15 @@ export default function (pi: any) {
                 expect(commandNames).toContain("project-fixture");
             }
 
-            const extensionDir = path.resolve(import.meta.dir, "../extensions/subagent");
+            const extensionsDir = path.resolve(import.meta.dir, "../extensions");
             for (const relativePath of [
-                "protocol.ts",
-                "runner.ts",
-                path.join("agents", "worker.md"),
-                path.join("agents", "worker-guidance.LICENSE"),
-                path.join("agents", "explore.md"),
+                path.join("subagent", "protocol.ts"),
+                path.join("subagent", "runner.ts"),
+                path.join("shared", "agents", "worker.md"),
+                path.join("shared", "agents", "worker-guidance.LICENSE"),
+                path.join("shared", "agents", "explore.md"),
             ]) {
-                expect((await fs.promises.stat(path.join(extensionDir, relativePath))).isFile()).toBe(true);
+                expect((await fs.promises.stat(path.join(extensionsDir, relativePath))).isFile()).toBe(true);
             }
         } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });
