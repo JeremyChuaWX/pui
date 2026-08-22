@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import registerCrawl from "./crawl.ts";
-import { WebOutputRetention, type WebOutputRetentionDependencies } from "./output-retention.ts";
-import registerSearch from "./search.ts";
-import type { WebToolDependencies } from "./tool-shell.ts";
+import registerCrawl from "../crawl.ts";
+import { WebOutputRetention, type WebOutputRetentionDependencies } from "../output-retention.ts";
+import registerSearch from "../search.ts";
+import type { WebToolDependencies } from "../tool-shell.ts";
 
 /** Provider dependencies and optional complete-output retention settings for the web extension. */
 export type WebExtensionDependencies = WebToolDependencies & {

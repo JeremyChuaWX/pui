@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createExtensionApiHarness, type ExtensionApiHarness } from "../test-support/extension-api.ts";
-import { registerWebExtension } from "./index.ts";
+import { createExtensionApiHarness, type ExtensionApiHarness } from "../../../extensions/test-support/extension-api.ts";
+import { registerWebExtension } from "./pi.ts";
 
 const shutdownHosts = new Set<ExtensionApiHarness>();
 

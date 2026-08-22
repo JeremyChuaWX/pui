@@ -5,11 +5,6 @@ import {
     type SubagentExtensionDependencies,
 } from "../extensions/subagent/index.js";
 import {
-    createDefaultWebDependencies,
-    registerWebExtension,
-    type WebExtensionDependencies,
-} from "../extensions/web/index.js";
-import {
     createDefaultWorkflowDependencies,
     registerWorkflowExtension,
     type WorkflowExtensionDependencies,
@@ -19,6 +14,11 @@ import {
     type FileSearchExtensionDependencies,
     registerFileSearchExtension,
 } from "../modules/file-search/interfaces/pi.js";
+import {
+    createDefaultWebDependencies,
+    registerWebExtension,
+    type WebExtensionDependencies,
+} from "../modules/web/interfaces/pi.js";
 
 export interface BundledExtensionFactoryOptions {
     fileSearch?: FileSearchExtensionDependencies;

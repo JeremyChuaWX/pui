@@ -3,7 +3,7 @@
 This application-owned extension registers `web_search` and `web_crawl`. pui bundles it automatically; regular `pi` does not. For standalone use:
 
 ```sh
-pi -e /absolute/path/to/pui/extensions/web/index.ts
+pi -e /absolute/path/to/pui/modules/web/interfaces/pi.ts
 ```
 
 ## Configuration

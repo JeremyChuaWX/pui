@@ -19,7 +19,7 @@ src/app.tsx (App shell) + src/ui/* ─────────── view layer,
       │
       ▼  bundled resources
 extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
-modules/file-search  extensions/subagent  extensions/workflow  extensions/web  skills/unslop
+modules/file-search  modules/web  extensions/subagent  extensions/workflow  skills/unslop
 ```
 
 ## Layers
@@ -125,7 +125,8 @@ plain Pi with equivalent production wiring.
   the extension, the headless CLI, and the smoke harness. The default policy's role allowlist,
   model resolution, and per-role timeout defaults all derive from the presets in
   `shared/agent-runtime/presets.ts`, the single role definition.
-- `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
+- `modules/web/` — `web_search`/`web_crawl`, a feature Module whose only importable surface is
+  `interfaces/pi.ts` (the Extension). `output-retention.ts` is the deep module (bounded
   previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
   shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
 
