@@ -6,9 +6,9 @@
 
 **Blocked by:** 08 — Shrink the App layer.
 
-**Status:** ready-for-agent
+**Status:** done (commit 8915e83 on `modularize-feature-modules`)
 
-- [ ] Fixture tests cover each forbidden edge: Module→Module, UI→App, Pi Core→Host Entry, deep import bypassing an Interfaces Directory, plus a clean graph
-- [ ] The script runs in `bun run check` and passes against the real repo
-- [ ] Introducing a violating import makes `bun run check` fail with a message naming the offending edge
-- [ ] `bun run check` is green
+- [x] Fixture tests cover each forbidden edge: Module→Module, UI→App, Pi Core→Host Entry, deep import bypassing an Interfaces Directory, plus a clean graph
+- [x] The script runs in `bun run check` and passes against the real repo
+- [x] Introducing a violating import makes `bun run check` fail with a message naming the offending edge
+- [x] `bun run check` is green
