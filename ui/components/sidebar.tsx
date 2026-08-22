@@ -1,8 +1,7 @@
 import { createMemo, For, Show } from "solid-js";
 import { isTerminalSubagentStatus, type SubagentViewModel } from "../../modules/subagents/interfaces/ui.js";
-import { formatCount } from "../format.js";
-import { theme } from "../theme.js";
-import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../types.js";
+import { formatCount } from "../state/format.js";
+import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../state/types.js";
 import {
     compactSubagentUsage,
     subagentColor,
@@ -10,6 +9,7 @@ import {
     subagentStatusIcon,
     subagentStatusLabel,
 } from "./subagent-view.js";
+import { theme } from "./theme.js";
 import { formatWorkflowSummary, workflowStatusTone } from "./workflow-view.js";
 
 export interface SubagentDisplayItem extends ToolDisplayItem {

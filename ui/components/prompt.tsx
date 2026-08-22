@@ -1,8 +1,8 @@
 import type { BoxRenderable, KeyBinding, TextareaRenderable } from "@opentui/core";
 import { createMemo, createSignal, Index, onCleanup, onMount, Show } from "solid-js";
-import { formatCount } from "../format.js";
-import { theme } from "../theme.js";
-import type { PromptCompletions, PuiSnapshot } from "../types.js";
+import { formatCount } from "../state/format.js";
+import type { PromptCompletions, PuiSnapshot } from "../state/types.js";
+import { theme } from "./theme.js";
 
 const promptKeyBindings: KeyBinding[] = [
     { name: "return", action: "submit" },

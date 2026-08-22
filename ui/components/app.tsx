@@ -2,14 +2,13 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { isTerminalSubagentStatus } from "../modules/subagents/interfaces/ui.js";
-import { errorMessage } from "../shared/lib/validate.js";
+import { isTerminalSubagentStatus } from "../../modules/subagents/interfaces/ui.js";
+import { errorMessage } from "../../shared/lib/validate.js";
+import type { PuiController } from "../state/controller.js";
+import { shouldTriggerPromptAutocomplete } from "../state/prompt-autocomplete.js";
+import type { PromptAction, PromptCompletions, PuiSnapshot } from "../state/types.js";
 import { copyCurrentSelection, editPromptInNvim, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
-import type { PuiController } from "./controller.js";
-import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
-import { theme } from "./theme.js";
-import type { PromptAction, PromptCompletions, PuiSnapshot } from "./types.js";
-import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./ui/dialogs.js";
+import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./dialogs.js";
 import {
     canNavigatePromptHistory,
     cycleIndex,
@@ -19,13 +18,14 @@ import {
     isEnterKey,
     listNavigationDirection,
     promptHistoryDirection,
-} from "./ui/keys.js";
-import { createMenus } from "./ui/menus.js";
-import { Prompt, PromptAutocomplete } from "./ui/prompt.js";
-import { activeSubagentItems, Sidebar, ToastStack } from "./ui/sidebar.js";
-import { ExtensionConfirmation, MessageItem, QueuedMessage, Welcome } from "./ui/transcript.js";
-import { WorkflowPage } from "./ui/workflow-page.js";
-import { type PendingWorkflowNavigation, resolveWorkflowNavigation } from "./ui/workflow-view.js";
+} from "./keys.js";
+import { createMenus } from "./menus.js";
+import { Prompt, PromptAutocomplete } from "./prompt.js";
+import { activeSubagentItems, Sidebar, ToastStack } from "./sidebar.js";
+import { theme } from "./theme.js";
+import { ExtensionConfirmation, MessageItem, QueuedMessage, Welcome } from "./transcript.js";
+import { WorkflowPage } from "./workflow-page.js";
+import { type PendingWorkflowNavigation, resolveWorkflowNavigation } from "./workflow-view.js";
 
 export function App(props: { controller: PuiController; initialPrompt?: string }) {
     const renderer = useRenderer();

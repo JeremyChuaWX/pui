@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PuiSnapshot } from "../types.js";
+import type { PuiSnapshot } from "../state/types.js";
 import type { DialogState, PickerItem } from "./dialogs.js";
 import { createMenus, type MenuController, type MenuHost } from "./menus.js";
 

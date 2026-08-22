@@ -1,9 +1,9 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, Index, Match, Show, Switch } from "solid-js";
-import { theme } from "../theme.js";
-import type { ExtensionDialog } from "../types.js";
+import type { ExtensionDialog } from "../state/types.js";
 import { cycleIndex, globalKeyHelp, isDismissKey, isEnterKey, listNavigationDirection } from "./keys.js";
+import { theme } from "./theme.js";
 
 export interface PickerItem {
     label: string;

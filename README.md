@@ -173,19 +173,21 @@ See the [web extension guide](modules/web/README.md) for the compact configurati
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design: layers, module map, protocol
 ownership, dependency-injection conventions, and the testing strategy. The short version:
 
-- `src/index.tsx` owns CLI dispatch and OpenTUI renderer startup and shutdown.
-- `src/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
+- `src/index.tsx` owns CLI dispatch and invokes the UI's single start function, `ui/start.tsx`,
+  which owns OpenTUI renderer startup and shutdown.
+- `ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
   production defaults: the workflows Module's UI Entry (workflow run map and control round-trips) and
-  `src/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
+  `ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
   drives slash-command autocomplete and dispatch.
-- `src/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in `src/ui/`
-  (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns all keyboard
-  predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
-- `src/format.ts` projects Pi messages and live tool executions into display variants and preserves
-  item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
-  events; the subagents Module's UI Entry validates and bounds the subagent protocol for display.
+- `ui/components/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in
+  `ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns
+  all keyboard predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
+- `ui/state/format.ts` projects Pi messages and live tool executions into display variants and
+  preserves item identity when presentation is unchanged; `ui/state/tool-executions.ts` reduces tool
+  lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
+  display.
 - `modules/file-search/`, `modules/web/`, `modules/subagents/`, and `modules/workflows/` are
   self-contained feature modules behind their `interfaces/` directories, registered via Pi Core's
   Register File `pi-core/register.ts`. Each feature owns its wire protocol; consumers reach parsed

@@ -1,9 +1,9 @@
 import { isTerminalSubagentStatus } from "../../modules/subagents/interfaces/ui.js";
 import type { WorkflowRunSummaryV1 } from "../../modules/workflows/interfaces/ui.js";
 import { errorMessage } from "../../shared/lib/validate.js";
-import { commandPaletteEntries, type PaletteCommandId, type PuiController } from "../controller.js";
-import { formatCount } from "../format.js";
-import type { PuiSnapshot } from "../types.js";
+import { commandPaletteEntries, type PaletteCommandId, type PuiController } from "../state/controller.js";
+import { formatCount } from "../state/format.js";
+import type { PuiSnapshot } from "../state/types.js";
 import type { DialogState, PickerItem } from "./dialogs.js";
 import { compactSubagentUsage, subagentElapsed, subagentStatusIcon, subagentStatusLabel } from "./subagent-view.js";
 import { formatWorkflowSummary, workflowStatusPresentation } from "./workflow-view.js";

@@ -20,6 +20,8 @@
         "extensions/**/*.ts",
         "modules/**/*.ts",
         "pi-core/**/*.ts",
-        "shared/**/*.ts"
+        "shared/**/*.ts",
+        "ui/**/*.ts",
+        "ui/**/*.tsx"
     ]
 }

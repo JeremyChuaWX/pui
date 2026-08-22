@@ -2,19 +2,14 @@
 
 import * as path from "node:path";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
-import { createCliRenderer } from "@opentui/core";
-import { render } from "@opentui/solid";
 import { errorMessage } from "../shared/lib/validate.js";
-import { App } from "./app.js";
-import { type ControllerOptions, PuiController } from "./controller.js";
-import { syntaxStyle, theme } from "./theme.js";
+import { startUi, type UiStartOptions } from "../ui/start.js";
 
 // pi-ai's OAuth implementations use bundler-opaque imports in source mode.
 // Register their static equivalents so Bun embeds them in the executable.
 registerBunOAuthFlows();
 
-interface CliOptions extends ControllerOptions {
-    initialPrompt?: string;
+interface CliOptions extends UiStartOptions {
     help?: boolean;
 }
 
@@ -101,34 +96,7 @@ async function main(): Promise<void> {
         throw new Error("pui requires an interactive terminal");
     }
 
-    const controller = await PuiController.create(options);
-    const renderer = await createCliRenderer({
-        exitOnCtrlC: false,
-        targetFps: 60,
-        useKittyKeyboard: {},
-        useMouse: true,
-        autoFocus: true,
-        openConsoleOnError: false,
-        backgroundColor: theme.background,
-    });
-
-    const destroyed = new Promise<void>((resolve) => renderer.once("destroy", resolve));
-    const destroy = () => {
-        if (!renderer.isDestroyed) renderer.destroy();
-    };
-    process.once("SIGTERM", destroy);
-    process.once("SIGHUP", destroy);
-
-    try {
-        await render(() => <App controller={controller} initialPrompt={options.initialPrompt} />, renderer);
-        await destroyed;
-    } finally {
-        process.off("SIGTERM", destroy);
-        process.off("SIGHUP", destroy);
-        destroy();
-        await controller.dispose();
-        syntaxStyle.destroy();
-    }
+    await startUi(options);
 }
 
 main().catch((error: unknown) => {

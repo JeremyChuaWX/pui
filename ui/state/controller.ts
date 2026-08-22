@@ -18,16 +18,16 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
-import { fdCompletionCommand } from "../modules/file-search/interfaces/ui.js";
-import { BackgroundSubagentBridge } from "../modules/subagents/interfaces/ui.js";
+import { fdCompletionCommand } from "../../modules/file-search/interfaces/ui.js";
+import { BackgroundSubagentBridge } from "../../modules/subagents/interfaces/ui.js";
 import {
     WorkflowBridge,
     type WorkflowControlAction,
     type WorkflowRunSummaryV1,
-} from "../modules/workflows/interfaces/ui.js";
-import { type BundledSkillResources, createBundledSkillResources } from "../pi-core/bundled-skills.js";
-import { BUNDLED_EXTENSION_FACTORIES } from "../pi-core/register.js";
-import { errorMessage } from "../shared/lib/validate.js";
+} from "../../modules/workflows/interfaces/ui.js";
+import { type BundledSkillResources, createBundledSkillResources } from "../../pi-core/bundled-skills.js";
+import { BUNDLED_EXTENSION_FACTORIES } from "../../pi-core/register.js";
+import { errorMessage } from "../../shared/lib/validate.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";

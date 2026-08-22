@@ -1,9 +1,9 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { createMemo, For, Show } from "solid-js";
 import type { WorkflowRunSummaryV1 } from "../../modules/workflows/interfaces/ui.js";
-import { formatCount } from "../format.js";
-import { theme } from "../theme.js";
+import { formatCount } from "../state/format.js";
 import { dismissKeyHint } from "./keys.js";
+import { theme } from "./theme.js";
 import { workflowStatusPresentation, workflowStatusTone } from "./workflow-view.js";
 
 const WORKFLOW_PAGE_AGENT_LIMIT = 100;

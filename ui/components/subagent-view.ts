@@ -1,6 +1,6 @@
 import type { SubagentStatus, SubagentUsage, SubagentViewModel } from "../../modules/subagents/interfaces/ui.js";
-import { formatCount } from "../format.js";
-import { theme } from "../theme.js";
+import { formatCount } from "../state/format.js";
+import { theme } from "./theme.js";
 
 export function subagentColor(status: SubagentStatus): string {
     switch (status) {
