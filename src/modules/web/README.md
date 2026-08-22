@@ -1,10 +1,6 @@
 # Web tools
 
-This application-owned extension registers `web_search` and `web_crawl`. pui bundles it automatically; regular `pi` does not. For standalone use:
-
-```sh
-pi -e /absolute/path/to/pui/src/modules/web/interfaces/pi.ts
-```
+This Extension registers `web_search` and `web_crawl`. It is built into pui; the regular `pi` command does not load it.
 
 ## Configuration
 

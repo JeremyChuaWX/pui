@@ -79,11 +79,7 @@ Omitting the `agent` argument starts a generic write-capable child with no bundl
 
 Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
-The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
-
-```sh
-pi -e /absolute/path/to/pui/src/modules/subagents/interfaces/pi.ts
-```
+This Extension is built into pui. It is not a standalone `pi` extension, and the regular `pi` command does not load it.
 
 See the [extension guide](src/modules/subagents/README.md) for configuration and troubleshooting.
 
@@ -152,7 +148,7 @@ Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is mis
 
 pui bundles application-owned `fd` and `rg` tools from [`src/modules/file-search/`](src/modules/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](src/modules/file-search/README.md).
 
-The regular `pi` command does not auto-load these tools; load them explicitly with `pi -e /absolute/path/to/pui/src/modules/file-search/interfaces/pi.ts`.
+These tools are built into pui; the regular `pi` command does not load them.
 
 ## Web tools
 
@@ -160,11 +156,7 @@ pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/
 
 Both tools cap returned output at 50KB and Pi's default line limit. `web_crawl` accepts a smaller `max_bytes` limit, and `web_search` returns at most 10 source URLs. Complete oversized results may be retained in private temporary files, limited to 10 MiB per result and 50 MiB per web-extension session. A retained path is valid only for the current session and is removed at session shutdown. Retention is best-effort: if storage fails or a quota is reached, the successful tool result still includes a bounded preview, reports that the complete output was not retained, and omits `fullOutputPath`.
 
-Like the bundled subagent, these tools are loaded by pui independently of normal extension discovery. The regular `pi` command does not auto-load them. To use them there, load the extension explicitly:
-
-```sh
-pi -e /absolute/path/to/pui/src/modules/web/interfaces/pi.ts
-```
+Like the other Modules, these tools are built into pui and loaded independently of normal extension discovery; the regular `pi` command does not load them.
 
 See the [web extension guide](src/modules/web/README.md) for the compact configuration reference.
 

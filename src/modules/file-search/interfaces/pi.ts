@@ -26,7 +26,7 @@ export interface FileSearchExtensionDependencies {
     retainedOutput?: RetainedOutputQuotaOptions;
 }
 
-/** Production collaborators for either the pui composition root or plain Pi loading. */
+/** Production collaborators for the pui composition root and the Extension's default export. */
 export function createDefaultFileSearchDependencies(
     overrides: FileSearchExtensionDependencies = {},
 ): Required<FileSearchExtensionDependencies> {

@@ -1,12 +1,6 @@
 # File-search tools
 
-This application-owned extension registers `fd` for file discovery and `rg` for content search. pui bundles it automatically; regular `pi` does not. Tool-name conflicts follow Pi's normal load semantics: global and trusted project extensions load before pui's inline bundled extensions, the first registration of a name is the single active definition, and Pi reports later registrations as conflicts. Thus a discovered extension that registers `fd` or `rg` owns that name; pui still loads the bundled extension and all unrelated tools. `@` file completion remains owned by the pui UI (through this Module's UI Entry) and uses pui's system `fd`/`fdfind` resolver independently of which extension owns a model-facing tool name.
-
-For standalone use:
-
-```sh
-pi -e /absolute/path/to/pui/src/modules/file-search/interfaces/pi.ts
-```
+This application-owned extension registers `fd` for file discovery and `rg` for content search. It is built into pui; the regular `pi` command does not load it. Tool-name conflicts follow Pi's normal load semantics: global and trusted project extensions load before pui's inline bundled extensions, the first registration of a name is the single active definition, and Pi reports later registrations as conflicts. Thus a discovered extension that registers `fd` or `rg` owns that name; pui still loads the bundled extension and all unrelated tools. `@` file completion remains owned by the pui UI (through this Module's UI Entry) and uses pui's system `fd`/`fdfind` resolver independently of which extension owns a model-facing tool name.
 
 Install [`fd`](https://github.com/sharkdp/fd) (called `fdfind` by some Linux packages) and [ripgrep](https://github.com/BurntSushi/ripgrep), and ensure they are on `PATH`. pui never downloads them.
 

@@ -42,7 +42,7 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 8. As a workflow author, I want my `.pui/` scripts' `"pui/workflow"` import to keep working unchanged, so that the refactor doesn't break my existing workflows.
 9. As a pui user, I want the compiled binary to behave identically after the refactor, so that the release containing it is a non-event.
 10. As a pui user running `pui workflow`, I want the headless path to work without loading any UI code, so that scripted runs stay lean.
-11. As a Pi power user, I want each Module's Extension to remain loadable standalone via `pi -e`, so that I can use a single feature without the pui app.
+11. (Dropped.) The Extensions are built into pui and are not offered for standalone `pi -e` use; each `pi.ts` keeps a default export only because that is Pi's extension-module shape, which the registration tests exercise through Pi's resource loader.
 12. As a Module author, I want the Child-Agent Runtime and Agent Roles available as a Shared Primitive, so that I can spawn child Pi processes without depending on the subagents Module.
 13. As a Module author, I want generic utilities in a shared library separate from the Child-Agent Runtime, so that reaching for a validator doesn't entangle me with agent-spawning machinery.
 14. As a UI developer, I want each Module to publish a UI Entry with its view models and protocol parsers, so that views never parse or deep-import feature wire formats themselves.
@@ -61,8 +61,8 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   once the root listing mixed them with a dozen non-source entries.)
 - Four Modules: `subagents`, `workflows`, `web`, `file-search`. Each Module's only
   externally importable surface is its Interfaces Directory with fixed names:
-  `pi` (the Extension; required; keeps a default export for standalone `pi -e`
-  loading), `host` (Host Entry; required), `ui` (UI Entry; where needed), `api`
+  `pi` (the Extension; required; its default export is Pi's extension-module
+  shape — built into pui, not a standalone `pi` extension), `host` (Host Entry; required), `ui` (UI Entry; where needed), `api`
   (public authoring SDK; where needed). Everything else in a Module is private.
 - Dependency edges, all one-way: App → UI start function + Pi Core + Module Host
   Entries; UI → Pi Core + Module UI Entries + shared + Pi SDK; Pi Core → Module
@@ -98,7 +98,8 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 - Cross-layer imports are spelled with Node package subpath aliases (`package.json`
   `"imports"`: `#<layer>/*` → `./src/<layer>/*`); intra-layer and intra-Module imports
   stay relative. The `#` form is the one alias mechanism that Bun, `bun build`, `tsc`,
-  and Pi's jiti loader (`pi -e`) all resolve natively — tsconfig `paths` breaks `pi -e`.
+  and Pi's own extension loader (jiti) all resolve natively — tsconfig `paths` does
+  not survive jiti.
   The boundary check enforces the spelling both ways and rejects unresolvable `#`
   specifiers.
 - Boundaries are enforced by convention plus a small boundary-check script
@@ -127,8 +128,8 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   Interfaces Directory) plus a clean graph. It also runs against the real repo
   inside the check gate.
 - Preserved public seams needing no new tests: the `"pui/workflow"` specifier
-  (existing workflow API tests and the smoke build) and the `pi -e` default
-  exports (existing registration tests).
+  (existing workflow API tests and the smoke build) and the Extension default
+  exports (existing registration tests load them through Pi's resource loader).
 - Prior art: the existing per-extension test suites and the smoke-build script
   already model both styles — boundary-level behavior tests and a
   build-then-probe check.

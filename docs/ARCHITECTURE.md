@@ -124,8 +124,10 @@ its Extension (`interfaces/pi.ts`), plus shared. `createBundledExtensionFactorie
 explicitly supplies every production collaborator (including resource owners), while accepting
 per-extension fake bags for boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result.
 Each `register*Extension(pi, dependencies = {})` retains options-bag DI, and each Extension's
-default export calls a small `createDefault*Dependencies` helper so the source remains directly
-loadable by plain Pi (`pi -e src/modules/<name>/interfaces/pi.ts`) with equivalent production wiring.
+default export — the module shape Pi's extension loader expects — calls a small
+`createDefault*Dependencies` helper with the same production wiring; the registration tests load
+the Extensions through Pi's own resource loader to prove it. The Extensions are built into pui and
+are not offered for standalone `pi -e` use.
 
 `src/pi-core/skills/unslop/` contains the bundled writing skill and its upstream MIT license.
 `src/pi-core/bundled-skills.ts` imports both with Bun's file loader, then copies them to a private
@@ -144,7 +146,7 @@ exactly one layer:
 
 | Entry | Consumer | Role |
 |---|---|---|
-| `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; keeps a default export so plain `pi -e` can load the feature standalone |
+| `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; its default export is Pi's extension-module shape. Built into pui, not a standalone `pi` extension |
 | `interfaces/host.ts` | the App | the Host Entry: host-process needs such as headless runs |
 | `interfaces/ui.ts` | the UI | the UI Entry: view models, protocol parsers, and bridges — the only way UI code reaches the Module |
 | `interfaces/api.ts` | workflow scripts | the public authoring SDK behind the `"pui/workflow"` package export |
@@ -243,8 +245,8 @@ regex-based scanner that resolves every relative and `#` import under `src/`; ed
 An import is **relative within a layer or Module and aliased across**. The aliases are Node package
 subpath imports declared in `package.json` `"imports"` — `#app/*`, `#ui/*`, `#pi-core/*`,
 `#modules/*`, `#shared/*`, `#test-support/*` → `./src/<layer>/*` — which Bun, `bun build`, `tsc`
-(NodeNext), and Pi's jiti extension loader all resolve natively, so `pi -e` keeps working.
-(tsconfig `paths` would not: jiti ignores it.) The checker enforces the spelling both ways: a
+(NodeNext), and Pi's own extension loader (jiti, which the registration tests go through) all
+resolve natively. (tsconfig `paths` would not: jiti ignores it.) The checker enforces the spelling both ways: a
 relative import that crosses a layer or Module boundary is a violation, a `#` alias that stays
 inside one is a violation, and a `#` specifier that does not match the imports map is a violation.
 The spelling rule also applies to test files, which are otherwise exempt. The payoff is that every
@@ -314,5 +316,4 @@ the view models bound every string.
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its
 `CombinedAutocompleteProvider`; pui's visible renderer remains OpenTUI. Bundled resources augment
 normal Pi discovery. Global and trusted project extensions and skills still load from Pi's regular
-configuration, and each Module's Extension stays loadable in plain `pi` via
-`pi -e src/modules/<name>/interfaces/pi.ts`.
+configuration. The four Extensions are built into pui and are not offered for standalone `pi` use.

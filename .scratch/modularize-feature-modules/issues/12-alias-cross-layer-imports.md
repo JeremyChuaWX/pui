@@ -11,6 +11,6 @@
 - [x] Every cross-layer import in `src/` uses a `#<layer>/` specifier; intra-layer and intra-Module imports stay relative
 - [x] `collectImportEdges` resolves `#` specifiers from the `package.json` imports map
 - [x] Fixture tests: unresolvable `#` specifier is a violation; a relative import crossing a layer/Module boundary is a violation; `#` cross-layer edges are judged by the existing rules
-- [x] `pi -e src/modules/<name>/interfaces/pi.ts` still loads standalone (jiti resolves `#shared/…`; verified by loading every Extension through jiti — file-search and web load, subagents and workflows fail identically before and after this change on jiti's handling of the `with { type: "text" }` Markdown imports in `presets.ts`, a pre-existing issue outside this scope)
+- [x] Pi's own extension loader (jiti) resolves `#shared/…` (verified by loading every Extension through jiti: file-search and web load; subagents and workflows fail identically before and after this change on jiti's handling of Bun's `with { type: "text" }` imports in `presets.ts`). Informational only — the Extensions are built into pui and standalone `pi -e` use is not offered.
 - [x] Docs state the rule
 - [x] `bun run check` is green
