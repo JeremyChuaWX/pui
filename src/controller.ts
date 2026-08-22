@@ -18,7 +18,7 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
-import { resolveFdBinary } from "../modules/file-search/interfaces/ui.js";
+import { fdCompletionCommand } from "../modules/file-search/interfaces/ui.js";
 import { errorMessage } from "../shared/lib/validate.js";
 import { BackgroundSubagentBridge } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
@@ -658,13 +658,7 @@ export class PuiController {
         this.autocompleteProvider = new CombinedAutocompleteProvider(
             [...localCommands, ...extensionCommands, ...templateCommands, ...skillCommands],
             this.runtime.cwd,
-            (() => {
-                try {
-                    return resolveFdBinary().command;
-                } catch {
-                    return undefined;
-                }
-            })(),
+            fdCompletionCommand(),
         );
     }
 
