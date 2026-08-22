@@ -10,7 +10,7 @@ import {
     SessionManager,
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { AbortableSemaphore } from "../shared/semaphore.ts";
+import { AbortableSemaphore } from "../../shared/lib/semaphore.ts";
 import { registerSubagentExtension } from "./index.ts";
 import { createTerminalSubagentDetails } from "./protocol.ts";
 

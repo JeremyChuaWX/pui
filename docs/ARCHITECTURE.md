@@ -122,26 +122,34 @@ plain Pi with equivalent production wiring.
   runtime — and the shared production backend wiring used by
   the extension, the headless CLI, and the smoke harness. The default policy's role allowlist,
   model resolution, and per-role timeout defaults all derive from the presets in
-  `extensions/shared/presets.ts`, the single role definition.
-- `extensions/shared/` — cross-extension primitives: `child-agent.ts` (the one child-Pi runtime:
+  `shared/agent-runtime/presets.ts`, the single role definition.
+- `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
+  previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
+  shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
+
+### Shared Primitives — `shared/`
+
+Cross-cutting primitives importable by every layer, split in two:
+
+- `shared/agent-runtime/` — the Child-Agent Runtime: `child-agent.ts` (the one child-Pi runtime:
   shell-free detached spawn, NDJSON parsing into throttled neutral `ChildAgentEvent` flushes,
   bounded stderr, usage aggregation with fingerprint dedupe, model-label canonicalization,
   terminal-status classification, SIGTERM→SIGKILL termination, and the process-wide child-Pi
-  semaphore; the subagent runner and the workflow agent executor are both adapters over it),
-  `background-channel.ts` (producer-side
+  semaphore; the subagent runner and the workflow agent executor are both adapters over it) and
+  `presets.ts` (the Agent Roles: child-agent presets, the single role allowlist, and model/timeout
+  resolution used by subagents and workflows; the bundled agent guidance lives in
+  `shared/agent-runtime/agents/`). Agent Roles belong here, not to the subagent extension — see
+  ADR 0001 in `docs/adr/`.
+- `shared/lib/` — the generic library: `background-channel.ts` (producer-side
   ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
   `createGracefulTermination` SIGTERM→SIGKILL escalation and
   `killProcessTree` group signaling used by every child supervisor), `json-events.ts` (the JSONL
   splitter for child NDJSON streams), `retained-output.ts` (quota-bounded
   spill storage plus `composeBoundedOutput`, the single fixed-point composer that fits a truncated
-  preview and its accurate truncation notice inside one byte/line budget for every extension), `presets.ts` (child-agent presets,
-  the single role allowlist, and model/timeout resolution used by subagents and workflows; the
-  bundled agent guidance lives in `shared/agents/`), `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
+  preview and its accurate truncation notice inside one byte/line budget for every extension),
+  `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
   (record, error-message, and Unicode-safe bounded-string helpers).
-- `extensions/web/` — `web_search`/`web_crawl`. `output-retention.ts` is the deep module (bounded
-  previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
-  shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
 
 ### Skills — `skills/`
 

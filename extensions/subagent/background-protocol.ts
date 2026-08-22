@@ -1,4 +1,4 @@
-import { isRecord } from "../shared/validate.js";
+import { isRecord } from "../../shared/lib/validate.js";
 import { isSubagentDetailsV1, type SubagentRunV1 } from "./protocol.js";
 
 export const BACKGROUND_SUBAGENT_CHANNEL = "pui.subagent.background" as const;

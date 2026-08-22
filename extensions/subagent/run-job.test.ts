@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AbortableSemaphore } from "../shared/semaphore.ts";
+import { AbortableSemaphore } from "../../shared/lib/semaphore.ts";
 import { createInitialSubagentDetails, createTerminalSubagentDetails } from "./protocol.ts";
 import { runSubagentJob } from "./run-job.ts";
 

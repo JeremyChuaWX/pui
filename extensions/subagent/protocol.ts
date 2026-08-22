@@ -1,4 +1,4 @@
-import { isRecord } from "../shared/validate.js";
+import { isRecord } from "../../shared/lib/validate.js";
 
 export const SUBAGENT_SCHEMA = "pi.subagent" as const;
 export const SUBAGENT_PROTOCOL_VERSION = 1 as const;

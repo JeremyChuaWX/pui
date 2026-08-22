@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { createCliRenderer } from "@opentui/core";
 import { render } from "@opentui/solid";
-import { errorMessage } from "../extensions/shared/validate.js";
+import { errorMessage } from "../shared/lib/validate.js";
 import { App } from "./app.js";
 import { type ControllerOptions, PuiController } from "./controller.js";
 import { syntaxStyle, theme } from "./theme.js";

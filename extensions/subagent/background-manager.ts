@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { getPiInvocation } from "../shared/child-agent.js";
+import { getPiInvocation } from "../../shared/agent-runtime/child-agent.js";
 import {
     AGENTS,
     type AgentName,
     type ResolvedAgentName,
     resolveModel,
     resolveWorkingDirectory,
-} from "../shared/presets.js";
-import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
-import type { AbortableSemaphore } from "../shared/semaphore.js";
+} from "../../shared/agent-runtime/presets.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../../shared/lib/retained-output.js";
+import type { AbortableSemaphore } from "../../shared/lib/semaphore.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import {
     createInitialSubagentDetails,

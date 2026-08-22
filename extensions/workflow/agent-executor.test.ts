@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { type ChildAgentResult, emptyChildAgentUsage } from "../shared/child-agent.ts";
-import { AbortableSemaphore } from "../shared/semaphore.ts";
+import { type ChildAgentResult, emptyChildAgentUsage } from "../../shared/agent-runtime/child-agent.ts";
+import { AbortableSemaphore } from "../../shared/lib/semaphore.ts";
 import { createWorkflowAgentExecutor } from "./agent-executor.ts";
 
 function succeededResult(): ChildAgentResult {

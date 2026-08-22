@@ -113,11 +113,9 @@ describe("bundled extensions", () => {
             await loader.reload();
             expect(loader.getExtensions().errors).toEqual([]);
             expect(loader.getExtensions().extensions).toHaveLength(1);
-            for (const relativePath of ["presets.ts", "semaphore.ts"]) {
+            for (const relativePath of ["agent-runtime/presets.ts", "lib/semaphore.ts"]) {
                 expect(
-                    (
-                        await fs.promises.stat(path.resolve(import.meta.dir, "../extensions/shared", relativePath))
-                    ).isFile(),
+                    (await fs.promises.stat(path.resolve(import.meta.dir, "../shared", relativePath))).isFile(),
                 ).toBe(true);
             }
         } finally {
@@ -354,15 +352,15 @@ export default function (pi: any) {
                 expect(commandNames).toContain("project-fixture");
             }
 
-            const extensionsDir = path.resolve(import.meta.dir, "../extensions");
+            const repoRoot = path.resolve(import.meta.dir, "..");
             for (const relativePath of [
-                path.join("subagent", "protocol.ts"),
-                path.join("subagent", "runner.ts"),
-                path.join("shared", "agents", "worker.md"),
-                path.join("shared", "agents", "worker-guidance.LICENSE"),
-                path.join("shared", "agents", "explore.md"),
+                path.join("extensions", "subagent", "protocol.ts"),
+                path.join("extensions", "subagent", "runner.ts"),
+                path.join("shared", "agent-runtime", "agents", "worker.md"),
+                path.join("shared", "agent-runtime", "agents", "worker-guidance.LICENSE"),
+                path.join("shared", "agent-runtime", "agents", "explore.md"),
             ]) {
-                expect((await fs.promises.stat(path.join(extensionsDir, relativePath))).isFile()).toBe(true);
+                expect((await fs.promises.stat(path.join(repoRoot, relativePath))).isFile()).toBe(true);
             }
         } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });

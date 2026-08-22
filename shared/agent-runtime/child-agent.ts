@@ -3,11 +3,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { createGracefulTermination, killProcessTree } from "./bounded-process.js";
-import { JsonLineParser } from "./json-events.js";
-import { appendBoundedUtf8, truncateUtf8 } from "./retained-output.js";
-import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
-import { errorMessage, isRecord } from "./validate.js";
+import { createGracefulTermination, killProcessTree } from "../lib/bounded-process.js";
+import { JsonLineParser } from "../lib/json-events.js";
+import { appendBoundedUtf8, truncateUtf8 } from "../lib/retained-output.js";
+import { AbortableSemaphore, configuredSubagentConcurrency } from "../lib/semaphore.js";
+import { errorMessage, isRecord } from "../lib/validate.js";
 
 const DEFAULT_THROTTLE_MS = 75;
 const DEFAULT_KILL_GRACE_MS = 2_000;

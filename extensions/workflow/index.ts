@@ -7,8 +7,8 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackgroundChannel } from "../shared/background-channel.js";
-import { errorMessage } from "../shared/validate.js";
+import { createBackgroundChannel } from "../../shared/lib/background-channel.js";
+import { errorMessage } from "../../shared/lib/validate.js";
 import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
 import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
 import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";

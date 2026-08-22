@@ -1,6 +1,6 @@
-import { isRecord } from "../shared/validate.js";
+import { isRecord } from "../../shared/lib/validate.js";
 
-export { boundedString as truncateWorkflowText, errorMessage } from "../shared/validate.js";
+export { boundedString as truncateWorkflowText, errorMessage } from "../../shared/lib/validate.js";
 
 export const WORKFLOW_SCHEMA = "pi.workflow" as const;
 export const WORKFLOW_PROTOCOL_VERSION = 1 as const;

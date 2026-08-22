@@ -1,4 +1,4 @@
-import { errorMessage } from "../shared/validate.js";
+import { errorMessage } from "../../shared/lib/validate.js";
 import type { WorkflowBackend, WorkflowLaunch } from "./backend.js";
 import type { WorkflowRunSummaryV1 } from "./protocol.js";
 

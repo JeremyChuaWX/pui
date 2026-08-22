@@ -1,5 +1,4 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
-import { boundedString } from "../extensions/shared/validate.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
@@ -7,6 +6,7 @@ import {
     type BackgroundSubagentEventV1,
     parseBackgroundSubagentEvent as parseWireEvent,
 } from "../extensions/subagent/background-protocol.js";
+import { boundedString } from "../shared/lib/validate.js";
 import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
 import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
 import type { SubagentViewModel } from "./subagent.js";

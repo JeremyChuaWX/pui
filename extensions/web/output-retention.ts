@@ -4,7 +4,7 @@ import {
     type RetainedOutputFileSystem,
     RetainedOutputStore,
     type RetentionFailure,
-} from "../shared/retained-output.js";
+} from "../../shared/lib/retained-output.js";
 
 /** A bounded tool result and, when retained successfully, its complete-output file. */
 interface RetainedWebOutput {

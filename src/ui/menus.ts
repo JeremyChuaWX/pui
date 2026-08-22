@@ -1,5 +1,5 @@
-import { errorMessage } from "../../extensions/shared/validate.js";
 import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
+import { errorMessage } from "../../shared/lib/validate.js";
 import { commandPaletteEntries, type PaletteCommandId, type PuiController } from "../controller.js";
 import { formatCount } from "../format.js";
 import { isTerminalSubagentStatus } from "../subagent.js";

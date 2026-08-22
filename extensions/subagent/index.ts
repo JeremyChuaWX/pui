@@ -2,8 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackgroundChannel } from "../shared/background-channel.js";
-import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../shared/child-agent.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../../shared/agent-runtime/child-agent.js";
 import {
     AGENT_NAMES,
     AGENT_SUMMARY,
@@ -12,10 +11,11 @@ import {
     resolveModel,
     resolveWorkingDirectory,
     workingDirectoryCandidate,
-} from "../shared/presets.js";
-import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../shared/retained-output.js";
-import type { AbortableSemaphore } from "../shared/semaphore.js";
-import { errorMessage } from "../shared/validate.js";
+} from "../../shared/agent-runtime/presets.js";
+import { createBackgroundChannel } from "../../shared/lib/background-channel.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../../shared/lib/retained-output.js";
+import type { AbortableSemaphore } from "../../shared/lib/semaphore.js";
+import { errorMessage } from "../../shared/lib/validate.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,

@@ -3,8 +3,8 @@ import {
     type ChildAgentState,
     runChildAgent,
     type SpawnChildAgent,
-} from "../shared/child-agent.js";
-import { truncateUtf8 } from "../shared/retained-output.js";
+} from "../../shared/agent-runtime/child-agent.js";
+import { truncateUtf8 } from "../../shared/lib/retained-output.js";
 import {
     appendSubagentActivity,
     createTerminalSubagentDetails,

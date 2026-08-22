@@ -7,7 +7,7 @@ import {
     MAX_RETAINED_SESSION_BYTES,
     RetainedOutputQuota,
     type RetainedOutputQuotaOptions,
-} from "../shared/retained-output.js";
+} from "../../shared/lib/retained-output.js";
 import { buildFdArgs, buildRgArgs, type FdArgs, type RgArgs } from "./args.js";
 import { resolveFdBinary, resolveRgBinary, type SystemBinary } from "./binaries.js";
 import { type FileSearchProcessResult, type RunFileSearchOptions, runFileSearch } from "./process.js";
