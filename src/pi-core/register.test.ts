@@ -14,9 +14,9 @@ import {
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
-import { resolveFdBinary } from "../modules/file-search/interfaces/ui.js";
-import { createExtensionApiHarness } from "../test-support/extension-api.js";
-import { createPuiRuntimeFactory } from "../ui/state/controller.js";
+import { resolveFdBinary } from "#modules/file-search/interfaces/ui.js";
+import { createExtensionApiHarness } from "#test-support/extension-api.js";
+import { createPuiRuntimeFactory } from "#ui/state/controller.js";
 import { createBundledSkillResources } from "./bundled-skills.js";
 import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./register.js";
 

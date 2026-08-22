@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { AbortableSemaphore } from "../../shared/lib/semaphore.js";
+import { AbortableSemaphore } from "#shared/lib/semaphore.js";
 import { defaultWorkflowPolicy } from "./agent-executor.js";
 import { type DurableOperationRun, runDurableOperation, validateAgentRequest } from "./rpc-operations.js";
 

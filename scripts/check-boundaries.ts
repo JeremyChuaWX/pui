@@ -2,22 +2,28 @@
 // layers under src/ (app, ui, pi-core, modules/<name>, shared) and the
 // Interfaces-Directory-only rule for Modules.
 //
+// Import spelling: an import is relative within a layer or Module and uses a
+// "#<layer>/" package subpath alias (package.json "imports") across layers, so
+// every cross-boundary edge is textually distinct from an intra-module one.
+//
 // Scope decisions:
-// - Rules cover production code only. Test files (*.test.ts, *.test.tsx) and
-//   files under a test-support/ directory are exempt as import sources: e.g.
+// - Layer rules cover production code only. Test files (*.test.ts, *.test.tsx)
+//   and files under a test-support/ directory are exempt as import sources: e.g.
 //   pi-core/register.test.ts drives the UI controller, and module tests use
-//   test-support/. Production code may not import either of them.
-// - Only imports that resolve to TypeScript files inside the repo are checked.
-//   Bare specifiers (npm packages, the Pi SDK, node:/bun: builtins) and asset
-//   imports are out of scope.
+//   test-support/. Production code may not import either of them. The spelling
+//   rule applies to test sources too.
+// - Only relative and "#" specifiers are checked. Bare specifiers (npm packages,
+//   the Pi SDK, node:/bun: builtins) and asset imports are out of scope.
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface ImportEdge {
     /** `src`-relative POSIX path of the importing file. */
     from: string;
-    /** `src`-relative POSIX path of the imported file. */
+    /** `src`-relative POSIX path of the imported file, or the raw "#" specifier when it did not resolve. */
     to: string;
+    /** The specifier as written. Absent when the graph was built without specifiers; the spelling rule then does not apply. */
+    specifier?: string;
 }
 
 export interface Violation extends ImportEdge {
@@ -55,6 +61,27 @@ const INTERFACE_ENTRY_BY_LAYER: Record<string, string> = {
     ui: "ui",
     "pi-core": "pi",
 };
+
+/** The unit an import must stay inside to be spelled relatively: a layer, or one Module. */
+function unitOf(filePath: string): string {
+    const [top, second] = filePath.split("/");
+    return top === "modules" && second ? `modules/${second}` : (top ?? "");
+}
+
+function judgeSpelling(edge: ImportEdge): string | undefined {
+    if (edge.specifier === undefined) return undefined;
+    if (edge.specifier.startsWith("#")) {
+        if (edge.to.startsWith("#")) return `"${edge.specifier}" does not resolve through the package.json imports map`;
+        if (unitOf(edge.from) === unitOf(edge.to)) {
+            return "imports within a layer or Module must be relative, not aliased";
+        }
+        return undefined;
+    }
+    if (unitOf(edge.from) !== unitOf(edge.to)) {
+        return `cross-layer imports must use the #${edge.to.split("/")[0]}/ alias, not a relative path`;
+    }
+    return undefined;
+}
 
 function judge(edge: ImportEdge): string | undefined {
     const from = layerOf(edge.from);
@@ -97,53 +124,89 @@ function judge(edge: ImportEdge): string | undefined {
 export function checkBoundaries(edges: ImportEdge[]): Violation[] {
     const violations: Violation[] = [];
     for (const edge of edges) {
-        if (isTestFile(edge.from) || isTestSupportFile(edge.from)) continue;
-        const rule = judge(edge);
+        const testSource = isTestFile(edge.from) || isTestSupportFile(edge.from);
+        const rule = judgeSpelling(edge) ?? (testSource ? undefined : judge(edge));
         if (rule !== undefined) violations.push({ ...edge, rule });
     }
     return violations;
 }
 
-const SOURCE_DIRECTORIES = ["app", "ui", "pi-core", "modules", "shared", "test-support"];
 const IMPORT_PATTERN =
     /\bfrom\s+["']([^"'\n]+)["']|\bimport\s*\(\s*["']([^"'\n]+)["']\s*\)|\bimport\s+["']([^"'\n]+)["']/g;
 const RESOLUTION_SUFFIXES = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"];
 
-function resolveRelativeImport(fromFile: string, specifier: string): string | undefined {
-    const base = path.resolve(path.dirname(fromFile), specifier);
+function resolveToTypeScript(base: string): string | undefined {
     const candidates = /\.js$/.test(base) ? [base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx")] : [];
     candidates.push(...RESOLUTION_SUFFIXES.map((suffix) => base + suffix));
     return candidates.find((candidate) => /\.tsx?$/.test(candidate) && fs.existsSync(candidate));
 }
 
+export interface ScanOptions {
+    /** Directory containing package.json; "imports" targets are resolved against it. */
+    packageRoot: string;
+    /** The package.json "imports" map, e.g. `{ "#shared/*": "./src/shared/*" }`. */
+    imports: Record<string, string>;
+}
+
+/** Expands a "#" specifier through the imports map; undefined when no pattern matches. */
+function expandAlias(specifier: string, options: ScanOptions): string | undefined {
+    for (const [pattern, target] of Object.entries(options.imports)) {
+        const star = pattern.indexOf("*");
+        if (star === -1) {
+            if (specifier === pattern) return path.resolve(options.packageRoot, target);
+            continue;
+        }
+        const prefix = pattern.slice(0, star);
+        const suffix = pattern.slice(star + 1);
+        if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= pattern.length - 1) {
+            const wildcard = specifier.slice(prefix.length, specifier.length - suffix.length);
+            return path.resolve(options.packageRoot, target.replace("*", wildcard));
+        }
+    }
+    return undefined;
+}
+
 /**
- * Imperative shell: scan the layer directories under `sourceRoot` (the repo's `src/`) and build the
- * import graph. Edge paths are relative to `sourceRoot`, so layers appear as the first path segment.
+ * Imperative shell: scan every directory under `sourceRoot` (the repo's `src/`) and build the import
+ * graph. Edge paths are relative to `sourceRoot`, so layers appear as the first path segment.
+ * Relative specifiers resolve from the importing file; "#" specifiers resolve through the imports
+ * map and are kept verbatim as `to` when they do not match it.
  */
-export function collectImportEdges(sourceRoot: string): ImportEdge[] {
+export function collectImportEdges(sourceRoot: string, options: ScanOptions): ImportEdge[] {
     const edges: ImportEdge[] = [];
     const toSourceRelative = (absolute: string) => path.relative(sourceRoot, absolute).split(path.sep).join("/");
-    for (const directory of SOURCE_DIRECTORIES) {
-        const files = fs
-            .readdirSync(path.join(sourceRoot, directory), { recursive: true, encoding: "utf8" })
-            .map((entry) => path.join(sourceRoot, directory, entry))
-            .filter((file) => /\.tsx?$/.test(file) && !file.endsWith(".d.ts"));
-        for (const file of files) {
-            const source = fs.readFileSync(file, "utf8");
-            for (const match of source.matchAll(IMPORT_PATTERN)) {
-                const specifier = match[1] ?? match[2] ?? match[3];
-                if (specifier === undefined || !specifier.startsWith(".")) continue; // bare specifiers are out of scope
-                const resolved = resolveRelativeImport(file, specifier);
-                if (resolved !== undefined)
-                    edges.push({ from: toSourceRelative(file), to: toSourceRelative(resolved) });
-            }
+    const files = fs
+        .readdirSync(sourceRoot, { recursive: true, encoding: "utf8" })
+        .map((entry) => path.join(sourceRoot, entry))
+        .filter((file) => /\.tsx?$/.test(file) && !file.endsWith(".d.ts"))
+        .sort();
+    for (const file of files) {
+        const source = fs.readFileSync(file, "utf8");
+        for (const match of source.matchAll(IMPORT_PATTERN)) {
+            const specifier = match[1] ?? match[2] ?? match[3];
+            if (specifier === undefined) continue;
+            const from = toSourceRelative(file);
+            if (specifier.startsWith("#")) {
+                const expanded = expandAlias(specifier, options);
+                const resolved = expanded === undefined ? undefined : resolveToTypeScript(expanded);
+                edges.push({ from, to: resolved === undefined ? specifier : toSourceRelative(resolved), specifier });
+            } else if (specifier.startsWith(".")) {
+                const resolved = resolveToTypeScript(path.resolve(path.dirname(file), specifier));
+                if (resolved !== undefined) edges.push({ from, to: toSourceRelative(resolved), specifier });
+            } // bare specifiers are out of scope
         }
     }
     return edges;
 }
 
 if (import.meta.main) {
-    const violations = checkBoundaries(collectImportEdges(path.resolve(import.meta.dir, "..", "src")));
+    const packageRoot = path.resolve(import.meta.dir, "..");
+    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")) as {
+        imports?: Record<string, string>;
+    };
+    const violations = checkBoundaries(
+        collectImportEdges(path.join(packageRoot, "src"), { packageRoot, imports: manifest.imports ?? {} }),
+    );
     if (violations.length > 0) {
         console.error(`Boundary check failed with ${violations.length} violation(s):`);
         for (const violation of violations) {

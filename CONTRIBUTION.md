@@ -12,6 +12,9 @@
 - a feature lives in one Module under `src/modules/<name>/`; from outside a Module, import only its
   Interfaces Directory (`interfaces/pi.ts`, `interfaces/host.ts`, `interfaces/ui.ts`,
   `interfaces/api.ts`). Modules never import each other; cross-cutting code goes in `src/shared/`
+- spell imports relative within a layer or Module and with the `#<layer>/` alias across
+  (`#shared/lib/validate.js`, `#modules/workflows/interfaces/ui.js`); the boundary check rejects
+  both a relative cross-layer import and an alias used inside one layer
 - keep modules deep: hide significant machinery behind a narrow interface, inject collaborators
   through an options bag with production defaults, and test at the public interface with fakes
   (see the dependency-injection and testing sections of `docs/ARCHITECTURE.md`)

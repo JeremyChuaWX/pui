@@ -1,7 +1,7 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
-import type { InstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
-import { reduceInstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
-import { boundedString } from "../../shared/lib/validate.js";
+import type { InstanceScopedRuns } from "#shared/lib/instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "#shared/lib/instance-scoped-runs.js";
+import { boundedString } from "#shared/lib/validate.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,

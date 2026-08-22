@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as path from "node:path";
-import { BoundedProcessError, runBoundedProcess } from "../../shared/lib/bounded-process.js";
-import { errorMessage } from "../../shared/lib/validate.js";
+import { BoundedProcessError, runBoundedProcess } from "#shared/lib/bounded-process.js";
+import { errorMessage } from "#shared/lib/validate.js";
 import type { ShellRequest, ShellResult } from "./backend.js";
 import { MAX_SHELL_OUTPUT_BYTES } from "./rpc-operations.js";
 

@@ -1,6 +1,6 @@
 import { createMemo, For, Match, Show, Switch } from "solid-js";
-import { isTerminalSubagentStatus, type SubagentViewModel } from "../../modules/subagents/interfaces/ui.js";
-import type { WorkflowRunSummaryV1 } from "../../modules/workflows/interfaces/ui.js";
+import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
+import type { WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import type { DisplayItem, ToolDisplayItem } from "../state/types.js";
 import { extensionConfirmKeyHint } from "./keys.js";

@@ -95,6 +95,12 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   primitive, never a Module→Module edge.
 - The `"pui/workflow"` package export is repointed at the workflows Module's
   `api` entry; the import specifier seen by workflow scripts is unchanged.
+- Cross-layer imports are spelled with Node package subpath aliases (`package.json`
+  `"imports"`: `#<layer>/*` → `./src/<layer>/*`); intra-layer and intra-Module imports
+  stay relative. The `#` form is the one alias mechanism that Bun, `bun build`, `tsc`,
+  and Pi's jiti loader (`pi -e`) all resolve natively — tsconfig `paths` breaks `pi -e`.
+  The boundary check enforces the spelling both ways and rejects unresolvable `#`
+  specifiers.
 - Boundaries are enforced by convention plus a small boundary-check script
   (import-specifier scan asserting the edge list and the
   Interfaces-Directory-only rule) added to the standard check gate. UI→App is

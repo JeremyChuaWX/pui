@@ -1,8 +1,4 @@
-import type {
-    WorkflowAgentStatus,
-    WorkflowRunStatus,
-    WorkflowRunSummaryV1,
-} from "../../modules/workflows/interfaces/ui.js";
+import type { WorkflowAgentStatus, WorkflowRunStatus, WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
 
 export const WORKFLOW_NAVIGATION_TIMEOUT_MS = 30_000;
 

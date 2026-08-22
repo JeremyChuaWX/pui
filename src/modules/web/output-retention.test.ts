@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { waitFor } from "../../test-support/wait.ts";
+import { waitFor } from "#test-support/wait.ts";
 import { WebOutputRetention, type WebOutputRetentionFileSystem } from "./output-retention.ts";
 
 const stores: WebOutputRetention[] = [];

@@ -1,4 +1,4 @@
-import type { SubagentStatus, SubagentUsage, SubagentViewModel } from "../../modules/subagents/interfaces/ui.js";
+import type { SubagentStatus, SubagentUsage, SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import { theme } from "./theme.js";
 

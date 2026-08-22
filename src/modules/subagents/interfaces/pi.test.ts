@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AbortableSemaphore } from "../../../shared/lib/semaphore.ts";
-import { createExtensionApiHarness } from "../../../test-support/extension-api.ts";
+import { AbortableSemaphore } from "#shared/lib/semaphore.ts";
+import { createExtensionApiHarness } from "#test-support/extension-api.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "../protocol.ts";
 import { registerSubagentExtension } from "./pi.ts";
 

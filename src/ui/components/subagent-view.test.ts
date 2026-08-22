@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_SUBAGENT_ACTIVE_TOOLS, normalizeSubagentDetails } from "../../modules/subagents/interfaces/ui.js";
+import { MAX_SUBAGENT_ACTIVE_TOOLS, normalizeSubagentDetails } from "#modules/subagents/interfaces/ui.js";
 import { compactSubagentUsage, subagentElapsed, subagentStatusIcon, subagentSummary } from "./subagent-view.js";
 
 function protocolDetails(overrides: Record<string, unknown> = {}): Record<string, unknown> {

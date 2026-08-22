@@ -1,4 +1,4 @@
-import { errorMessage } from "../../shared/lib/validate.js";
+import { errorMessage } from "#shared/lib/validate.js";
 import type { AgentExecutor, AgentResult, ShellExecutor, WorkflowHostPolicy, WorkflowRunStore } from "./backend.js";
 import type { WorkflowActivityV1, WorkflowAgentSummaryV1, WorkflowRunSummaryV1, WorkflowUsageV1 } from "./protocol.js";
 import {

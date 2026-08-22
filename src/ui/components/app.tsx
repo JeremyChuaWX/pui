@@ -2,8 +2,8 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { isTerminalSubagentStatus } from "../../modules/subagents/interfaces/ui.js";
-import { errorMessage } from "../../shared/lib/validate.js";
+import { isTerminalSubagentStatus } from "#modules/subagents/interfaces/ui.js";
+import { errorMessage } from "#shared/lib/validate.js";
 import type { PuiController } from "../state/controller.js";
 import { shouldTriggerPromptAutocomplete } from "../state/prompt-autocomplete.js";
 import type { PromptAction, PromptCompletions, PuiSnapshot } from "../state/types.js";

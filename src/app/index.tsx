@@ -2,8 +2,8 @@
 
 import * as path from "node:path";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
-import { errorMessage } from "../shared/lib/validate.js";
-import type { UiStartOptions } from "../ui/start.js";
+import { errorMessage } from "#shared/lib/validate.js";
+import type { UiStartOptions } from "#ui/start.js";
 
 // pi-ai's OAuth implementations use bundler-opaque imports in source mode.
 // Register their static equivalents so Bun embeds them in the executable.
@@ -91,7 +91,7 @@ async function main(): Promise<void> {
         throw new Error("pui requires an interactive terminal");
     }
 
-    const { startUi } = await import("../ui/start.js");
+    const { startUi } = await import("#ui/start.js");
     await startUi(options);
 }
 

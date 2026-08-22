@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { normalizeSubagentDetails, subagentPresentationKey } from "../../modules/subagents/interfaces/ui.js";
-import { resolveWorkflowRun, type WorkflowRunSummaryV1 } from "../../modules/workflows/interfaces/ui.js";
+import { normalizeSubagentDetails, subagentPresentationKey } from "#modules/subagents/interfaces/ui.js";
+import { resolveWorkflowRun, type WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
 import { recordArgs, type ToolExecution, type ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 

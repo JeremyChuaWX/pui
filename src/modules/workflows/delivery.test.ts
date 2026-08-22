@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { waitFor } from "../../test-support/wait.js";
+import { waitFor } from "#test-support/wait.js";
 import { createWorkflowBackend, type WorkflowBackend } from "./backend.js";
 import { WorkflowRunManager } from "./manager.js";
 import { parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "./protocol.js";

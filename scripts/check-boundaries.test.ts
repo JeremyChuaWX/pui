@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { checkBoundaries, type ImportEdge } from "./check-boundaries.ts";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { checkBoundaries, collectImportEdges, type ImportEdge } from "./check-boundaries.ts";
 
 function violationsFor(edges: ImportEdge[]) {
     return checkBoundaries(edges).map((violation) => `${violation.from} -> ${violation.to}`);
@@ -140,5 +143,111 @@ describe("test-file scoping", () => {
     test("a test file must still not be imported by production code", () => {
         const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "modules/web/tool-shell.test.ts" }];
         expect(checkBoundaries(edges)).toHaveLength(1);
+    });
+});
+
+describe("import spelling", () => {
+    test("a cross-layer import spelled with a # alias is judged by the layer rules", () => {
+        const edges: ImportEdge[] = [
+            { from: "ui/state/controller.ts", to: "shared/lib/validate.ts", specifier: "#shared/lib/validate.js" },
+            { from: "app/index.tsx", to: "ui/start.tsx", specifier: "#ui/start.tsx" },
+            {
+                from: "pi-core/register.ts",
+                to: "modules/web/interfaces/pi.ts",
+                specifier: "#modules/web/interfaces/pi.js",
+            },
+            { from: "ui/state/controller.ts", to: "ui/state/format.ts", specifier: "./format.js" },
+            { from: "modules/web/interfaces/pi.ts", to: "modules/web/search.ts", specifier: "../search.js" },
+        ];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+
+    test("a relative import that crosses a layer boundary is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "ui/state/controller.ts", to: "shared/lib/validate.ts", specifier: "../../shared/lib/validate.js" },
+        ];
+        expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> shared/lib/validate.ts"]);
+        expect(checkBoundaries(edges)[0]?.rule).toContain("#shared/");
+    });
+
+    test("a # alias used within a layer or Module is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "ui/state/controller.ts", to: "ui/state/format.ts", specifier: "#ui/state/format.js" },
+            { from: "modules/web/interfaces/pi.ts", to: "modules/web/search.ts", specifier: "#modules/web/search.js" },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "ui/state/controller.ts -> ui/state/format.ts",
+            "modules/web/interfaces/pi.ts -> modules/web/search.ts",
+        ]);
+        expect(checkBoundaries(edges)[0]?.rule).toContain("relative");
+    });
+
+    test("an unresolvable # specifier is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "ui/state/controller.ts", to: "#nope/thing.js", specifier: "#nope/thing.js" },
+        ];
+        expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> #nope/thing.js"]);
+        expect(checkBoundaries(edges)[0]?.rule).toContain("package.json");
+    });
+
+    test("test files are exempt from the layer rules but not from the spelling rule", () => {
+        const edges: ImportEdge[] = [
+            { from: "pi-core/register.test.ts", to: "ui/state/controller.ts", specifier: "#ui/state/controller.js" },
+            { from: "pi-core/register.test.ts", to: "ui/state/format.ts", specifier: "../ui/state/format.js" },
+            {
+                from: "test-support/extension-api.ts",
+                to: "shared/lib/validate.ts",
+                specifier: "../shared/lib/validate.js",
+            },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "pi-core/register.test.ts -> ui/state/format.ts",
+            "test-support/extension-api.ts -> shared/lib/validate.ts",
+        ]);
+    });
+
+    test("edges without a specifier are judged by the layer rules alone", () => {
+        const edges: ImportEdge[] = [{ from: "ui/state/controller.ts", to: "shared/lib/validate.ts" }];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+});
+
+describe("collectImportEdges", () => {
+    test("resolves relative and # alias specifiers and keeps unresolvable # specifiers", () => {
+        const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pui-boundaries-"));
+        try {
+            const sourceRoot = path.join(packageRoot, "src");
+            fs.mkdirSync(path.join(sourceRoot, "ui", "state"), { recursive: true });
+            fs.mkdirSync(path.join(sourceRoot, "shared", "lib"), { recursive: true });
+            fs.writeFileSync(path.join(sourceRoot, "shared", "lib", "validate.ts"), "export const x = 1;\n");
+            fs.writeFileSync(path.join(sourceRoot, "ui", "state", "format.ts"), "export const y = 1;\n");
+            fs.writeFileSync(
+                path.join(sourceRoot, "ui", "state", "controller.ts"),
+                [
+                    'import { x } from "#shared/lib/validate.js";',
+                    'import { y } from "./format.js";',
+                    'import { z } from "#nope/thing.js";',
+                    'import { w } from "../../shared/lib/validate.js";',
+                    'import * as fs from "node:fs";',
+                    "export const all = [x, y, z, w, fs];",
+                ].join("\n"),
+            );
+            const edges = collectImportEdges(sourceRoot, {
+                packageRoot,
+                imports: { "#shared/*": "./src/shared/*", "#ui/*": "./src/ui/*" },
+            });
+            expect(edges).toEqual([
+                { from: "ui/state/controller.ts", to: "shared/lib/validate.ts", specifier: "#shared/lib/validate.js" },
+                { from: "ui/state/controller.ts", to: "ui/state/format.ts", specifier: "./format.js" },
+                { from: "ui/state/controller.ts", to: "#nope/thing.js", specifier: "#nope/thing.js" },
+                {
+                    from: "ui/state/controller.ts",
+                    to: "shared/lib/validate.ts",
+                    specifier: "../../shared/lib/validate.js",
+                },
+            ]);
+        } finally {
+            fs.rmSync(packageRoot, { recursive: true, force: true });
+        }
     });
 });

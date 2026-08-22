@@ -223,9 +223,8 @@ not entangle a Module with agent-spawning machinery:
 
 `scripts/check-boundaries.ts` runs in `bun run check` and fails the gate on any edge outside the
 layer rules. Its core is a pure function, `checkBoundaries(edges) -> violations`, fed by a
-regex-based scanner that resolves every relative import under `src/` (`app/`, `ui/`, `pi-core/`,
-`modules/`, `shared/`, and `test-support/`); edge paths are `src`-relative, so a file's layer is its
-first path segment. The rules:
+regex-based scanner that resolves every relative and `#` import under `src/`; edge paths are
+`src`-relative, so a file's layer is its first path segment. The rules:
 
 - `app` may import `src/ui/start` (only that file of the UI), `pi-core`, a Module's `interfaces/host`,
   and `shared`.
@@ -239,7 +238,20 @@ first path segment. The rules:
 - Nothing imports `src/app/`.
 - Production code may not import test files or `test-support/`.
 
-The rules cover production code only: `*.test.ts(x)` files and `test-support/` directories are
+### Import spelling
+
+An import is **relative within a layer or Module and aliased across**. The aliases are Node package
+subpath imports declared in `package.json` `"imports"` — `#app/*`, `#ui/*`, `#pi-core/*`,
+`#modules/*`, `#shared/*`, `#test-support/*` → `./src/<layer>/*` — which Bun, `bun build`, `tsc`
+(NodeNext), and Pi's jiti extension loader all resolve natively, so `pi -e` keeps working.
+(tsconfig `paths` would not: jiti ignores it.) The checker enforces the spelling both ways: a
+relative import that crosses a layer or Module boundary is a violation, a `#` alias that stays
+inside one is a violation, and a `#` specifier that does not match the imports map is a violation.
+The spelling rule also applies to test files, which are otherwise exempt. The payoff is that every
+cross-boundary edge is textually distinct from an intra-module one: `grep '#shared/'` lists every
+consumer of the Shared Primitives.
+
+The layer rules cover production code only: `*.test.ts(x)` files and `test-support/` directories are
 exempt as import sources (module tests use `src/test-support/`, and
 `src/pi-core/register.test.ts` drives the UI controller). Bare specifiers (npm packages, the Pi SDK,
 `node:`/`bun:` builtins) and asset imports are out of scope.

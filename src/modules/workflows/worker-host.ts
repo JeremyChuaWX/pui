@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import { realpath } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { killProcessTree } from "../../shared/lib/bounded-process.js";
-import { errorMessage } from "../../shared/lib/validate.js";
+import { killProcessTree } from "#shared/lib/bounded-process.js";
+import { errorMessage } from "#shared/lib/validate.js";
 import { boundedJson } from "./rpc-operations.js";
 import { type ParsedWorkerFrame, parseWorkerFrame, WorkerFrameDecoder } from "./worker-protocol.js";
 

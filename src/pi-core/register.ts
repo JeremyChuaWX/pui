@@ -3,22 +3,22 @@ import {
     createDefaultFileSearchDependencies,
     type FileSearchExtensionDependencies,
     registerFileSearchExtension,
-} from "../modules/file-search/interfaces/pi.js";
+} from "#modules/file-search/interfaces/pi.js";
 import {
     createDefaultSubagentDependencies,
     registerSubagentExtension,
     type SubagentExtensionDependencies,
-} from "../modules/subagents/interfaces/pi.js";
+} from "#modules/subagents/interfaces/pi.js";
 import {
     createDefaultWebDependencies,
     registerWebExtension,
     type WebExtensionDependencies,
-} from "../modules/web/interfaces/pi.js";
+} from "#modules/web/interfaces/pi.js";
 import {
     createDefaultWorkflowDependencies,
     registerWorkflowExtension,
     type WorkflowExtensionDependencies,
-} from "../modules/workflows/interfaces/pi.js";
+} from "#modules/workflows/interfaces/pi.js";
 
 export interface BundledExtensionFactoryOptions {
     fileSearch?: FileSearchExtensionDependencies;

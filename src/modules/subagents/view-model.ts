@@ -1,4 +1,4 @@
-import { boundedString } from "../../shared/lib/validate.js";
+import { boundedString } from "#shared/lib/validate.js";
 import {
     isSubagentDetailsV1,
     isTerminalSubagentStatus,

@@ -10,6 +10,14 @@
             "default": "./src/modules/workflows/interfaces/api.ts"
         }
     },
+    "imports": {
+        "#app/*": "./src/app/*",
+        "#ui/*": "./src/ui/*",
+        "#pi-core/*": "./src/pi-core/*",
+        "#modules/*": "./src/modules/*",
+        "#shared/*": "./src/shared/*",
+        "#test-support/*": "./src/test-support/*"
+    },
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/app/index.tsx",

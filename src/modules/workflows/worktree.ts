@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { BoundedProcessError, runBoundedProcess } from "../../shared/lib/bounded-process.js";
+import { BoundedProcessError, runBoundedProcess } from "#shared/lib/bounded-process.js";
 import { inferDirectoryBoundary, safeDirectory } from "./durable-fs.js";
 
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;

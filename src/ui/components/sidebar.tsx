@@ -1,5 +1,5 @@
 import { createMemo, For, Show } from "solid-js";
-import { isTerminalSubagentStatus, type SubagentViewModel } from "../../modules/subagents/interfaces/ui.js";
+import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../state/types.js";
 import {

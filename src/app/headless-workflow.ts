@@ -1,4 +1,4 @@
-import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "../modules/workflows/interfaces/host.js";
+import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "#modules/workflows/interfaces/host.js";
 
 /** Headless `pui workflow` entry: Pi Core + the workflows Host Entry, no UI imports. */
 export async function runHeadlessWorkflowCli(argv: string[]): Promise<void> {

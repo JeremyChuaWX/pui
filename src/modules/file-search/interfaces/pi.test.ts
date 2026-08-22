@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createExtensionApiHarness } from "../../../test-support/extension-api.ts";
+import { createExtensionApiHarness } from "#test-support/extension-api.ts";
 import { registerFileSearchExtension } from "./pi.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/fake-search.mjs", import.meta.url));

@@ -1,10 +1,6 @@
-import {
-    getPiInvocation,
-    PROCESS_CHILD_AGENT_SEMAPHORE,
-    runChildAgent,
-} from "../../shared/agent-runtime/child-agent.js";
-import { agentPreset, childArgs, RESOLVED_AGENT_NAMES, resolveModel } from "../../shared/agent-runtime/presets.js";
-import type { AbortableSemaphore } from "../../shared/lib/semaphore.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE, runChildAgent } from "#shared/agent-runtime/child-agent.js";
+import { agentPreset, childArgs, RESOLVED_AGENT_NAMES, resolveModel } from "#shared/agent-runtime/presets.js";
+import type { AbortableSemaphore } from "#shared/lib/semaphore.js";
 import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
 import { WorkflowRunStorage } from "./run-storage.js";
 
