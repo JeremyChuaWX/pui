@@ -40,7 +40,7 @@ bun run start -- --no-session
 bun run check
 ```
 
-`bun run check` runs Biome, type-checks, tests, builds, and smoke-tests the final executable. Use `bun run format` to format the project with Biome.
+`bun run check` runs Biome, type-checks, checks the layer boundaries, tests, builds, and smoke-tests the final executable. Use `bun run format` to format the project with Biome.
 
 ## Clipboard
 
@@ -171,7 +171,9 @@ See the [web extension guide](modules/web/README.md) for the compact configurati
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design: layers, module map, protocol
-ownership, dependency-injection conventions, and the testing strategy. The short version:
+ownership, dependency-injection conventions, and the testing strategy. The codebase is five
+top-level layers (`app/`, `ui/`, `pi-core/`, `modules/`, `shared/`) with one-way dependency edges
+enforced by a boundary check in `bun run check`. The short version:
 
 - `app/index.tsx` owns CLI dispatch and invokes the UI's single start function, `ui/start.tsx`,
   which owns OpenTUI renderer startup and shutdown.
@@ -193,6 +195,9 @@ ownership, dependency-injection conventions, and the testing strategy. The short
   Register File `pi-core/register.ts`. Each feature owns its wire protocol; consumers reach parsed
   state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
   import resolves to the workflows Module's `interfaces/api.ts`.
+- `shared/` holds the Shared Primitives importable from every layer: `shared/agent-runtime/` (the
+  Child-Agent Runtime for spawning child Pi processes, plus the Agent Roles) and `shared/lib/`
+  (the generic library: validation, bounded processes, retained output, semaphores, and friends).
 - `pi-core/skills/` holds application-owned skills, registered via `pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.

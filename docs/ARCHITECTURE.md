@@ -1,41 +1,69 @@
 # pui architecture
 
-pui is a full-screen OpenTUI/Solid client for Pi. The codebase is organized around a small number of
-deep modules: each hides significant machinery behind a narrow interface, receives its collaborators
-through dependency injection with production defaults, and is tested at that interface.
+pui is a full-screen OpenTUI/Solid client for Pi. The repository is organized into five top-level
+layers. Each feature is a self-contained Module whose only importable surface is its Interfaces
+Directory, every dependency edge points one way, and a boundary check in `bun run check` enforces
+the edges. Within each layer the design favors deep modules: significant machinery hidden behind a
+narrow interface, collaborators injected through an options bag with production defaults, tests
+written at that interface.
+
+The vocabulary used here (Module, Extension, Pi Core, App, Controller, Register File, Shared
+Primitive, Child-Agent Runtime, Agent Role, Interfaces Directory, Host Entry, UI Entry) is defined
+in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
+
+## The five layers
 
 ```
-app/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smoke
-      │
-      ▼  ui/start.tsx — the UI's single start function (controller + renderer + mount)
-ui/state/controller.ts (PuiController) ─────── deep module: embeds Pi, owns all state
-      │  collaborators (each injectable):
-      │    modules/workflows/interfaces/ui.ts  WorkflowBridge      run map + control round-trips
-      │    modules/subagents/interfaces/ui.ts  BackgroundSubagentBridge + bounded view models
-      │    ui/state/controller-queues.ts   ExtensionDialogQueue / ToastQueue
-      │
-      ▼  immutable PuiSnapshot via subscribe()
-ui/components/app.tsx (App shell) + ui/components/* ── view layer, renders snapshots only
-      │
-      ▼  bundled resources
-extension factories (pi-core/register.ts)  skill paths (pi-core/bundled-skills.ts)
-modules/file-search  modules/web  modules/subagents  modules/workflows  pi-core/skills/unslop
+app/       entry points + pui process management
+  ├──▶ ui/start.tsx                    the UI's single start function
+  ├──▶ pi-core/                        bundled skills for the smoke harness
+  └──▶ modules/*/interfaces/host.ts    Host Entries (headless workflow runs)
+
+ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
+  ├──▶ pi-core/                        extension factories + bundled skills
+  └──▶ modules/*/interfaces/ui.ts      UI Entries (parsed view state)
+
+pi-core/   the Register File + bundled skills
+  └──▶ modules/*/interfaces/pi.ts      Extensions
+
+modules/   file-search   web   subagents   workflows
+  └──▶ shared/ only — never another Module
+
+shared/    Shared Primitives: agent-runtime (the Child-Agent Runtime) + lib
+  └──▶ shared/ only
 ```
 
-## Layers
+`shared/` is importable from every layer; nothing imports `app/`. The `"pui/workflow"` package
+export resolves to `modules/workflows/interfaces/api.ts` and is consumed by workflow scripts, not
+by any layer. Two directories sit outside the diagram: `extensions/` holds only `test-support/`
+(test-only helpers that production code may not import) and `assets.d.ts` (ambient declarations
+for bundled text/Markdown assets), and `scripts/` holds the build, smoke-test, and boundary-check
+scripts.
 
-### App — `app/index.tsx`
+### App — `app/`
 
-Parses CLI flags and dispatches: the interactive TUI (via `startUi` in `ui/start.tsx`, the UI's
-single start function, which creates the controller and renderer and mounts the Solid shell),
-`pui workflow …` (headless, via `app/headless-workflow.ts` and the workflows Module's Host Entry
-`modules/workflows/interfaces/host.ts`, loading no UI code and no TUI or Pi session), or the
-compiled-binary smoke harness (`app/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1` but
-statically linked so the built executable can self-test). A prompt argument is handed to the App as
-`initialPrompt` and dispatched through the same prompt-action record as interactive input, so
-command-line slash invocations (`pui "/models"`) perform their action.
+`app/index.tsx` parses CLI flags and dispatches. Each dispatch target is imported lazily, so the
+interactive path never loads the workflow CLI and the headless path never loads the UI:
 
-### Controller — `ui/state/controller.ts`
+- the interactive TUI, via `startUi` in `ui/start.tsx` — the UI's single start function, which
+  creates the controller and renderer and mounts the Solid shell;
+- `pui workflow …`, via `app/headless-workflow.ts`, which imports only the workflows Module's Host
+  Entry (`modules/workflows/interfaces/host.ts`) — no UI code, no TUI, no Pi session;
+- the compiled-binary smoke harness `app/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1`
+  but statically linked so the built executable can self-test.
+
+A prompt argument is handed to the App as `initialPrompt` and dispatched through the same
+prompt-action record as interactive input, so command-line slash invocations (`pui "/models"`)
+perform their action.
+
+### UI — `ui/`
+
+The UI is two directories plus the start function: `ui/state/` (the Controller and its state
+collaborators), `ui/components/` (the OpenTUI/Solid views), and `ui/start.tsx` (renderer creation
+and mounting). The UI reaches features only through Module UI Entries
+(`modules/*/interfaces/ui.ts`), never feature protocol files.
+
+#### Controller — `ui/state/controller.ts`
 
 `PuiController` is the single stateful hub. It embeds Pi through `AgentSessionRuntime`, rebinds on
 every session replacement, reduces session/tool events into an immutable `PuiSnapshot`, and
@@ -49,25 +77,30 @@ the production factory (session manager selection + runtime construction).
 
 The controller delegates to focused collaborators rather than owning every concern:
 
-| Module | Interface | Hides |
+| Collaborator | Interface | Hides |
 |---|---|---|
 | `modules/workflows/interfaces/ui.ts` | `WorkflowBridge` (`bind / runs / inspect / control / dispose`) | workflow background-event parsing and control correlation |
 | `modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
+| `modules/file-search/interfaces/ui.ts` | `fdCompletionCommand` | system `fd`/`fdfind` resolution for `@` file completion |
 | `shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
 | `ui/state/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
 The controller's command descriptor list is the single source for slash-command autocomplete,
 aliases, dispatch, and the command palette: palette rows (including palette-only entries) live on
-the same descriptors, `ui/components/menus.ts` renders them rank-sorted and binds each row's action through
-an exhaustive record, so the two surfaces cannot drift.
+the same descriptors, `ui/components/menus.ts` renders them rank-sorted and binds each row's action
+through an exhaustive record, so the two surfaces cannot drift.
 
-### View — `ui/components/`
+The controller's remaining state collaborators live beside it in `ui/state/`: `format.ts`
+(message → `DisplayItem` projection with identity-preserving reconciliation), `tool-executions.ts`
+(tool lifecycle reducer), `types.ts` (shared view types), and `prompt-autocomplete.ts`
+(text-position math).
+
+#### Components — `ui/components/`
 
 `App` (`ui/components/app.tsx`) owns only UI state (prompt text, dialogs, completions, workflow
-page routing, keyboard handling) and renders snapshots. Rendering and menu construction live in
-`ui/components/`:
+page routing, keyboard handling) and renders snapshots:
 
-| Module | Contents |
+| File | Contents |
 |---|---|
 | `ui/components/menus.ts` | every picker/palette, built behind the `MenuHost` seam (`openDialog`, `openAsyncPicker`, a narrow `MenuController` slice of the controller) — pure data, unit-tested with fakes |
 | `ui/components/dialogs.tsx` | `DialogState`, modal `Dialog` (picker / confirm / input / help), and the pure `extensionDialogState` derivation from extension dialog requests |
@@ -79,111 +112,140 @@ page routing, keyboard handling) and renders snapshots. Rendering and menu const
 | `ui/components/subagent-view.ts` | subagent presentation: status icons/labels/colors, elapsed, usage summaries |
 | `ui/components/workflow-view.ts` | workflow presentation (status icons/labels/tones, run summaries) and the pure `resolveWorkflowNavigation` routing for pending workflow-page navigation |
 
-The controller's remaining state collaborators live beside it in `ui/state/`: `format.ts`
-(message → `DisplayItem` projection with identity-preserving reconciliation), `tool-executions.ts`
-(tool lifecycle reducer), `types.ts` (shared view types), and `prompt-autocomplete.ts`
-(text-position math). View-side helpers `app-support.ts` (prompt history, selection copy, focus
-trapping, external editor) and `theme.ts` live in `ui/components/`. Views reach features only
-through Module UI Entries (`modules/*/interfaces/ui.ts`), never feature protocol files.
+View-side helpers `app-support.ts` (prompt history, selection copy, focus trapping, external
+editor) and `theme.ts` also live in `ui/components/`.
 
-### Pi Core — `pi-core/` — and the Modules — `modules/`
+### Pi Core — `pi-core/`
 
-The shared ambient declarations for bundled text/Markdown assets live in `extensions/assets.d.ts`.
+Pi Core owns registration. Bundled, application-owned Pi extensions are wired by the Register File,
+the single composition root in `pi-core/register.ts`. Pi Core imports nothing from a Module except
+its Extension (`interfaces/pi.ts`), plus shared. `createBundledExtensionFactories(options?)`
+explicitly supplies every production collaborator (including resource owners), while accepting
+per-extension fake bags for boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result.
+Each `register*Extension(pi, dependencies = {})` retains options-bag DI, and each Extension's
+default export calls a small `createDefault*Dependencies` helper so the source remains directly
+loadable by plain Pi (`pi -e modules/<name>/interfaces/pi.ts`) with equivalent production wiring.
 
-Bundled, application-owned Pi extensions are wired by Pi Core's Register File, the real composition
-root in `pi-core/register.ts`. Pi Core imports nothing from a Module except its Extension
-(`interfaces/pi.ts`), plus shared. `createBundledExtensionFactories(options?)` explicitly supplies every
-production collaborator (including resource owners), while accepting per-extension fake bags for
-boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result. Each
-`register*Extension(pi, dependencies = {})` retains options-bag DI, and each extension's default
-export calls a small `createDefault*Dependencies` helper so the source remains directly loadable by
-plain Pi with equivalent production wiring.
+`pi-core/skills/unslop/` contains the bundled writing skill and its upstream MIT license.
+`pi-core/bundled-skills.ts` imports both with Bun's file loader, then copies them to a private
+temporary directory owned by the controller. This gives Pi and its tools ordinary filesystem paths
+instead of Bun's `$bunfs` paths, which `fs.readFile` can read but `fs.access` cannot. The runtime
+supplies the copied `SKILL.md` through `additionalSkillPaths`, alongside Pi's normal global and
+trusted project discovery, and removes the temporary directory during controller disposal.
 
-- `modules/file-search/` — `fd`/`rg` tools, a feature Module whose only importable surface is
-  `interfaces/pi.ts` (the Extension) and `interfaces/ui.ts` (the `@`-completion surface the
-  controller consumes). `process.ts` is the deep module: `runFileSearch` hides shell-free
-  spawning, process-group kill, timeouts, and bounded output capture with temp-file spill
-  (capture creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves
-  system binaries.
-- `modules/subagents/` — child-Pi subagents, a feature Module whose only importable surface is
-  `interfaces/pi.ts` (the Extension), `interfaces/ui.ts` (the parsed subagent state the controller
-  and views consume), and `interfaces/host.ts` (reserved; no host-side needs today). `protocol.ts`
-  owns the versioned `pi.subagent` wire format (types, transitions, validator); `runner.ts` is a
-  thin adapter that folds shared child-agent runtime events into `SubagentDetailsV1` snapshots;
-  `run-job.ts` is the single run pipeline (queueing, semaphore, spawn, terminal synthesis, output
-  spill) shared by the blocking tool and the background manager; `background-manager.ts` owns
-  background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes;
-  `view-model.ts` and `background-bridge.ts` bound protocol payloads into host view models behind
-  the UI Entry.
-- `modules/workflows/` — programmatic workflows, a feature Module whose only importable surface is
-  `interfaces/pi.ts` (the Extension), `interfaces/host.ts` (the Host Entry: the headless run path
-  plus the backend/manager/storage exports the compiled-binary smoke harness uses),
-  `interfaces/ui.ts` (the UI Entry: `WorkflowBridge`, the run-event reducer, and
-  `resolveWorkflowRun`, the parsed run state the controller and views consume), and
-  `interfaces/api.ts` (the type-only authoring SDK behind the `"pui/workflow"` package export).
-  Inside the Module: `backend.ts` (run lifecycle and active-run
-  state; collaborators are injectable through an options bag, including a `WorkflowPlatform`
-  seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
-  `preflight.ts` (launch-time script vetting), `node-resolution.ts` (sandbox Node discovery and
-  the default host shell executor), `worker-host.ts` (`WorkflowWorker`: sandboxed spawn, frame
-  decoding, stderr tail, and watchdog/timeout supervision of one worker process),
-  `rpc-handler.ts` (the phase/log/shell/agent RPC dispatch and reply framing for one run),
-  `worker-protocol.ts` + `worker/*.js.txt` (untrusted worker-frame validation, NDJSON decoding,
-  and sandboxed worker source), `rpc-operations.ts` (pure request/result validators and the one
-  durable-operation pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories),
-  `durable-fs.ts` (safe-directory traversal, atomic-write/fsync, and the cross-process directory-lock protocol with
-  per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
+### Modules — `modules/`
+
+Each feature lives in one directory under `modules/`. A Module owns its logic, state, and wire
+protocols; Modules never import each other and may import only `shared/` (plus npm and the Pi
+SDK). From outside a Module, only its Interfaces Directory (`modules/<name>/interfaces/`) is
+importable; everything else is private. The entry names are fixed, and each entry is consumed by
+exactly one layer:
+
+| Entry | Consumer | Role |
+|---|---|---|
+| `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; keeps a default export so plain `pi -e` can load the feature standalone |
+| `interfaces/host.ts` | the App | the Host Entry: host-process needs such as headless runs |
+| `interfaces/ui.ts` | the UI | the UI Entry: view models, protocol parsers, and bridges — the only way UI code reaches the Module |
+| `interfaces/api.ts` | workflow scripts | the public authoring SDK behind the `"pui/workflow"` package export |
+
+What each Module publishes:
+
+| Module | `pi` | `host` | `ui` | `api` |
+|---|---|---|---|---|
+| `file-search` | `fd`/`rg` tools | — | the `@`-completion command | — |
+| `web` | `web_search`/`web_crawl` | — | — | — |
+| `subagents` | `subagent` + background tools | reserved (documented empty stub) | bounded subagent view models + `BackgroundSubagentBridge` | — |
+| `workflows` | the `workflow` tool | headless run path + backend/manager/storage for the smoke harness | `WorkflowBridge`, the run-event reducer, `resolveWorkflowRun` | type-only `"pui/workflow"` SDK |
+
+Inside their private files, the Modules are deep:
+
+- `modules/file-search/` — `process.ts` is the deep module: `runFileSearch` hides shell-free
+  spawning, process-group kill, timeouts, and bounded output capture with temp-file spill (capture
+  creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves system binaries.
+- `modules/subagents/` — `protocol.ts` owns the versioned `pi.subagent` wire format (types,
+  transitions, validator); `runner.ts` is a thin adapter that folds Child-Agent Runtime events into
+  `SubagentDetailsV1` snapshots; `run-job.ts` is the single run pipeline (queueing, semaphore,
+  spawn, terminal synthesis, output spill) shared by the blocking tool and the background manager;
+  `background-manager.ts` owns background-job delivery semantics; `background-protocol.ts` owns the
+  background bus envelopes; `view-model.ts` and `background-bridge.ts` bound protocol payloads into
+  host view models behind the UI Entry.
+- `modules/workflows/` — `backend.ts` (run lifecycle and active-run state; collaborators are
+  injectable through an options bag, including a `WorkflowPlatform` seam for
+  timings/uuid/log/worker source and a `WorkflowRunStore` storage interface), `preflight.ts`
+  (launch-time script vetting), `node-resolution.ts` (sandbox Node discovery and the default host
+  shell executor), `worker-host.ts` (`WorkflowWorker`: sandboxed spawn, frame decoding, stderr
+  tail, and watchdog/timeout supervision of one worker process), `rpc-handler.ts` (the
+  phase/log/shell/agent RPC dispatch and reply framing for one run), `worker-protocol.ts` +
+  `worker/*.js.txt` (untrusted worker-frame validation, NDJSON decoding, and sandboxed worker
+  source), `rpc-operations.ts` (pure request/result validators and the one durable-operation
+  pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories), `durable-fs.ts`
+  (safe-directory traversal, atomic-write/fsync, and the cross-process directory-lock protocol
+  with per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
   tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
-  `session-lifecycle.ts` (session epoch/generation guards for `interfaces/pi.ts`), `worktree.ts`,
-  `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts`
-  provides the default child-Pi agent executor — a thin adapter over the shared child-agent
-  runtime — and the shared production backend wiring used by
-  the extension, the headless CLI, and the smoke harness. The default policy's role allowlist,
-  model resolution, and per-role timeout defaults all derive from the presets in
-  `shared/agent-runtime/presets.ts`, the single role definition.
-- `modules/web/` — `web_search`/`web_crawl`, a feature Module whose only importable surface is
-  `interfaces/pi.ts` (the Extension). `output-retention.ts` is the deep module (bounded
-  previews, private temp-file retention with per-result/per-session quotas); `tool-shell.ts` is the
-  shared execute wrapper; `search.ts`/`crawl.ts` hold provider-specific logic only.
+  `session-lifecycle.ts` (session epoch/generation guards for the Extension), `worktree.ts`,
+  `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts` provides the
+  default child-Pi agent executor — a thin adapter over the Child-Agent Runtime — and the shared
+  production backend wiring used by the Extension, the headless CLI, and the smoke harness. The
+  default policy's role allowlist, model resolution, and per-role timeout defaults all derive from
+  the Agent Roles in `shared/agent-runtime/presets.ts`, the single role definition.
+- `modules/web/` — `output-retention.ts` is the deep module (bounded previews, private temp-file
+  retention with per-result/per-session quotas); `tool-shell.ts` is the shared execute wrapper;
+  `search.ts`/`crawl.ts` hold provider-specific logic only.
 
 ### Shared Primitives — `shared/`
 
-Cross-cutting primitives importable by every layer, split in two:
+Cross-cutting code importable by every layer, split in two so that reaching for a validator does
+not entangle a Module with agent-spawning machinery:
 
 - `shared/agent-runtime/` — the Child-Agent Runtime: `child-agent.ts` (the one child-Pi runtime:
   shell-free detached spawn, NDJSON parsing into throttled neutral `ChildAgentEvent` flushes,
   bounded stderr, usage aggregation with fingerprint dedupe, model-label canonicalization,
   terminal-status classification, SIGTERM→SIGKILL termination, and the process-wide child-Pi
   semaphore; the subagent runner and the workflow agent executor are both adapters over it) and
-  `presets.ts` (the Agent Roles: child-agent presets, the single role allowlist, and model/timeout
-  resolution used by subagents and workflows; the bundled agent guidance lives in
-  `shared/agent-runtime/agents/`). Agent Roles belong here, not to the subagent extension — see
-  ADR 0001 in `docs/adr/`.
+  `presets.ts` (the Agent Roles: `worker`/`explore`/`generic` child-agent presets, the single role
+  allowlist, and the model/timeout resolution used by both subagents and workflows; the bundled
+  agent guidance lives in `shared/agent-runtime/agents/`). Agent Roles belong here, not to the
+  subagents Module — see ADR 0001 in `docs/adr/`.
 - `shared/lib/` — the generic library: `background-channel.ts` (producer-side
   ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
-  `createGracefulTermination` SIGTERM→SIGKILL escalation and
-  `killProcessTree` group signaling used by every child supervisor), `instance-scoped-runs.ts`
-  (the routed copy-on-write run-set reducer — producer authority, reset/replacement gating, and
-  run caps — shared by the subagent and workflow bridges), `json-events.ts` (the JSONL
-  splitter for child NDJSON streams), `retained-output.ts` (quota-bounded
-  spill storage plus `composeBoundedOutput`, the single fixed-point composer that fits a truncated
-  preview and its accurate truncation notice inside one byte/line budget for every extension),
-  `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
-  (record, error-message, and Unicode-safe bounded-string helpers).
+  `createGracefulTermination` SIGTERM→SIGKILL escalation and `killProcessTree` group signaling
+  used by every child supervisor), `instance-scoped-runs.ts` (the routed copy-on-write run-set
+  reducer — producer authority, reset/replacement gating, and run caps — shared by the subagent
+  and workflow bridges), `json-events.ts` (the JSONL splitter for child NDJSON streams),
+  `retained-output.ts` (quota-bounded spill storage plus `composeBoundedOutput`, the single
+  fixed-point composer that fits a truncated preview and its accurate truncation notice inside one
+  byte/line budget for every extension), `semaphore.ts` (abort-aware FIFO concurrency), and
+  `validate.ts` (record, error-message, and Unicode-safe bounded-string helpers).
 
-### Skills — `pi-core/skills/`
+## Boundary enforcement
 
-`pi-core/skills/unslop/` contains the bundled writing skill and its upstream MIT license. `pi-core/bundled-skills.ts`
-imports both with Bun's file loader, then copies them to a private temporary directory owned by the
-controller. This gives Pi and its tools ordinary filesystem paths instead of Bun's `$bunfs` paths,
-which `fs.readFile` can read but `fs.access` cannot. The runtime supplies the copied `SKILL.md` through
-`additionalSkillPaths`, alongside Pi's normal global and trusted project discovery, and removes the
-temporary directory during controller disposal.
+`scripts/check-boundaries.ts` runs in `bun run check` and fails the gate on any edge outside the
+layer rules. Its core is a pure function, `checkBoundaries(edges) -> violations`, fed by a
+regex-based scanner that resolves every relative import in `app/`, `ui/`, `pi-core/`, `modules/`,
+`shared/`, and `extensions/`. The rules:
+
+- `app` may import `ui/start` (only that file of the UI), `pi-core`, a Module's `interfaces/host`,
+  and `shared`.
+- `ui` may import `pi-core`, a Module's `interfaces/ui`, and `shared`.
+- `pi-core` may import a Module's `interfaces/pi` and `shared`.
+- A Module may import itself and `shared` — never another Module, not even through its Interfaces
+  Directory.
+- `shared` may import only `shared`.
+- Outside a Module, only its Interfaces Directory is importable; a deep import into Module
+  internals is a violation from any layer.
+- Nothing imports `app/`.
+- Production code may not import test files or `test-support/`.
+
+The rules cover production code only: `*.test.ts(x)` files and `test-support/` directories are
+exempt as import sources (module tests use `extensions/test-support`, and
+`pi-core/register.test.ts` drives the UI controller). Bare specifiers (npm packages, the Pi SDK,
+`node:`/`bun:` builtins) and asset imports are out of scope.
 
 ## Protocol ownership
 
-Wire formats have exactly one implementation, owned by the producing extension:
+Wire formats have exactly one implementation, owned by the producing Module, and consumers reach
+parsed state through the Module's UI Entry instead of maintaining mirrors:
 
 - `modules/subagents/protocol.ts` — `pi.subagent` details. The Module's `view-model.ts` consumes
   it: it validates with `isSubagentDetailsV1` and then bounds every string into a
@@ -194,25 +256,25 @@ Wire formats have exactly one implementation, owned by the producing extension:
   published through `interfaces/ui.ts`.
 - `modules/workflows/protocol.ts` — workflow summaries, background events, and control envelopes.
   The Module's `bridge.ts` consumes the parsers and owns control correlation, and `view-model.ts`
-  resolves tool-result details against authoritative runs, both published through `interfaces/ui.ts`.
-  Both bridges delegate instance authority, routed copy-on-write updates, reset/replacement gating,
-  and run caps to `shared/lib/instance-scoped-runs.ts`.
+  resolves tool-result details against authoritative runs, both published through
+  `interfaces/ui.ts`. Both bridges delegate instance authority, routed copy-on-write updates,
+  reset/replacement gating, and run caps to `shared/lib/instance-scoped-runs.ts`.
 
-The host still treats extension payloads as untrusted input: parsers validate shape and routing,
-and the view models bound every string.
+The UI still treats extension payloads as untrusted input: parsers validate shape and routing, and
+the view models bound every string.
 
 ## Dependency injection conventions
 
-- Dependencies are passed as an options object with production defaults. The application
-  composition root resolves them explicitly; directly loaded extension wrappers construct the
-  equivalent defaults. There are no module-level resource owners created as import side effects.
+- Dependencies are passed as an options object with production defaults. The Register File
+  resolves them explicitly; directly loaded Extensions construct the equivalent defaults. There
+  are no module-level resource owners created as import side effects.
 - Constructors are public. Tests build real objects with fake collaborators (fake
   `AgentSessionRuntime`, private `EventBus`, fake `MenuHost`, fake filesystem) instead of casting
   through private APIs.
 - Narrow seams are preferred over mocks: `MenuController` is a `Pick<>` of the controller, the web
-  retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, the workflow
-  extension accepts a whole `backend`.
-- One deliberate exception: the shared child-agent runtime caches its process-wide semaphore on
+  retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, the
+  workflow Extension accepts a whole `backend`.
+- One deliberate exception: the Child-Agent Runtime caches its process-wide semaphore on
   `globalThis` so a duplicated module instance still shares one concurrency limit. Subagents and
   workflow agents draw from the same slots.
 
@@ -221,24 +283,22 @@ and the view models bound every string.
 - Test at module boundaries. Pure modules (protocols, reducers, formatters, key predicates) are
   tested as functions. Stateful modules are driven through their public interface with injected
   fakes (`controller.test.ts` binds a fake session and emits session events; `menus.test.ts`
-  drives `createMenus` with a fake host).
-- Where the real boundary is a process or the filesystem, tests use the real thing: the shared
-  child-agent runtime and the subagent runner spawn a fixture child, the approval store races a
+  drives `createMenus` with a fake host). The boundary checker's public interface is
+  `checkBoundaries`, tested as a function from an import graph to a violation list.
+- Where the real boundary is a process or the filesystem, tests use the real thing: the
+  Child-Agent Runtime and the subagent runner spawn a fixture child, the approval store races a
   real second process, worktree tests run real `git`, run-storage tests inject real corruption.
-- Bundled-skill tests materialize the real embedded assets and load the resulting path through Pi's
-  public resource loader. The compiled executable smoke test verifies that `fs.access` and reads work
-  against those ordinary files.
-- `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite, a binary
-  build, and a smoke test of the built executable (`scripts/smoke-build.ts` → `dist/pui
-  --workflow-smoke`). The boundary check (`scripts/check-boundaries.ts`) scans the import graph and
-  fails on any edge outside the one-way layer rules: app → ui/start + pi-core + Module Host Entries;
-  ui → pi-core + Module UI Entries; pi-core → Module Extensions; Modules → shared only; outside a
-  Module, only its `interfaces/` directory is importable. Test files and `test-support/` are exempt
-  as import sources.
+- Bundled-skill tests materialize the real embedded assets and load the resulting path through
+  Pi's public resource loader. The compiled executable smoke test verifies that `fs.access` and
+  reads work against those ordinary files.
+- `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
+  (`bun test app shared modules pi-core ui scripts`), a binary build, and a smoke test of the
+  built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
 
 ## Notes
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its
 `CombinedAutocompleteProvider`; pui's visible renderer remains OpenTUI. Bundled resources augment
 normal Pi discovery. Global and trusted project extensions and skills still load from Pi's regular
-configuration, and the bundled extensions stay loadable in plain `pi` via `pi -e`.
+configuration, and each Module's Extension stays loadable in plain `pi` via
+`pi -e modules/<name>/interfaces/pi.ts`.
