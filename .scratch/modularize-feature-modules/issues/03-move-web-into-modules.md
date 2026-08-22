@@ -6,9 +6,9 @@
 
 **Blocked by:** 01 — Split shared into agent-runtime and lib.
 
-**Status:** ready-for-agent
+**Status:** done (commit 20d9ede on `modularize-feature-modules`)
 
-- [ ] `modules/web/interfaces/pi.ts` is the only file imported from outside the Module
-- [ ] Web search/crawl tools register and behave as before
-- [ ] Standalone loading via `pi -e` still works
-- [ ] `bun run check` is green
+- [x] `modules/web/interfaces/pi.ts` is the only file imported from outside the Module (the Module's own tests still reach `extensions/test-support/`; flagged for the issue-09 boundary checker)
+- [x] Web search/crawl tools register and behave as before (all 32 module tests pass unchanged)
+- [x] Standalone loading via `pi -e` still works (verified by loading `interfaces/pi.ts` through `DefaultResourceLoader`; `web_search`/`web_crawl` register with no errors)
+- [x] `bun run check` is green
