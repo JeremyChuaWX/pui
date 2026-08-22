@@ -73,7 +73,7 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the bundled Pi extension in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
 Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
@@ -191,8 +191,8 @@ edges enforced by a boundary check in `bun run check`. The short version:
   lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
   display.
 - `src/modules/file-search/`, `src/modules/web/`, `src/modules/subagents/`, and `src/modules/workflows/` are
-  self-contained feature modules behind their `interfaces/` directories, registered via Pi Core's
-  Register File `src/pi-core/register.ts`. Each feature owns its wire protocol; consumers reach parsed
+  the four Modules behind their Interfaces Directories, registered via Pi Core's
+  Register File `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed
   state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
   import resolves to the workflows Module's `interfaces/api.ts`.
 - `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/agent-runtime/` (the

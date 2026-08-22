@@ -62,7 +62,10 @@ const INTERFACE_ENTRY_BY_LAYER: Record<string, string> = {
     "pi-core": "pi",
 };
 
-/** The unit an import must stay inside to be spelled relatively: a layer, or one Module. */
+/**
+ * The unit an import must stay inside to be spelled relatively: a layer, or one Module. Unlike
+ * `layerOf`, a Module-local test-support/ directory belongs to its Module here.
+ */
 function unitOf(filePath: string): string {
     const [top, second] = filePath.split("/");
     return top === "modules" && second ? `modules/${second}` : (top ?? "");
@@ -83,7 +86,7 @@ function judgeSpelling(edge: ImportEdge): string | undefined {
     return undefined;
 }
 
-function judge(edge: ImportEdge): string | undefined {
+function judgeLayerRules(edge: ImportEdge): string | undefined {
     const from = layerOf(edge.from);
     const to = layerOf(edge.to);
 
@@ -125,7 +128,7 @@ export function checkBoundaries(edges: ImportEdge[]): Violation[] {
     const violations: Violation[] = [];
     for (const edge of edges) {
         const testSource = isTestFile(edge.from) || isTestSupportFile(edge.from);
-        const rule = judgeSpelling(edge) ?? (testSource ? undefined : judge(edge));
+        const rule = judgeSpelling(edge) ?? (testSource ? undefined : judgeLayerRules(edge));
         if (rule !== undefined) violations.push({ ...edge, rule });
     }
     return violations;
@@ -170,7 +173,8 @@ function expandAlias(specifier: string, options: ScanOptions): string | undefine
  * Imperative shell: scan every directory under `sourceRoot` (the repo's `src/`) and build the import
  * graph. Edge paths are relative to `sourceRoot`, so layers appear as the first path segment.
  * Relative specifiers resolve from the importing file; "#" specifiers resolve through the imports
- * map and are kept verbatim as `to` when they do not match it.
+ * map and are kept verbatim as `to` when no map entry matches. Imports of non-TypeScript files
+ * (bundled assets) are out of scope whichever way they are spelled.
  */
 export function collectImportEdges(sourceRoot: string, options: ScanOptions): ImportEdge[] {
     const edges: ImportEdge[] = [];
@@ -188,8 +192,12 @@ export function collectImportEdges(sourceRoot: string, options: ScanOptions): Im
             const from = toSourceRelative(file);
             if (specifier.startsWith("#")) {
                 const expanded = expandAlias(specifier, options);
-                const resolved = expanded === undefined ? undefined : resolveToTypeScript(expanded);
-                edges.push({ from, to: resolved === undefined ? specifier : toSourceRelative(resolved), specifier });
+                if (expanded === undefined) {
+                    edges.push({ from, to: specifier, specifier });
+                    continue;
+                }
+                const resolved = resolveToTypeScript(expanded);
+                if (resolved !== undefined) edges.push({ from, to: toSourceRelative(resolved), specifier });
             } else if (specifier.startsWith(".")) {
                 const resolved = resolveToTypeScript(path.resolve(path.dirname(file), specifier));
                 if (resolved !== undefined) edges.push({ from, to: toSourceRelative(resolved), specifier });

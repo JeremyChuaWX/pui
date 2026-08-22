@@ -147,6 +147,27 @@ describe("test-file scoping", () => {
 });
 
 describe("import spelling", () => {
+    test("a Module-local test-support directory is part of its Module for spelling", () => {
+        const edges: ImportEdge[] = [
+            {
+                from: "modules/workflows/test-support/workflow-fixture.ts",
+                to: "modules/workflows/protocol.ts",
+                specifier: "../protocol.js",
+            },
+            {
+                from: "modules/workflows/protocol.test.ts",
+                to: "modules/workflows/test-support/workflow-fixture.ts",
+                specifier: "./test-support/workflow-fixture.js",
+            },
+            {
+                from: "modules/workflows/test-support/workflow-fixture.ts",
+                to: "test-support/wait.ts",
+                specifier: "#test-support/wait.js",
+            },
+        ];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+
     test("a cross-layer import spelled with a # alias is judged by the layer rules", () => {
         const edges: ImportEdge[] = [
             { from: "ui/state/controller.ts", to: "shared/lib/validate.ts", specifier: "#shared/lib/validate.js" },
@@ -213,7 +234,7 @@ describe("import spelling", () => {
 });
 
 describe("collectImportEdges", () => {
-    test("resolves relative and # alias specifiers and keeps unresolvable # specifiers", () => {
+    test("resolves relative and # alias specifiers, keeps unmatched # specifiers, skips aliased assets", () => {
         const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pui-boundaries-"));
         try {
             const sourceRoot = path.join(packageRoot, "src");
@@ -221,6 +242,7 @@ describe("collectImportEdges", () => {
             fs.mkdirSync(path.join(sourceRoot, "shared", "lib"), { recursive: true });
             fs.writeFileSync(path.join(sourceRoot, "shared", "lib", "validate.ts"), "export const x = 1;\n");
             fs.writeFileSync(path.join(sourceRoot, "ui", "state", "format.ts"), "export const y = 1;\n");
+            fs.writeFileSync(path.join(sourceRoot, "shared", "lib", "guidance.md"), "# guidance\n");
             fs.writeFileSync(
                 path.join(sourceRoot, "ui", "state", "controller.ts"),
                 [
@@ -228,8 +250,9 @@ describe("collectImportEdges", () => {
                     'import { y } from "./format.js";',
                     'import { z } from "#nope/thing.js";',
                     'import { w } from "../../shared/lib/validate.js";',
+                    'import guidance from "#shared/lib/guidance.md" with { type: "text" };',
                     'import * as fs from "node:fs";',
-                    "export const all = [x, y, z, w, fs];",
+                    "export const all = [x, y, z, w, guidance, fs];",
                 ].join("\n"),
             );
             const edges = collectImportEdges(sourceRoot, {

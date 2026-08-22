@@ -102,8 +102,8 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   The boundary check enforces the spelling both ways and rejects unresolvable `#`
   specifiers.
 - Boundaries are enforced by convention plus a small boundary-check script
-  (import-specifier scan asserting the edge list and the
-  Interfaces-Directory-only rule) added to the standard check gate. UI→App is
+  (import-specifier scan asserting the edge list, the Interfaces-Directory-only
+  rule, and the import spelling) added to the standard check gate. UI→App is
   fully forbidden (not even type-only imports), since the Controller's move into
   the UI removes the need.
 - Delivery: one refactor branch, a sequence of mechanical move commits with

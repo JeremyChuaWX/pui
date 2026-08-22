@@ -306,7 +306,7 @@ the view models bound every string.
   Pi's public resource loader. The compiled executable smoke test verifies that `fs.access` and
   reads work against those ordinary files.
 - `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
-  (`bun test app shared modules pi-core ui scripts`), a binary build, and a smoke test of the
+  (`bun test src scripts`), a binary build, and a smoke test of the
   built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
 
 ## Notes

@@ -10,6 +10,6 @@
 
 - [x] `src/` lists exactly `app/`, `ui/`, `pi-core/`, `modules/`, `shared/`, `test-support/`, `assets.d.ts`; no `extensions/` at the root
 - [x] `"pui/workflow"` still resolves (export map repointed at `src/modules/workflows/interfaces/api.ts`)
-- [x] Boundary scanner is rooted at `src/`; the rule function and its fixtures are unchanged
+- [x] Boundary scanner is rooted at `src/`; the rule function is unchanged, and the only fixture edits are `extensions/test-support/…` → `test-support/…`
 - [x] README, `docs/ARCHITECTURE.md`, `CONTRIBUTION.md`, ADR 0001, issue 0001, and `.coderabbit.yaml` reference `src/…` paths; no references to old paths remain
 - [x] `bun run check` is green
