@@ -6,9 +6,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done (commits af389ee, 795ec9b on `modularize-feature-modules`)
 
-- [ ] `shared/agent-runtime/` and `shared/lib/` contain the split as specified; no old shared directory remains
-- [ ] Agent Role guidance markdown travels with the Child-Agent Runtime
-- [ ] ADR 0001 ("Agent Roles belong to the Child-Agent Runtime") exists under the ADR directory
-- [ ] `bun run check` is green
+- [x] `shared/agent-runtime/` and `shared/lib/` contain the split as specified; no old shared directory remains
+- [x] Agent Role guidance markdown travels with the Child-Agent Runtime
+- [x] ADR 0001 ("Agent Roles belong to the Child-Agent Runtime") exists under the ADR directory
+- [x] `bun run check` is green (test glob now includes `shared/`, adding its 7 previously unrun test files to the gate)
