@@ -18,7 +18,7 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
-import { resolveFdBinary } from "../extensions/file-search/binaries.js";
+import { resolveFdBinary } from "../modules/file-search/interfaces/ui.js";
 import { errorMessage } from "../shared/lib/validate.js";
 import { BackgroundSubagentBridge } from "./background-subagent.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";

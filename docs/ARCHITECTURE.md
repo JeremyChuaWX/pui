@@ -19,7 +19,7 @@ src/app.tsx (App shell) + src/ui/* ─────────── view layer,
       │
       ▼  bundled resources
 extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
-extensions/file-search  extensions/subagent  extensions/workflow  extensions/web  skills/unslop
+modules/file-search  extensions/subagent  extensions/workflow  extensions/web  skills/unslop
 ```
 
 ## Layers
@@ -93,10 +93,12 @@ boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result. Each
 export calls a small `createDefault*Dependencies` helper so the source remains directly loadable by
 plain Pi with equivalent production wiring.
 
-- `extensions/file-search/` — `fd`/`rg` tools. `process.ts` is the deep module: `runFileSearch`
-  hides shell-free spawning, process-group kill, timeouts, and bounded output capture with
-  temp-file spill (capture creation is an injectable seam). `args.ts` builds argv, `binaries.ts`
-  resolves system binaries (also used by the controller for `@` completion).
+- `modules/file-search/` — `fd`/`rg` tools, a feature Module whose only importable surface is
+  `interfaces/pi.ts` (the Extension) and `interfaces/ui.ts` (the `@`-completion surface the
+  controller consumes). `process.ts` is the deep module: `runFileSearch` hides shell-free
+  spawning, process-group kill, timeouts, and bounded output capture with temp-file spill
+  (capture creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves
+  system binaries.
 - `extensions/subagent/` — child-Pi subagents. `protocol.ts` owns the versioned `pi.subagent` wire
   format (types, transitions, validator); `runner.ts` is a thin adapter that folds shared
   child-agent runtime events into `SubagentDetailsV1` snapshots;

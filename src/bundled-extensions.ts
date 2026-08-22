@@ -1,10 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import {
-    createDefaultFileSearchDependencies,
-    type FileSearchExtensionDependencies,
-    registerFileSearchExtension,
-} from "../extensions/file-search/index.js";
-import {
     createDefaultSubagentDependencies,
     registerSubagentExtension,
     type SubagentExtensionDependencies,
@@ -19,6 +14,11 @@ import {
     registerWorkflowExtension,
     type WorkflowExtensionDependencies,
 } from "../extensions/workflow/index.js";
+import {
+    createDefaultFileSearchDependencies,
+    type FileSearchExtensionDependencies,
+    registerFileSearchExtension,
+} from "../modules/file-search/interfaces/pi.js";
 
 export interface BundledExtensionFactoryOptions {
     fileSearch?: FileSearchExtensionDependencies;

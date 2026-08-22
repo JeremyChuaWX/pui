@@ -5,7 +5,7 @@ This application-owned extension registers `fd` for file discovery and `rg` for 
 For standalone use:
 
 ```sh
-pi -e /absolute/path/to/pui/extensions/file-search/index.ts
+pi -e /absolute/path/to/pui/modules/file-search/interfaces/pi.ts
 ```
 
 Install [`fd`](https://github.com/sharkdp/fd) (called `fdfind` by some Linux packages) and [ripgrep](https://github.com/BurntSushi/ripgrep), and ensure they are on `PATH`. pui never downloads them.

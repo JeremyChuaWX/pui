@@ -150,9 +150,9 @@ Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is mis
 
 ## File-search tools
 
-pui bundles application-owned `fd` and `rg` tools from [`extensions/file-search/`](extensions/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](extensions/file-search/README.md).
+pui bundles application-owned `fd` and `rg` tools from [`modules/file-search/`](modules/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](modules/file-search/README.md).
 
-The regular `pi` command does not auto-load these tools; load them explicitly with `pi -e /absolute/path/to/pui/extensions/file-search/index.ts`.
+The regular `pi` command does not auto-load these tools; load them explicitly with `pi -e /absolute/path/to/pui/modules/file-search/interfaces/pi.ts`.
 
 ## Web tools
 
@@ -186,7 +186,8 @@ ownership, dependency-injection conventions, and the testing strategy. The short
 - `src/format.ts` projects Pi messages and live tool executions into display variants and preserves
   item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
   events; `src/subagent.ts` validates and bounds the subagent protocol for display.
-- `extensions/` holds the bundled application-owned Pi extensions (file-search, subagent, workflow,
+- `modules/file-search/` is a self-contained feature module behind its `interfaces/` directory;
+  `extensions/` holds the remaining bundled application-owned Pi extensions (subagent, workflow,
   web), registered via `src/bundled-extensions.ts`. Each extension owns its wire protocol; `src/`
   consumes those protocols directly instead of maintaining mirrors.
 - `skills/` holds application-owned skills, registered via `src/bundled-skills.ts`.
