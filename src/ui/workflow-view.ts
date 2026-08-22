@@ -2,7 +2,7 @@ import type {
     WorkflowAgentStatus,
     WorkflowRunStatus,
     WorkflowRunSummaryV1,
-} from "../../extensions/workflow/protocol.js";
+} from "../../modules/workflows/interfaces/ui.js";
 
 export const WORKFLOW_NAVIGATION_TIMEOUT_MS = 30_000;
 

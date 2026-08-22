@@ -1,12 +1,19 @@
+/**
+ * Host Entry: the headless run path. `runHeadlessWorkflow` executes an
+ * explicitly selected workflow file without a UI or Pi session, and the
+ * backend/manager/storage exports let the compiled-binary smoke harness
+ * exercise the same production workflow machinery.
+ */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-    createDefaultWorkflowBackend,
-    HEADLESS_WORKFLOW_SESSION_PREFIX,
-} from "../extensions/workflow/agent-executor.js";
-import type { WorkflowBackend } from "../extensions/workflow/backend.js";
-import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
-import { readWorkflowFile } from "../extensions/workflow/source.js";
+import { createDefaultWorkflowBackend, HEADLESS_WORKFLOW_SESSION_PREFIX } from "../agent-executor.js";
+import type { WorkflowBackend } from "../backend.js";
+import type { WorkflowRunSummaryV1 } from "../protocol.js";
+import { readWorkflowFile } from "../source.js";
+
+export { createWorkflowBackend, type WorkflowBackend } from "../backend.js";
+export { WorkflowRunManager } from "../manager.js";
+export { WorkflowRunStorage } from "../run-storage.js";
 
 // Includes "timed_out" defensively: injected backends may report agent-style statuses.
 const TERMINAL_WORKFLOW_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);

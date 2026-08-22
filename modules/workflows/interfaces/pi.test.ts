@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createExtensionApiHarness } from "../test-support/extension-api.ts";
-import { waitFor } from "../test-support/wait.js";
-import { workflowApprovalKey } from "./approval.js";
-import type { WorkflowBackend } from "./backend.js";
-import { registerWorkflowExtension } from "./index.js";
+import { createExtensionApiHarness } from "../../../extensions/test-support/extension-api.ts";
+import { waitFor } from "../../../extensions/test-support/wait.js";
+import { workflowApprovalKey } from "../approval.js";
+import type { WorkflowBackend } from "../backend.js";
+import { registerWorkflowExtension } from "./pi.js";
 
 const summary = (status: "running" | "succeeded") => ({
     schema: "pi.workflow" as const,

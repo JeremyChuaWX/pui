@@ -20,6 +20,11 @@ import {
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { fdCompletionCommand } from "../modules/file-search/interfaces/ui.js";
 import { BackgroundSubagentBridge } from "../modules/subagents/interfaces/ui.js";
+import {
+    WorkflowBridge,
+    type WorkflowControlAction,
+    type WorkflowRunSummaryV1,
+} from "../modules/workflows/interfaces/ui.js";
 import { errorMessage } from "../shared/lib/validate.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
 import { type BundledSkillResources, createBundledSkillResources } from "./bundled-skills.js";
@@ -44,7 +49,6 @@ import type {
     SessionChoice,
     ToastMessage,
 } from "./types.js";
-import { WorkflowBridge, type WorkflowControlAction, type WorkflowRunSummaryV1 } from "./workflow-bridge.js";
 
 export interface ControllerOptions {
     cwd: string;

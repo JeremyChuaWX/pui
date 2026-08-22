@@ -10,7 +10,7 @@ src/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smo
       ▼
 src/controller.ts (PuiController) ──────────── deep module: embeds Pi, owns all state
       │  collaborators (each injectable):
-      │    src/workflow-bridge.ts     WorkflowBridge      run map + control round-trips
+      │    modules/workflows/interfaces/ui.ts  WorkflowBridge      run map + control round-trips
       │    modules/subagents/interfaces/ui.ts  BackgroundSubagentBridge + bounded view models
       │    src/controller-queues.ts   ExtensionDialogQueue / ToastQueue
       │
@@ -19,7 +19,7 @@ src/app.tsx (App shell) + src/ui/* ─────────── view layer,
       │
       ▼  bundled resources
 extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
-modules/file-search  modules/web  modules/subagents  extensions/workflow  skills/unslop
+modules/file-search  modules/web  modules/subagents  modules/workflows  skills/unslop
 ```
 
 ## Layers
@@ -27,7 +27,7 @@ modules/file-search  modules/web  modules/subagents  extensions/workflow  skills
 ### Entry — `src/index.tsx`
 
 Parses CLI flags and dispatches: the interactive TUI (`PuiController.create` + Solid render),
-`pui workflow …` (headless, via `src/headless-workflow.ts`, no TUI or Pi session), or the
+`pui workflow …` (headless, via the workflows Module's Host Entry `modules/workflows/interfaces/host.ts`, no TUI or Pi session), or the
 compiled-binary smoke harness (`src/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1` but
 statically linked so the built executable can self-test). A prompt argument is handed to the App as
 `initialPrompt` and dispatched through the same prompt-action record as interactive input, so
@@ -49,7 +49,7 @@ The controller delegates to focused collaborators rather than owning every conce
 
 | Module | Interface | Hides |
 |---|---|---|
-| `src/workflow-bridge.ts` | `bind / runs / inspect / control / dispose` | workflow background-event parsing and control correlation |
+| `modules/workflows/interfaces/ui.ts` | `WorkflowBridge` (`bind / runs / inspect / control / dispose`) | workflow background-event parsing and control correlation |
 | `modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
 | `shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
 | `src/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
@@ -109,7 +109,13 @@ plain Pi with equivalent production wiring.
   background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes;
   `view-model.ts` and `background-bridge.ts` bound protocol payloads into host view models behind
   the UI Entry.
-- `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle and active-run
+- `modules/workflows/` — programmatic workflows, a feature Module whose only importable surface is
+  `interfaces/pi.ts` (the Extension), `interfaces/host.ts` (the Host Entry: the headless run path
+  plus the backend/manager/storage exports the compiled-binary smoke harness uses),
+  `interfaces/ui.ts` (the UI Entry: `WorkflowBridge`, the run-event reducer, and
+  `resolveWorkflowRun`, the parsed run state the controller and views consume), and
+  `interfaces/api.ts` (the type-only authoring SDK behind the `"pui/workflow"` package export).
+  Inside the Module: `backend.ts` (run lifecycle and active-run
   state; collaborators are injectable through an options bag, including a `WorkflowPlatform`
   seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
   `preflight.ts` (launch-time script vetting), `node-resolution.ts` (sandbox Node discovery and
@@ -122,7 +128,7 @@ plain Pi with equivalent production wiring.
   `durable-fs.ts` (safe-directory traversal, atomic-write/fsync, and the cross-process directory-lock protocol with
   per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
   tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
-  `session-lifecycle.ts` (session epoch/generation guards for `index.ts`), `worktree.ts`,
+  `session-lifecycle.ts` (session epoch/generation guards for `interfaces/pi.ts`), `worktree.ts`,
   `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts`
   provides the default child-Pi agent executor — a thin adapter over the shared child-agent
   runtime — and the shared production backend wiring used by
@@ -180,7 +186,9 @@ Wire formats have exactly one implementation, owned by the producing extension:
   `background-bridge.ts` consumes its parser, bounds strings into host view models, and exposes a
   bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
   published through `interfaces/ui.ts`.
-- `extensions/workflow/protocol.ts` — workflow summaries, background events, and control envelopes. `src/workflow-bridge.ts` consumes the parsers and owns control correlation.
+- `modules/workflows/protocol.ts` — workflow summaries, background events, and control envelopes.
+  The Module's `bridge.ts` consumes the parsers and owns control correlation, and `view-model.ts`
+  resolves tool-result details against authoritative runs, both published through `interfaces/ui.ts`.
   Both bridges delegate instance authority, routed copy-on-write updates, reset/replacement gating,
   and run caps to `shared/lib/instance-scoped-runs.ts`.
 

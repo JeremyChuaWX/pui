@@ -1,5 +1,5 @@
-import type { WorkflowRunSummaryV1 } from "../../extensions/workflow/protocol.js";
 import { isTerminalSubagentStatus } from "../../modules/subagents/interfaces/ui.js";
+import type { WorkflowRunSummaryV1 } from "../../modules/workflows/interfaces/ui.js";
 import { errorMessage } from "../../shared/lib/validate.js";
 import { commandPaletteEntries, type PaletteCommandId, type PuiController } from "../controller.js";
 import { formatCount } from "../format.js";

@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../extensions/workflow/agent-executor.js";
-import { createWorkflowBackend, type WorkflowBackend } from "../extensions/workflow/backend.js";
-import { WorkflowRunStorage } from "../extensions/workflow/run-storage.js";
-import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./headless-workflow.js";
+import { createWorkflowAgentExecutor, isHeadlessWorkflowSession } from "../agent-executor.js";
+import { createWorkflowBackend, type WorkflowBackend } from "../backend.js";
+import { WorkflowRunStorage } from "../run-storage.js";
+import { parseHeadlessWorkflowArgs, runHeadlessWorkflow } from "./host.js";
 
 describe("headless workflows", () => {
     test("only recognizes generated headless session IDs", () => {
@@ -246,7 +246,7 @@ describe("headless workflows", () => {
                         process.execPath,
                         "--preload",
                         "@opentui/solid/preload",
-                        path.join(import.meta.dir, "index.tsx"),
+                        path.join(import.meta.dir, "..", "..", "..", "src", "index.tsx"),
                         "workflow",
                         ...args,
                     ],

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseBackgroundWorkflowEvent } from "../extensions/workflow/protocol.js";
-import { reduceWorkflowEvent, type WorkflowState } from "./workflow-bridge.js";
+import { reduceWorkflowEvent, type WorkflowState } from "./bridge.js";
+import { parseBackgroundWorkflowEvent } from "./protocol.js";
 
 const route = { sessionId: "session-1", cwd: "/canonical/repo" };
 function payload(type: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {

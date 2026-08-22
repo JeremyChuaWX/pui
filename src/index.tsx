@@ -77,7 +77,9 @@ async function main(): Promise<void> {
     // The workflow subcommands are imported lazily so the interactive path never
     // evaluates the workflow execution modules.
     if (process.argv[2] === "workflow") {
-        const { parseHeadlessWorkflowArgs, runHeadlessWorkflow } = await import("./headless-workflow.js");
+        const { parseHeadlessWorkflowArgs, runHeadlessWorkflow } = await import(
+            "../modules/workflows/interfaces/host.js"
+        );
         const result = await runHeadlessWorkflow({
             ...parseHeadlessWorkflowArgs(process.argv.slice(3)),
             onProgress: (message) => process.stderr.write(`pui workflow: ${message}\n`),

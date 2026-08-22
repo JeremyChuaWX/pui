@@ -1,5 +1,7 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
-import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
+import type { InstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
+import type { WorkflowRunSummaryV1 } from "./protocol.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
@@ -11,9 +13,7 @@ import {
     parseBackgroundWorkflowControlResult,
     parseBackgroundWorkflowEvent,
     type WorkflowControlAction,
-} from "../extensions/workflow/protocol.js";
-import type { InstanceScopedRuns } from "../shared/lib/instance-scoped-runs.js";
-import { reduceInstanceScopedRuns } from "../shared/lib/instance-scoped-runs.js";
+} from "./protocol.js";
 
 export type { WorkflowControlAction, WorkflowRunSummaryV1 };
 

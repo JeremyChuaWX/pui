@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import {
-    buildDisplayItems,
-    formatCount,
-    formatToolTitle,
-    reconcileDisplayItems,
-    resolveWorkflowRun,
-} from "./format.js";
+import { resolveWorkflowRun } from "../modules/workflows/interfaces/ui.js";
+import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { reduceToolExecutions, type ToolExecutionState } from "./tool-executions.js";
 
 describe("pui formatting", () => {

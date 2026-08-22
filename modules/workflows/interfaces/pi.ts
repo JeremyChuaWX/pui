@@ -7,13 +7,13 @@ import type {
     ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackgroundChannel } from "../../shared/lib/background-channel.js";
-import { errorMessage } from "../../shared/lib/validate.js";
-import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "./agent-executor.js";
-import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "./approval.js";
-import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "./backend.js";
-import { WorkflowRunManager } from "./manager.js";
-import { preflightWorkflow } from "./preflight.js";
+import { createBackgroundChannel } from "../../../shared/lib/background-channel.js";
+import { errorMessage } from "../../../shared/lib/validate.js";
+import { createWorkflowAgentExecutor, defaultWorkflowPolicy, isHeadlessWorkflowSession } from "../agent-executor.js";
+import { FileWorkflowApprovalStore, type WorkflowApprovalStore, workflowApprovalKey } from "../approval.js";
+import { createWorkflowBackend, type WorkflowBackend, type WorkflowBackendOptions } from "../backend.js";
+import { WorkflowRunManager } from "../manager.js";
+import { preflightWorkflow } from "../preflight.js";
 import {
     BACKGROUND_WORKFLOW_CHANNEL,
     BACKGROUND_WORKFLOW_CONTROL_CHANNEL,
@@ -21,11 +21,11 @@ import {
     BACKGROUND_WORKFLOW_SCHEMA,
     BACKGROUND_WORKFLOW_VERSION,
     parseBackgroundWorkflowControl,
-} from "./protocol.js";
-import { WorkflowRunStorage } from "./run-storage.js";
-import { SessionLifecycle } from "./session-lifecycle.js";
-import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "./source.js";
-import workflowWritingDocumentation from "./writing-workflows.md" with { type: "text" };
+} from "../protocol.js";
+import { WorkflowRunStorage } from "../run-storage.js";
+import { SessionLifecycle } from "../session-lifecycle.js";
+import { findRepositoryRoot, hasWorkflowMetadata, parseWorkflowMetadata, readWorkflowFile } from "../source.js";
+import workflowWritingDocumentation from "../writing-workflows.md" with { type: "text" };
 
 export function isWorkflowWritingRequest(prompt: string): boolean {
     const words = prompt.toLowerCase().match(/[a-z]+/g) ?? [];

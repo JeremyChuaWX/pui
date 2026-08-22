@@ -6,14 +6,14 @@
     "type": "module",
     "exports": {
         "./workflow": {
-            "types": "./extensions/workflow/api.ts",
-            "default": "./extensions/workflow/api.ts"
+            "types": "./modules/workflows/interfaces/api.ts",
+            "default": "./modules/workflows/interfaces/api.ts"
         }
     },
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/index.tsx",
-        "test": "bun test src shared modules extensions/workflow",
+        "test": "bun test src shared modules",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",
