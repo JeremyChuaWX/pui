@@ -228,8 +228,13 @@ and the view models bound every string.
 - Bundled-skill tests materialize the real embedded assets and load the resulting path through Pi's
   public resource loader. The compiled executable smoke test verifies that `fs.access` and reads work
   against those ordinary files.
-- `bun run check` is the gate: Biome, `tsc`, the full test suite, a binary build, and a smoke test
-  of the built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
+- `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite, a binary
+  build, and a smoke test of the built executable (`scripts/smoke-build.ts` → `dist/pui
+  --workflow-smoke`). The boundary check (`scripts/check-boundaries.ts`) scans the import graph and
+  fails on any edge outside the one-way layer rules: app → ui/start + pi-core + Module Host Entries;
+  ui → pi-core + Module UI Entries; pi-core → Module Extensions; Modules → shared only; outside a
+  Module, only its `interfaces/` directory is importable. Test files and `test-support/` are exempt
+  as import sources.
 
 ## Notes
 

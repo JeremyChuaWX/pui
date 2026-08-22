@@ -13,11 +13,11 @@
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload app/index.tsx",
-        "test": "bun test app shared modules pi-core ui",
+        "test": "bun test app shared modules pi-core ui scripts",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",
-        "check": "bun run lint && bun run typecheck && bun run test && bun run build && bun scripts/smoke-build.ts",
+        "check": "bun run lint && bun run typecheck && bun scripts/check-boundaries.ts && bun run test && bun run build && bun scripts/smoke-build.ts",
         "install": "./scripts/install-local.sh"
     },
     "dependencies": {

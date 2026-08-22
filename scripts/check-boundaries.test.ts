@@ -1,0 +1,144 @@
+import { describe, expect, test } from "bun:test";
+import { checkBoundaries, type ImportEdge } from "./check-boundaries.ts";
+
+function violationsFor(edges: ImportEdge[]) {
+    return checkBoundaries(edges).map((violation) => `${violation.from} -> ${violation.to}`);
+}
+
+describe("clean graph", () => {
+    test("every sanctioned edge produces no violations", () => {
+        const edges: ImportEdge[] = [
+            // App -> UI start function + Pi Core + Host Entries + shared
+            { from: "app/index.tsx", to: "ui/start.tsx" },
+            { from: "app/index.tsx", to: "shared/lib/validate.ts" },
+            { from: "app/headless-workflow.ts", to: "modules/workflows/interfaces/host.ts" },
+            { from: "app/workflow-smoke.ts", to: "pi-core/bundled-skills.ts" },
+            { from: "app/index.tsx", to: "app/headless-workflow.ts" },
+            // UI -> Pi Core + Module UI Entries + shared + itself
+            { from: "ui/state/controller.ts", to: "pi-core/register.ts" },
+            { from: "ui/state/format.ts", to: "modules/workflows/interfaces/ui.ts" },
+            { from: "ui/state/prompt-autocomplete.ts", to: "modules/file-search/interfaces/ui.ts" },
+            { from: "ui/components/app.tsx", to: "ui/state/controller.ts" },
+            { from: "ui/state/controller.ts", to: "shared/lib/validate.ts" },
+            // Pi Core -> Module Extensions + shared + itself
+            { from: "pi-core/register.ts", to: "modules/web/interfaces/pi.ts" },
+            { from: "pi-core/register.ts", to: "pi-core/bundled-skills.ts" },
+            { from: "pi-core/register.ts", to: "shared/lib/validate.ts" },
+            // Modules -> own internals + shared
+            { from: "modules/web/search.ts", to: "modules/web/crawl.ts" },
+            { from: "modules/web/interfaces/pi.ts", to: "modules/web/search.ts" },
+            { from: "modules/subagents/runner.ts", to: "shared/agent-runtime/child-agent.ts" },
+            // shared -> shared
+            { from: "shared/agent-runtime/child-agent.ts", to: "shared/lib/json-events.ts" },
+        ];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+});
+
+describe("forbidden edges", () => {
+    test("Module -> Module is a violation even through an Interfaces Directory", () => {
+        const edges: ImportEdge[] = [{ from: "modules/workflows/bridge.ts", to: "modules/subagents/interfaces/pi.ts" }];
+        expect(violationsFor(edges)).toEqual(["modules/workflows/bridge.ts -> modules/subagents/interfaces/pi.ts"]);
+    });
+
+    test("deep import bypassing an Interfaces Directory is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "ui/components/app.tsx", to: "modules/subagents/view-model.ts" }];
+        expect(violationsFor(edges)).toEqual(["ui/components/app.tsx -> modules/subagents/view-model.ts"]);
+    });
+
+    test("UI -> App is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "ui/state/controller.ts", to: "app/index.tsx" }];
+        expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> app/index.tsx"]);
+    });
+
+    test("Pi Core -> Host Entry is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "pi-core/register.ts", to: "modules/workflows/interfaces/host.ts" }];
+        expect(violationsFor(edges)).toEqual(["pi-core/register.ts -> modules/workflows/interfaces/host.ts"]);
+    });
+
+    test("UI -> Module Extension (interfaces/pi) is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "ui/state/controller.ts", to: "modules/subagents/interfaces/pi.ts" }];
+        expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> modules/subagents/interfaces/pi.ts"]);
+    });
+
+    test("App -> Module UI Entry or Extension is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/ui.ts" },
+            { from: "app/index.tsx", to: "modules/web/interfaces/pi.ts" },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "app/index.tsx -> modules/subagents/interfaces/ui.ts",
+            "app/index.tsx -> modules/web/interfaces/pi.ts",
+        ]);
+    });
+
+    test("App -> UI beyond the start function is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "app/index.tsx", to: "ui/components/app.tsx" }];
+        expect(violationsFor(edges)).toEqual(["app/index.tsx -> ui/components/app.tsx"]);
+    });
+
+    test("Module -> UI, App, or Pi Core is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "modules/subagents/runner.ts", to: "ui/state/format.ts" },
+            { from: "modules/subagents/runner.ts", to: "app/index.tsx" },
+            { from: "modules/web/search.ts", to: "pi-core/register.ts" },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "modules/subagents/runner.ts -> ui/state/format.ts",
+            "modules/subagents/runner.ts -> app/index.tsx",
+            "modules/web/search.ts -> pi-core/register.ts",
+        ]);
+    });
+
+    test("shared -> anything above shared is a violation", () => {
+        const edges: ImportEdge[] = [
+            { from: "shared/lib/validate.ts", to: "modules/web/interfaces/pi.ts" },
+            { from: "shared/lib/validate.ts", to: "pi-core/register.ts" },
+            { from: "shared/lib/validate.ts", to: "ui/start.tsx" },
+            { from: "shared/lib/validate.ts", to: "app/index.tsx" },
+        ];
+        expect(checkBoundaries(edges)).toHaveLength(4);
+    });
+
+    test("production code -> test support is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "extensions/test-support/wait.ts" }];
+        expect(violationsFor(edges)).toEqual(["modules/web/search.ts -> extensions/test-support/wait.ts"]);
+    });
+
+    test("an import resolving outside the known layers is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "scripts/build.ts" }];
+        expect(violationsFor(edges)).toEqual(["modules/web/search.ts -> scripts/build.ts"]);
+    });
+
+    test("each violation names its rule", () => {
+        const [violation] = checkBoundaries([
+            { from: "modules/workflows/bridge.ts", to: "modules/subagents/interfaces/pi.ts" },
+        ]);
+        expect(violation?.rule).toContain("Module");
+    });
+});
+
+describe("test-file scoping", () => {
+    test("test files may cross boundaries", () => {
+        const edges: ImportEdge[] = [
+            { from: "pi-core/register.test.ts", to: "ui/state/controller.ts" },
+            { from: "pi-core/register.test.ts", to: "modules/file-search/interfaces/ui.ts" },
+            { from: "ui/state/controller-background-lifecycle.test.ts", to: "modules/subagents/interfaces/pi.ts" },
+            { from: "modules/web/tool-shell.test.ts", to: "extensions/test-support/extension-api.ts" },
+        ];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+
+    test("files under a test-support directory may cross boundaries", () => {
+        const edges: ImportEdge[] = [
+            { from: "extensions/test-support/extension-api.ts", to: "shared/lib/validate.ts" },
+            { from: "modules/workflows/test-support/workflow-fixture.ts", to: "extensions/test-support/wait.ts" },
+        ];
+        expect(checkBoundaries(edges)).toEqual([]);
+    });
+
+    test("a test file must still not be imported by production code", () => {
+        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "modules/web/tool-shell.test.ts" }];
+        expect(checkBoundaries(edges)).toHaveLength(1);
+    });
+});
