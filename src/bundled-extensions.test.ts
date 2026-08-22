@@ -104,7 +104,9 @@ describe("bundled extensions", () => {
                 cwd: temp,
                 agentDir: temp,
                 settingsManager: SettingsManager.inMemory(),
-                additionalExtensionPaths: [fileURLToPath(new URL("../extensions/subagent/index.ts", import.meta.url))],
+                additionalExtensionPaths: [
+                    fileURLToPath(new URL("../modules/subagents/interfaces/pi.ts", import.meta.url)),
+                ],
                 noSkills: true,
                 noPromptTemplates: true,
                 noThemes: true,
@@ -354,8 +356,8 @@ export default function (pi: any) {
 
             const repoRoot = path.resolve(import.meta.dir, "..");
             for (const relativePath of [
-                path.join("extensions", "subagent", "protocol.ts"),
-                path.join("extensions", "subagent", "runner.ts"),
+                path.join("modules", "subagents", "protocol.ts"),
+                path.join("modules", "subagents", "runner.ts"),
                 path.join("shared", "agent-runtime", "agents", "worker.md"),
                 path.join("shared", "agent-runtime", "agents", "worker-guidance.LICENSE"),
                 path.join("shared", "agent-runtime", "agents", "explore.md"),

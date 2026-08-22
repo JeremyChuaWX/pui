@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { MAX_WORKFLOW_ID, parseWorkflowRunV1, type WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
-import { normalizeSubagentDetails, subagentPresentationKey } from "./subagent.js";
+import { normalizeSubagentDetails, subagentPresentationKey } from "../modules/subagents/interfaces/ui.js";
 import { recordArgs, type ToolExecution, type ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 

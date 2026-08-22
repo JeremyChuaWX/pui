@@ -105,4 +105,4 @@ From the repository root:
 bun run check
 ```
 
-For a focused extension run, use `bun test extensions/subagent`. Tests use `fixtures/fake-child.mjs` and do not call a model or the network.
+For a focused extension run, use `bun test modules/subagents`. Tests use `fixtures/fake-child.mjs` and do not call a model or the network.

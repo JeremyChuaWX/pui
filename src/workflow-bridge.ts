@@ -12,8 +12,8 @@ import {
     parseBackgroundWorkflowEvent,
     type WorkflowControlAction,
 } from "../extensions/workflow/protocol.js";
-import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
-import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
+import type { InstanceScopedRuns } from "../shared/lib/instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "../shared/lib/instance-scoped-runs.js";
 
 export type { WorkflowControlAction, WorkflowRunSummaryV1 };
 

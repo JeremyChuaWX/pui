@@ -1,16 +1,16 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
+import type { InstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
+import { reduceInstanceScopedRuns } from "../../shared/lib/instance-scoped-runs.js";
+import { boundedString } from "../../shared/lib/validate.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
     type BackgroundSubagentEventV1,
     parseBackgroundSubagentEvent as parseWireEvent,
-} from "../extensions/subagent/background-protocol.js";
-import { boundedString } from "../shared/lib/validate.js";
-import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
-import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
-import type { SubagentViewModel } from "./subagent.js";
-import { isTerminalSubagentStatus, normalizeSubagentDetails } from "./subagent.js";
+} from "./background-protocol.js";
+import type { SubagentViewModel } from "./view-model.js";
+import { isTerminalSubagentStatus, normalizeSubagentDetails } from "./view-model.js";
 
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;

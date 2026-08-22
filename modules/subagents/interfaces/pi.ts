@@ -2,7 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../../shared/agent-runtime/child-agent.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../../../shared/agent-runtime/child-agent.js";
 import {
     AGENT_NAMES,
     AGENT_SUMMARY,
@@ -11,12 +11,12 @@ import {
     resolveModel,
     resolveWorkingDirectory,
     workingDirectoryCandidate,
-} from "../../shared/agent-runtime/presets.js";
-import { createBackgroundChannel } from "../../shared/lib/background-channel.js";
-import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../../shared/lib/retained-output.js";
-import type { AbortableSemaphore } from "../../shared/lib/semaphore.js";
-import { errorMessage } from "../../shared/lib/validate.js";
-import { BackgroundSubagentManager, type BackgroundTerminalResult } from "./background-manager.js";
+} from "../../../shared/agent-runtime/presets.js";
+import { createBackgroundChannel } from "../../../shared/lib/background-channel.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "../../../shared/lib/retained-output.js";
+import type { AbortableSemaphore } from "../../../shared/lib/semaphore.js";
+import { errorMessage } from "../../../shared/lib/validate.js";
+import { BackgroundSubagentManager, type BackgroundTerminalResult } from "../background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
@@ -24,10 +24,10 @@ import {
     BACKGROUND_SUBAGENT_VERSION,
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
-} from "./background-protocol.js";
-import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "./protocol.js";
-import { runSubagentJob, synthesizeSubagentFailure } from "./run-job.js";
-import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+} from "../background-protocol.js";
+import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "../protocol.js";
+import { runSubagentJob, synthesizeSubagentFailure } from "../run-job.js";
+import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 

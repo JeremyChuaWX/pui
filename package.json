@@ -13,7 +13,7 @@
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/index.tsx",
-        "test": "bun test src shared modules extensions/subagent extensions/workflow",
+        "test": "bun test src shared modules extensions/workflow",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",

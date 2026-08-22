@@ -73,7 +73,7 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensions/subagent/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the bundled Pi extension in [`modules/subagents/`](modules/subagents/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
 Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
@@ -82,10 +82,10 @@ Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and dia
 The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
 
 ```sh
-pi -e /absolute/path/to/pui/extensions/subagent/index.ts
+pi -e /absolute/path/to/pui/modules/subagents/interfaces/pi.ts
 ```
 
-See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
+See the [extension guide](modules/subagents/README.md) for configuration and troubleshooting.
 
 ## Workflows
 
@@ -185,11 +185,12 @@ ownership, dependency-injection conventions, and the testing strategy. The short
   predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
 - `src/format.ts` projects Pi messages and live tool executions into display variants and preserves
   item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
-  events; `src/subagent.ts` validates and bounds the subagent protocol for display.
-- `modules/file-search/` and `modules/web/` are self-contained feature modules behind their
-  `interfaces/` directories; `extensions/` holds the remaining bundled application-owned Pi
-  extensions (subagent, workflow), registered via `src/bundled-extensions.ts`. Each extension owns
-  its wire protocol; `src/` consumes those protocols directly instead of maintaining mirrors.
+  events; the subagents Module's UI Entry validates and bounds the subagent protocol for display.
+- `modules/file-search/`, `modules/web/`, and `modules/subagents/` are self-contained feature
+  modules behind their `interfaces/` directories; `extensions/` holds the remaining bundled
+  application-owned Pi extension (workflow), registered via `src/bundled-extensions.ts`. Each
+  feature owns its wire protocol; consumers reach parsed state through the Module's UI Entry
+  instead of maintaining mirrors.
 - `skills/` holds application-owned skills, registered via `src/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.

@@ -2,11 +2,11 @@ import type { BoxRenderable, ScrollBoxRenderable, TextareaRenderable } from "@op
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
+import { isTerminalSubagentStatus } from "../modules/subagents/interfaces/ui.js";
 import { errorMessage } from "../shared/lib/validate.js";
 import { copyCurrentSelection, editPromptInNvim, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
 import type { PuiController } from "./controller.js";
 import { shouldTriggerPromptAutocomplete } from "./prompt-autocomplete.js";
-import { isTerminalSubagentStatus } from "./subagent.js";
 import { theme } from "./theme.js";
 import type { PromptAction, PromptCompletions, PuiSnapshot } from "./types.js";
 import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./ui/dialogs.js";

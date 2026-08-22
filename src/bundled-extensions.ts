@@ -1,10 +1,5 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import {
-    createDefaultSubagentDependencies,
-    registerSubagentExtension,
-    type SubagentExtensionDependencies,
-} from "../extensions/subagent/index.js";
-import {
     createDefaultWorkflowDependencies,
     registerWorkflowExtension,
     type WorkflowExtensionDependencies,
@@ -14,6 +9,11 @@ import {
     type FileSearchExtensionDependencies,
     registerFileSearchExtension,
 } from "../modules/file-search/interfaces/pi.js";
+import {
+    createDefaultSubagentDependencies,
+    registerSubagentExtension,
+    type SubagentExtensionDependencies,
+} from "../modules/subagents/interfaces/pi.js";
 import {
     createDefaultWebDependencies,
     registerWebExtension,

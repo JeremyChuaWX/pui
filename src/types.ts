@@ -1,7 +1,6 @@
 import type { Model } from "@earendil-works/pi-ai";
 import type { WorkflowRunSummaryV1 } from "../extensions/workflow/protocol.js";
-import type { BackgroundSubagentViewModel } from "./background-subagent.js";
-import type { SubagentViewModel } from "./subagent.js";
+import type { BackgroundSubagentViewModel, SubagentViewModel } from "../modules/subagents/interfaces/ui.js";
 
 interface DisplayItemBase {
     id: string;

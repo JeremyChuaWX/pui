@@ -11,7 +11,7 @@ src/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smo
 src/controller.ts (PuiController) ──────────── deep module: embeds Pi, owns all state
       │  collaborators (each injectable):
       │    src/workflow-bridge.ts     WorkflowBridge      run map + control round-trips
-      │    src/background-subagent.ts BackgroundSubagentBridge + bounded view models
+      │    modules/subagents/interfaces/ui.ts  BackgroundSubagentBridge + bounded view models
       │    src/controller-queues.ts   ExtensionDialogQueue / ToastQueue
       │
       ▼  immutable PuiSnapshot via subscribe()
@@ -19,7 +19,7 @@ src/app.tsx (App shell) + src/ui/* ─────────── view layer,
       │
       ▼  bundled resources
 extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
-modules/file-search  modules/web  extensions/subagent  extensions/workflow  skills/unslop
+modules/file-search  modules/web  modules/subagents  extensions/workflow  skills/unslop
 ```
 
 ## Layers
@@ -50,8 +50,8 @@ The controller delegates to focused collaborators rather than owning every conce
 | Module | Interface | Hides |
 |---|---|---|
 | `src/workflow-bridge.ts` | `bind / runs / inspect / control / dispose` | workflow background-event parsing and control correlation |
-| `src/background-subagent.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
-| `src/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
+| `modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
+| `shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
 | `src/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
 The controller's command descriptor list is the single source for slash-command autocomplete,
@@ -99,12 +99,16 @@ plain Pi with equivalent production wiring.
   spawning, process-group kill, timeouts, and bounded output capture with temp-file spill
   (capture creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves
   system binaries.
-- `extensions/subagent/` — child-Pi subagents. `protocol.ts` owns the versioned `pi.subagent` wire
-  format (types, transitions, validator); `runner.ts` is a thin adapter that folds shared
-  child-agent runtime events into `SubagentDetailsV1` snapshots;
+- `modules/subagents/` — child-Pi subagents, a feature Module whose only importable surface is
+  `interfaces/pi.ts` (the Extension), `interfaces/ui.ts` (the parsed subagent state the controller
+  and views consume), and `interfaces/host.ts` (reserved; no host-side needs today). `protocol.ts`
+  owns the versioned `pi.subagent` wire format (types, transitions, validator); `runner.ts` is a
+  thin adapter that folds shared child-agent runtime events into `SubagentDetailsV1` snapshots;
   `run-job.ts` is the single run pipeline (queueing, semaphore, spawn, terminal synthesis, output
   spill) shared by the blocking tool and the background manager; `background-manager.ts` owns
-  background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes.
+  background-job delivery semantics; `background-protocol.ts` owns the background bus envelopes;
+  `view-model.ts` and `background-bridge.ts` bound protocol payloads into host view models behind
+  the UI Entry.
 - `extensions/workflow/` — programmatic workflows. `backend.ts` (run lifecycle and active-run
   state; collaborators are injectable through an options bag, including a `WorkflowPlatform`
   seam for timings/uuid/log/worker source and a `WorkflowRunStore` storage interface),
@@ -147,7 +151,9 @@ Cross-cutting primitives importable by every layer, split in two:
   ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
   `createGracefulTermination` SIGTERM→SIGKILL escalation and
-  `killProcessTree` group signaling used by every child supervisor), `json-events.ts` (the JSONL
+  `killProcessTree` group signaling used by every child supervisor), `instance-scoped-runs.ts`
+  (the routed copy-on-write run-set reducer — producer authority, reset/replacement gating, and
+  run caps — shared by the subagent and workflow bridges), `json-events.ts` (the JSONL
   splitter for child NDJSON streams), `retained-output.ts` (quota-bounded
   spill storage plus `composeBoundedOutput`, the single fixed-point composer that fits a truncated
   preview and its accurate truncation notice inside one byte/line budget for every extension),
@@ -167,15 +173,16 @@ temporary directory during controller disposal.
 
 Wire formats have exactly one implementation, owned by the producing extension:
 
-- `extensions/subagent/protocol.ts` — `pi.subagent` details. `src/subagent.ts` consumes it: it
-  validates with the extension's `isSubagentDetailsV1` and then bounds every string into a
-  `SubagentViewModel` safe for rendering and reconciliation.
-- `extensions/subagent/background-protocol.ts` — background-subagent bus channels.
-  `src/background-subagent.ts` consumes its parser, bounds strings into host view models, and exposes
-  a bridge that owns instance authority, subscription lifecycle, cancellation, and the job map.
+- `modules/subagents/protocol.ts` — `pi.subagent` details. The Module's `view-model.ts` consumes
+  it: it validates with `isSubagentDetailsV1` and then bounds every string into a
+  `SubagentViewModel` safe for rendering and reconciliation, published through `interfaces/ui.ts`.
+- `modules/subagents/background-protocol.ts` — background-subagent bus channels. The Module's
+  `background-bridge.ts` consumes its parser, bounds strings into host view models, and exposes a
+  bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
+  published through `interfaces/ui.ts`.
 - `extensions/workflow/protocol.ts` — workflow summaries, background events, and control envelopes. `src/workflow-bridge.ts` consumes the parsers and owns control correlation.
-  Both host bridges delegate instance authority, routed copy-on-write updates, reset/replacement gating,
-  and run caps to `src/instance-scoped-runs.ts`.
+  Both bridges delegate instance authority, routed copy-on-write updates, reset/replacement gating,
+  and run caps to `shared/lib/instance-scoped-runs.ts`.
 
 The host still treats extension payloads as untrusted input: parsers validate shape and routing,
 and the view models bound every string.

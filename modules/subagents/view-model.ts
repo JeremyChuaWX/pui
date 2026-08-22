@@ -1,3 +1,4 @@
+import { boundedString } from "../../shared/lib/validate.js";
 import {
     isSubagentDetailsV1,
     isTerminalSubagentStatus,
@@ -6,8 +7,7 @@ import {
     type SubagentRunV1,
     type SubagentStatus,
     type SubagentUsageV1,
-} from "../extensions/subagent/protocol.js";
-import { boundedString } from "../shared/lib/validate.js";
+} from "./protocol.js";
 
 export type { SubagentStatus };
 export { isTerminalSubagentStatus };
