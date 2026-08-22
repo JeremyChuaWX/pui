@@ -6,10 +6,10 @@
 
 **Blocked by:** 05, 06, 07.
 
-**Status:** ready-for-agent
+**Status:** done (commits 654c6fd on `modularize-feature-modules`)
 
-- [ ] `app/` contains only the two entry points and process management; no UI logic
-- [ ] Headless `pui workflow` runs without loading any UI code
-- [ ] The old source directory no longer exists; build script and test globs updated
-- [ ] Compiled binary starts, renders, and runs workflows as before
-- [ ] `bun run check` is green
+- [x] `app/` contains only the two entry points and process management; no UI logic
+- [x] Headless `pui workflow` runs without loading any UI code
+- [x] The old source directory no longer exists; build script and test globs updated
+- [x] Compiled binary starts, renders, and runs workflows as before
+- [x] `bun run check` is green
