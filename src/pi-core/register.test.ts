@@ -14,8 +14,8 @@ import {
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
-import { createExtensionApiHarness } from "../extensions/test-support/extension-api.js";
 import { resolveFdBinary } from "../modules/file-search/interfaces/ui.js";
+import { createExtensionApiHarness } from "../test-support/extension-api.js";
 import { createPuiRuntimeFactory } from "../ui/state/controller.js";
 import { createBundledSkillResources } from "./bundled-skills.js";
 import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./register.js";
@@ -354,7 +354,7 @@ export default function (pi: any) {
                 expect(commandNames).toContain("project-fixture");
             }
 
-            const repoRoot = path.resolve(import.meta.dir, "..");
+            const sourceRoot = path.resolve(import.meta.dir, "..");
             for (const relativePath of [
                 path.join("modules", "subagents", "protocol.ts"),
                 path.join("modules", "subagents", "runner.ts"),
@@ -362,7 +362,7 @@ export default function (pi: any) {
                 path.join("shared", "agent-runtime", "agents", "worker-guidance.LICENSE"),
                 path.join("shared", "agent-runtime", "agents", "explore.md"),
             ]) {
-                expect((await fs.promises.stat(path.join(repoRoot, relativePath))).isFile()).toBe(true);
+                expect((await fs.promises.stat(path.join(sourceRoot, relativePath))).isFile()).toBe(true);
             }
         } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });

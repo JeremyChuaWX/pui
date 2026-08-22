@@ -6,14 +6,14 @@
     "type": "module",
     "exports": {
         "./workflow": {
-            "types": "./modules/workflows/interfaces/api.ts",
-            "default": "./modules/workflows/interfaces/api.ts"
+            "types": "./src/modules/workflows/interfaces/api.ts",
+            "default": "./src/modules/workflows/interfaces/api.ts"
         }
     },
     "scripts": {
         "build": "bun scripts/build.ts",
-        "start": "bun --preload @opentui/solid/preload app/index.tsx",
-        "test": "bun test app shared modules pi-core ui scripts",
+        "start": "bun --preload @opentui/solid/preload src/app/index.tsx",
+        "test": "bun test src scripts",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",

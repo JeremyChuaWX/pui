@@ -21,7 +21,7 @@ cannot trust that touching one feature won't ripple into the others.
 
 ## Solution
 
-Reorganize the repository into five top-level layers — `app/`, `pi-core/`,
+Reorganize the source under `src/` into five top-level layers — `app/`, `pi-core/`,
 `modules/`, `shared/`, `ui/` — where each feature is a self-contained Module whose
 only importable surface is its Interfaces Directory. The Pi model reaches features
 through Extensions loaded by Pi Core's Register File; the UI reaches features
@@ -35,7 +35,7 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 1. As a pui maintainer, I want each feature's code contained in a single Module directory, so that the blast radius of a feature change is visible from the file tree.
 2. As a pui maintainer, I want Modules forbidden from importing each other, so that features stay independently understandable and removable.
 3. As a pui maintainer, I want a boundary-check script in the standard check gate, so that architectural violations fail CI instead of accumulating silently.
-4. As a pui maintainer, I want the layer architecture visible in the repo root listing, so that newcomers can infer the design without reading docs first.
+4. As a pui maintainer, I want the layer architecture to be the whole `src/` listing, so that newcomers can infer the design without reading docs first and without picking the layers out from among configs, docs, and tooling at the repo root.
 5. As an AI agent contributor, I want a fixed Interfaces Directory convention (`pi`, `host`, `ui`, `api`), so that I can locate any Module's public surface without exploring its internals.
 6. As an AI agent contributor, I want the glossary and architecture docs to match the directory layout, so that I don't act on stale structural descriptions.
 7. As the Pi model, I want feature tools registered through each Module's Extension via Pi Core's Register File, so that tool availability is composed in exactly one place.
@@ -53,8 +53,12 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 
 ## Implementation Decisions
 
-- Five top-level layers, no `src/` wrapper: `app/`, `pi-core/`, `modules/`,
-  `shared/`, `ui/`.
+- Five top-level layers under `src/`: `app/`, `pi-core/`, `modules/`, `shared/`, `ui/`. Only
+  source lives in `src/`; `scripts/`, `docs/`, `issues/`, and `.pui/` stay at the repo root. The
+  test-only helpers and the ambient asset declarations live at `src/test-support/` and
+  `src/assets.d.ts` — there is no `extensions/` directory, since Extensions live inside their
+  Modules. (An earlier revision of this decision kept the layers at the repo root; it was reversed
+  once the root listing mixed them with a dozen non-source entries.)
 - Four Modules: `subagents`, `workflows`, `web`, `file-search`. Each Module's only
   externally importable surface is its Interfaces Directory with fixed names:
   `pi` (the Extension; required; keeps a default export for standalone `pi -e`

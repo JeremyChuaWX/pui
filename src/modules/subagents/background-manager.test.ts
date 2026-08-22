@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitFor as waitUntil } from "../../extensions/test-support/wait.js";
 import { AbortableSemaphore } from "../../shared/lib/semaphore.ts";
+import { waitFor as waitUntil } from "../../test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
 

@@ -1,12 +1,12 @@
 // Boundary check: asserts the one-way dependency edges between the top-level
-// layers (app, ui, pi-core, modules/<name>, shared) and the
+// layers under src/ (app, ui, pi-core, modules/<name>, shared) and the
 // Interfaces-Directory-only rule for Modules.
 //
 // Scope decisions:
 // - Rules cover production code only. Test files (*.test.ts, *.test.tsx) and
 //   files under a test-support/ directory are exempt as import sources: e.g.
 //   pi-core/register.test.ts drives the UI controller, and module tests use
-//   extensions/test-support. Production code may not import either of them.
+//   test-support/. Production code may not import either of them.
 // - Only imports that resolve to TypeScript files inside the repo are checked.
 //   Bare specifiers (npm packages, the Pi SDK, node:/bun: builtins) and asset
 //   imports are out of scope.
@@ -14,9 +14,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface ImportEdge {
-    /** Repo-relative POSIX path of the importing file. */
+    /** `src`-relative POSIX path of the importing file. */
     from: string;
-    /** Repo-relative POSIX path of the imported file. */
+    /** `src`-relative POSIX path of the imported file. */
     to: string;
 }
 
@@ -104,7 +104,7 @@ export function checkBoundaries(edges: ImportEdge[]): Violation[] {
     return violations;
 }
 
-const SOURCE_DIRECTORIES = ["app", "ui", "pi-core", "modules", "shared", "extensions"];
+const SOURCE_DIRECTORIES = ["app", "ui", "pi-core", "modules", "shared", "test-support"];
 const IMPORT_PATTERN =
     /\bfrom\s+["']([^"'\n]+)["']|\bimport\s*\(\s*["']([^"'\n]+)["']\s*\)|\bimport\s+["']([^"'\n]+)["']/g;
 const RESOLUTION_SUFFIXES = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"];
@@ -116,14 +116,17 @@ function resolveRelativeImport(fromFile: string, specifier: string): string | un
     return candidates.find((candidate) => /\.tsx?$/.test(candidate) && fs.existsSync(candidate));
 }
 
-/** Imperative shell: scan the layer directories and build the import graph. */
-export function collectImportEdges(rootDir: string): ImportEdge[] {
+/**
+ * Imperative shell: scan the layer directories under `sourceRoot` (the repo's `src/`) and build the
+ * import graph. Edge paths are relative to `sourceRoot`, so layers appear as the first path segment.
+ */
+export function collectImportEdges(sourceRoot: string): ImportEdge[] {
     const edges: ImportEdge[] = [];
-    const toRepoRelative = (absolute: string) => path.relative(rootDir, absolute).split(path.sep).join("/");
+    const toSourceRelative = (absolute: string) => path.relative(sourceRoot, absolute).split(path.sep).join("/");
     for (const directory of SOURCE_DIRECTORIES) {
         const files = fs
-            .readdirSync(path.join(rootDir, directory), { recursive: true, encoding: "utf8" })
-            .map((entry) => path.join(rootDir, directory, entry))
+            .readdirSync(path.join(sourceRoot, directory), { recursive: true, encoding: "utf8" })
+            .map((entry) => path.join(sourceRoot, directory, entry))
             .filter((file) => /\.tsx?$/.test(file) && !file.endsWith(".d.ts"));
         for (const file of files) {
             const source = fs.readFileSync(file, "utf8");
@@ -131,7 +134,8 @@ export function collectImportEdges(rootDir: string): ImportEdge[] {
                 const specifier = match[1] ?? match[2] ?? match[3];
                 if (specifier === undefined || !specifier.startsWith(".")) continue; // bare specifiers are out of scope
                 const resolved = resolveRelativeImport(file, specifier);
-                if (resolved !== undefined) edges.push({ from: toRepoRelative(file), to: toRepoRelative(resolved) });
+                if (resolved !== undefined)
+                    edges.push({ from: toSourceRelative(file), to: toSourceRelative(resolved) });
             }
         }
     }
@@ -139,7 +143,7 @@ export function collectImportEdges(rootDir: string): ImportEdge[] {
 }
 
 if (import.meta.main) {
-    const violations = checkBoundaries(collectImportEdges(path.resolve(import.meta.dir, "..")));
+    const violations = checkBoundaries(collectImportEdges(path.resolve(import.meta.dir, "..", "src")));
     if (violations.length > 0) {
         console.error(`Boundary check failed with ${violations.length} violation(s):`);
         for (const violation of violations) {

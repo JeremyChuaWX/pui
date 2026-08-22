@@ -181,6 +181,7 @@ describe("getPiInvocation", () => {
             "..",
             "..",
             "..",
+            "..",
             "node_modules",
             "@earendil-works",
             "pi-coding-agent",

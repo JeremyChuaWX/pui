@@ -101,8 +101,8 @@ describe("forbidden edges", () => {
     });
 
     test("production code -> test support is a violation", () => {
-        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "extensions/test-support/wait.ts" }];
-        expect(violationsFor(edges)).toEqual(["modules/web/search.ts -> extensions/test-support/wait.ts"]);
+        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "test-support/wait.ts" }];
+        expect(violationsFor(edges)).toEqual(["modules/web/search.ts -> test-support/wait.ts"]);
     });
 
     test("an import resolving outside the known layers is a violation", () => {
@@ -124,15 +124,15 @@ describe("test-file scoping", () => {
             { from: "pi-core/register.test.ts", to: "ui/state/controller.ts" },
             { from: "pi-core/register.test.ts", to: "modules/file-search/interfaces/ui.ts" },
             { from: "ui/state/controller-background-lifecycle.test.ts", to: "modules/subagents/interfaces/pi.ts" },
-            { from: "modules/web/tool-shell.test.ts", to: "extensions/test-support/extension-api.ts" },
+            { from: "modules/web/tool-shell.test.ts", to: "test-support/extension-api.ts" },
         ];
         expect(checkBoundaries(edges)).toEqual([]);
     });
 
     test("files under a test-support directory may cross boundaries", () => {
         const edges: ImportEdge[] = [
-            { from: "extensions/test-support/extension-api.ts", to: "shared/lib/validate.ts" },
-            { from: "modules/workflows/test-support/workflow-fixture.ts", to: "extensions/test-support/wait.ts" },
+            { from: "test-support/extension-api.ts", to: "shared/lib/validate.ts" },
+            { from: "modules/workflows/test-support/workflow-fixture.ts", to: "test-support/wait.ts" },
         ];
         expect(checkBoundaries(edges)).toEqual([]);
     });

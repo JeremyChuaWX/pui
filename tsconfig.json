@@ -14,14 +14,5 @@
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
-    "include": [
-        "app/**/*.ts",
-        "app/**/*.tsx",
-        "extensions/**/*.ts",
-        "modules/**/*.ts",
-        "pi-core/**/*.ts",
-        "shared/**/*.ts",
-        "ui/**/*.ts",
-        "ui/**/*.tsx"
-    ]
+    "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
