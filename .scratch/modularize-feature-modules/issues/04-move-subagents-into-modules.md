@@ -6,10 +6,10 @@
 
 **Blocked by:** 01 — Split shared into agent-runtime and lib.
 
-**Status:** ready-for-agent
+**Status:** done (commit 74cb733 on `modularize-feature-modules`)
 
-- [ ] `modules/subagents/interfaces/{pi,host,ui}.ts` are the only files imported from outside the Module
-- [ ] Subagent view model and background bridge live behind the UI Entry; no host-side subagent bridge files remain
-- [ ] Foreground and background subagent runs behave as before in the TUI
-- [ ] Standalone loading via `pi -e` still works
-- [ ] `bun run check` is green
+- [x] `modules/subagents/interfaces/{pi,host,ui}.ts` are the only files imported from outside the Module (the Module's own tests still reach `extensions/test-support/`; flagged for the issue-09 boundary checker. `host.ts` is a reserved stub — subagents has no host-side needs today. The generic `instance-scoped-runs` reducer moved to `shared/lib/` so the workflow bridge keeps sharing it without a Module edge)
+- [x] Subagent view model and background bridge live behind the UI Entry (`view-model.ts` + `background-bridge.ts`, exported via `interfaces/ui.ts`); no host-side subagent bridge files remain (`src/subagent.ts` and `src/background-subagent.ts` are gone; the mixed presentation test moved to `src/ui/subagent-view.test.ts` and consumes the UI Entry)
+- [x] Foreground and background subagent runs behave as before in the TUI (all 51 module tests plus controller background-lifecycle and format tests pass unchanged)
+- [x] Standalone loading via `pi -e` still works (verified by loading `interfaces/pi.ts` through `DefaultResourceLoader` in `src/bundled-extensions.test.ts`; all six subagent tools register with no errors)
+- [x] `bun run check` is green
