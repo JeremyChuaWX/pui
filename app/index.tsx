@@ -3,7 +3,7 @@
 import * as path from "node:path";
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { errorMessage } from "../shared/lib/validate.js";
-import { startUi, type UiStartOptions } from "../ui/start.js";
+import type { UiStartOptions } from "../ui/start.js";
 
 // pi-ai's OAuth implementations use bundler-opaque imports in source mode.
 // Register their static equivalents so Bun embeds them in the executable.
@@ -69,17 +69,12 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 async function main(): Promise<void> {
-    // The workflow subcommands are imported lazily so the interactive path never
-    // evaluates the workflow execution modules.
+    // Each dispatch target is imported lazily so the interactive path never
+    // evaluates the workflow execution modules, and the headless paths never
+    // evaluate any UI code.
     if (process.argv[2] === "workflow") {
-        const { parseHeadlessWorkflowArgs, runHeadlessWorkflow } = await import(
-            "../modules/workflows/interfaces/host.js"
-        );
-        const result = await runHeadlessWorkflow({
-            ...parseHeadlessWorkflowArgs(process.argv.slice(3)),
-            onProgress: (message) => process.stderr.write(`pui workflow: ${message}\n`),
-        });
-        process.stdout.write(`${JSON.stringify(result)}\n`);
+        const { runHeadlessWorkflowCli } = await import("./headless-workflow.js");
+        await runHeadlessWorkflowCli(process.argv.slice(3));
         return;
     }
     if (process.argv[2] === "--workflow-smoke") {
@@ -96,6 +91,7 @@ async function main(): Promise<void> {
         throw new Error("pui requires an interactive terminal");
     }
 
+    const { startUi } = await import("../ui/start.js");
     await startUi(options);
 }
 

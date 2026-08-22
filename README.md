@@ -173,7 +173,7 @@ See the [web extension guide](modules/web/README.md) for the compact configurati
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design: layers, module map, protocol
 ownership, dependency-injection conventions, and the testing strategy. The short version:
 
-- `src/index.tsx` owns CLI dispatch and invokes the UI's single start function, `ui/start.tsx`,
+- `app/index.tsx` owns CLI dispatch and invokes the UI's single start function, `ui/start.tsx`,
   which owns OpenTUI renderer startup and shutdown.
 - `ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable

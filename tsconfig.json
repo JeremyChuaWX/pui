@@ -15,8 +15,8 @@
         "forceConsistentCasingInFileNames": true
     },
     "include": [
-        "src/**/*.ts",
-        "src/**/*.tsx",
+        "app/**/*.ts",
+        "app/**/*.tsx",
         "extensions/**/*.ts",
         "modules/**/*.ts",
         "pi-core/**/*.ts",

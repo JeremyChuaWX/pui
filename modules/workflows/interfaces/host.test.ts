@@ -246,7 +246,7 @@ describe("headless workflows", () => {
                         process.execPath,
                         "--preload",
                         "@opentui/solid/preload",
-                        path.join(import.meta.dir, "..", "..", "..", "src", "index.tsx"),
+                        path.join(import.meta.dir, "..", "..", "..", "app", "index.tsx"),
                         "workflow",
                         ...args,
                     ],

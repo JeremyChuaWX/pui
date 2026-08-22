@@ -5,7 +5,7 @@ deep modules: each hides significant machinery behind a narrow interface, receiv
 through dependency injection with production defaults, and is tested at that interface.
 
 ```
-src/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smoke
+app/index.tsx ── CLI entry: TUI | `pui workflow` (headless) | --workflow-smoke
       │
       ▼  ui/start.tsx — the UI's single start function (controller + renderer + mount)
 ui/state/controller.ts (PuiController) ─────── deep module: embeds Pi, owns all state
@@ -24,12 +24,13 @@ modules/file-search  modules/web  modules/subagents  modules/workflows  pi-core/
 
 ## Layers
 
-### Entry — `src/index.tsx`
+### App — `app/index.tsx`
 
 Parses CLI flags and dispatches: the interactive TUI (via `startUi` in `ui/start.tsx`, the UI's
 single start function, which creates the controller and renderer and mounts the Solid shell),
-`pui workflow …` (headless, via the workflows Module's Host Entry `modules/workflows/interfaces/host.ts`, no TUI or Pi session), or the
-compiled-binary smoke harness (`src/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1` but
+`pui workflow …` (headless, via `app/headless-workflow.ts` and the workflows Module's Host Entry
+`modules/workflows/interfaces/host.ts`, loading no UI code and no TUI or Pi session), or the
+compiled-binary smoke harness (`app/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1` but
 statically linked so the built executable can self-test). A prompt argument is handed to the App as
 `initialPrompt` and dispatched through the same prompt-action record as interactive input, so
 command-line slash invocations (`pui "/models"`) perform their action.
