@@ -6,10 +6,10 @@
 
 **Blocked by:** 10 — Rewrite the architecture docs.
 
-**Status:** open
+**Status:** done (commit 3887b4f on `modularize-feature-modules`)
 
-- [ ] `src/` lists exactly `app/`, `ui/`, `pi-core/`, `modules/`, `shared/`, `test-support/`, `assets.d.ts`; no `extensions/` at the root
-- [ ] `"pui/workflow"` still resolves (export map repointed at `src/modules/workflows/interfaces/api.ts`)
-- [ ] Boundary scanner is rooted at `src/`; the rule function and its fixtures are unchanged
-- [ ] README, `docs/ARCHITECTURE.md`, `CONTRIBUTION.md`, ADR 0001, issue 0001, and `.coderabbit.yaml` reference `src/…` paths; no references to old paths remain
-- [ ] `bun run check` is green
+- [x] `src/` lists exactly `app/`, `ui/`, `pi-core/`, `modules/`, `shared/`, `test-support/`, `assets.d.ts`; no `extensions/` at the root
+- [x] `"pui/workflow"` still resolves (export map repointed at `src/modules/workflows/interfaces/api.ts`)
+- [x] Boundary scanner is rooted at `src/`; the rule function and its fixtures are unchanged
+- [x] README, `docs/ARCHITECTURE.md`, `CONTRIBUTION.md`, ADR 0001, issue 0001, and `.coderabbit.yaml` reference `src/…` paths; no references to old paths remain
+- [x] `bun run check` is green
