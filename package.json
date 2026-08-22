@@ -13,7 +13,7 @@
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/index.tsx",
-        "test": "bun test src shared modules",
+        "test": "bun test src shared modules pi-core",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",

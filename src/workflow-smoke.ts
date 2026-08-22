@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createWorkflowBackend, WorkflowRunManager, WorkflowRunStorage } from "../modules/workflows/interfaces/host.js";
-import { BUNDLED_SKILLS, createBundledSkillResources } from "./bundled-skills.js";
+import { BUNDLED_SKILLS, createBundledSkillResources } from "../pi-core/bundled-skills.js";
 
 async function waitFor(predicate: () => boolean, timeout = 10_000): Promise<void> {
     const end = Date.now() + timeout;

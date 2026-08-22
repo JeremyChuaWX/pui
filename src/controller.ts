@@ -25,9 +25,9 @@ import {
     type WorkflowControlAction,
     type WorkflowRunSummaryV1,
 } from "../modules/workflows/interfaces/ui.js";
+import { type BundledSkillResources, createBundledSkillResources } from "../pi-core/bundled-skills.js";
+import { BUNDLED_EXTENSION_FACTORIES } from "../pi-core/register.js";
 import { errorMessage } from "../shared/lib/validate.js";
-import { BUNDLED_EXTENSION_FACTORIES } from "./bundled-extensions.js";
-import { type BundledSkillResources, createBundledSkillResources } from "./bundled-skills.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
 import { textOffset, textPosition } from "./prompt-autocomplete.js";

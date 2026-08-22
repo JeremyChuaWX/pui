@@ -16,9 +16,9 @@ import {
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { createExtensionApiHarness } from "../extensions/test-support/extension-api.js";
 import { resolveFdBinary } from "../modules/file-search/interfaces/ui.js";
-import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./bundled-extensions.js";
+import { createPuiRuntimeFactory } from "../src/controller.js";
 import { createBundledSkillResources } from "./bundled-skills.js";
-import { createPuiRuntimeFactory } from "./controller.js";
+import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./register.js";
 
 const bundledTools = {
     "<inline:pui-file-search>": ["fd", "rg"],

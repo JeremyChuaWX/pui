@@ -5,7 +5,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import { waitFor } from "../extensions/test-support/wait.js";
-import type { BundledSkillResources } from "./bundled-skills.js";
+import type { BundledSkillResources } from "../pi-core/bundled-skills.js";
 import { type ControllerDependencies, PuiController } from "./controller.js";
 
 function usage() {

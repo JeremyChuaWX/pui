@@ -65,9 +65,9 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 ## Skills
 
-pui bundles the [`unslop`](skills/unslop/SKILL.md) writing skill from
+pui bundles the [`unslop`](pi-core/skills/unslop/SKILL.md) writing skill from
 [`backnotprop/pstack`](https://github.com/backnotprop/pstack/blob/main/skills/unslop/SKILL.md). The skill and its
-[MIT license](skills/unslop/LICENSE.txt) are embedded in the standalone executable. At startup, pui copies them to a
+[MIT license](pi-core/skills/unslop/LICENSE.txt) are embedded in the standalone executable. At startup, pui copies them to a
 private temporary directory and passes its `SKILL.md` to Pi as an additional skill. This keeps the skill readable by
 Pi's tools while normal global and trusted project skill discovery still works.
 
@@ -187,11 +187,11 @@ ownership, dependency-injection conventions, and the testing strategy. The short
   item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
   events; the subagents Module's UI Entry validates and bounds the subagent protocol for display.
 - `modules/file-search/`, `modules/web/`, `modules/subagents/`, and `modules/workflows/` are
-  self-contained feature modules behind their `interfaces/` directories, registered via
-  `src/bundled-extensions.ts`. Each feature owns its wire protocol; consumers reach parsed state
-  through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
+  self-contained feature modules behind their `interfaces/` directories, registered via Pi Core's
+  Register File `pi-core/register.ts`. Each feature owns its wire protocol; consumers reach parsed
+  state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
   import resolves to the workflows Module's `interfaces/api.ts`.
-- `skills/` holds application-owned skills, registered via `src/bundled-skills.ts`.
+- `pi-core/skills/` holds application-owned skills, registered via `pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.
 

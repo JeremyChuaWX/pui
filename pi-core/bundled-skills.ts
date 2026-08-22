@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import unslopLicensePath from "../skills/unslop/LICENSE.txt" with { type: "file" };
-import unslopSkillPath from "../skills/unslop/SKILL.md" with { type: "file" };
+import unslopLicensePath from "./skills/unslop/LICENSE.txt" with { type: "file" };
+import unslopSkillPath from "./skills/unslop/SKILL.md" with { type: "file" };
 
 export interface BundledSkill {
     name: string;

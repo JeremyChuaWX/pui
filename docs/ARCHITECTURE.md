@@ -18,8 +18,8 @@ src/controller.ts (PuiController) ──────────── deep modu
 src/app.tsx (App shell) + src/ui/* ─────────── view layer, renders snapshots only
       │
       ▼  bundled resources
-extension factories (src/bundled-extensions.ts)  skill paths (src/bundled-skills.ts)
-modules/file-search  modules/web  modules/subagents  modules/workflows  skills/unslop
+extension factories (pi-core/register.ts)  skill paths (pi-core/bundled-skills.ts)
+modules/file-search  modules/web  modules/subagents  modules/workflows  pi-core/skills/unslop
 ```
 
 ## Layers
@@ -81,12 +81,13 @@ with identity-preserving reconciliation), `tool-executions.ts` (tool lifecycle r
 `app-support.ts` (prompt history, selection copy, focus trapping, external editor),
 `prompt-autocomplete.ts` (text-position math), and `theme.ts`.
 
-### Extensions — `extensions/`
+### Pi Core — `pi-core/` — and the Modules — `modules/`
 
 The shared ambient declarations for bundled text/Markdown assets live in `extensions/assets.d.ts`.
 
-Bundled, application-owned Pi extensions are wired by the real composition root in
-`src/bundled-extensions.ts`. `createBundledExtensionFactories(options?)` explicitly supplies every
+Bundled, application-owned Pi extensions are wired by Pi Core's Register File, the real composition
+root in `pi-core/register.ts`. Pi Core imports nothing from a Module except its Extension
+(`interfaces/pi.ts`), plus shared. `createBundledExtensionFactories(options?)` explicitly supplies every
 production collaborator (including resource owners), while accepting per-extension fake bags for
 boundary tests; `BUNDLED_EXTENSION_FACTORIES` is its production result. Each
 `register*Extension(pi, dependencies = {})` retains options-bag DI, and each extension's default
@@ -166,9 +167,9 @@ Cross-cutting primitives importable by every layer, split in two:
   `semaphore.ts` (abort-aware FIFO concurrency), and `validate.ts`
   (record, error-message, and Unicode-safe bounded-string helpers).
 
-### Skills — `skills/`
+### Skills — `pi-core/skills/`
 
-`skills/unslop/` contains the bundled writing skill and its upstream MIT license. `src/bundled-skills.ts`
+`pi-core/skills/unslop/` contains the bundled writing skill and its upstream MIT license. `pi-core/bundled-skills.ts`
 imports both with Bun's file loader, then copies them to a private temporary directory owned by the
 controller. This gives Pi and its tools ordinary filesystem paths instead of Bun's `$bunfs` paths,
 which `fs.readFile` can read but `fs.access` cannot. The runtime supplies the copied `SKILL.md` through
