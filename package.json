@@ -4,12 +4,6 @@
     "private": true,
     "description": "An OpenCode-inspired OpenTUI client for Pi",
     "type": "module",
-    "exports": {
-        "./workflow": {
-            "types": "./src/modules/workflows/interfaces/api.ts",
-            "default": "./src/modules/workflows/interfaces/api.ts"
-        }
-    },
     "imports": {
         "#app/*": "./src/app/*",
         "#ui/*": "./src/ui/*",

@@ -14,16 +14,10 @@ import {
     registerWebExtension,
     type WebExtensionDependencies,
 } from "#modules/web/interfaces/pi.js";
-import {
-    createDefaultWorkflowDependencies,
-    registerWorkflowExtension,
-    type WorkflowExtensionDependencies,
-} from "#modules/workflows/interfaces/pi.js";
 
 export interface BundledExtensionFactoryOptions {
     fileSearch?: FileSearchExtensionDependencies;
     subagent?: SubagentExtensionDependencies;
-    workflow?: WorkflowExtensionDependencies;
     web?: WebExtensionDependencies;
 }
 
@@ -37,10 +31,6 @@ export function createBundledExtensionFactories(options: BundledExtensionFactory
         {
             name: "pui-subagent",
             factory: (pi) => registerSubagentExtension(pi, createDefaultSubagentDependencies(options.subagent)),
-        },
-        {
-            name: "pui-workflow",
-            factory: (pi) => registerWorkflowExtension(pi, createDefaultWorkflowDependencies(options.workflow)),
         },
         {
             name: "pui-web",
