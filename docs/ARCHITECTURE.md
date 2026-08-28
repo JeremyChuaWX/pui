@@ -15,8 +15,9 @@ in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
 
 ```
 src/app/       entry points + pui process management
-  └──▶ src/ui/start.tsx                    the UI's single start function
-       (the rules also permit src/pi-core/ and Host Entries, currently unused)
+  ├──▶ src/ui/start.tsx                    the UI's single start function
+  └──▶ src/pi-core/                        the --smoke entry boots bundled Extensions and skills
+       (the rules also permit Host Entries, currently unused)
 
 src/ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
   ├──▶ src/pi-core/                        extension factories + bundled skills
