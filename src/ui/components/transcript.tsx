@@ -1,6 +1,5 @@
 import { createMemo, For, Match, Show, Switch } from "solid-js";
 import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
-import type { WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import type { DisplayItem, ToolDisplayItem } from "../state/types.js";
 import { extensionConfirmKeyHint } from "./keys.js";
@@ -12,7 +11,6 @@ import {
     subagentSummary,
 } from "./subagent-view.js";
 import { syntaxStyle, theme } from "./theme.js";
-import { formatWorkflowSummary, workflowStatusTone } from "./workflow-view.js";
 
 export function Welcome(props: { cwd: string }) {
     return (
@@ -97,9 +95,6 @@ export function MessageItem(props: {
                         <text fg={theme.muted}>{thinkingItem()?.text}</text>
                     </Show>
                 </box>
-            </Match>
-            <Match when={toolItem()?.workflow}>
-                {(workflow) => <WorkflowTool run={workflow()} expanded={props.toolsExpanded} />}
             </Match>
             <Match when={toolItem()}>
                 <Show
@@ -195,45 +190,6 @@ export function MessageItem(props: {
                 </box>
             </Match>
         </Switch>
-    );
-}
-
-function WorkflowTool(props: { run: WorkflowRunSummaryV1; expanded: boolean }) {
-    const color = () => theme[workflowStatusTone(props.run.status)];
-    return (
-        <box marginTop={1} border={["left"]} borderColor={color()} backgroundColor={theme.toolBackground}>
-            <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-                <text fg={color()} wrapMode="none">
-                    {formatWorkflowSummary(props.run)}
-                </text>
-                <Show
-                    when={props.expanded}
-                    fallback={<text fg={theme.muted}>Ctrl+O to show workflow details · /workflows to control</text>}
-                >
-                    <text fg={theme.muted}>
-                        {props.run.phases.length} phases · {formatCount(props.run.usage.totalTokens)} tokens · $
-                        {props.run.usage.cost.toFixed(4)}
-                    </text>
-                    <For each={props.run.phases.slice(0, 12)}>
-                        {(phase) => (
-                            <text fg={theme.subtle} wrapMode="none">
-                                · {phase.name} · {phase.status} · {phase.agentIds.length} agents
-                            </text>
-                        )}
-                    </For>
-                    <Show when={props.run.phases.length > 12}>
-                        <text fg={theme.muted}>… {props.run.phases.length - 12} more phases</text>
-                    </Show>
-                    <Show when={props.run.warning}>
-                        <text fg={theme.warning}>{props.run.warning}</text>
-                    </Show>
-                    <Show when={props.run.error}>
-                        <text fg={theme.error}>{props.run.error}</text>
-                    </Show>
-                    <text fg={theme.muted}>use /workflows for bounded agent/activity inspection</text>
-                </Show>
-            </box>
-        </box>
     );
 }
 

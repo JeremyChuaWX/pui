@@ -1,4 +1,4 @@
-import { createMemo, For, Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../state/types.js";
@@ -10,7 +10,6 @@ import {
     subagentStatusLabel,
 } from "./subagent-view.js";
 import { theme } from "./theme.js";
-import { formatWorkflowSummary, workflowStatusTone } from "./workflow-view.js";
 
 export interface SubagentDisplayItem extends ToolDisplayItem {
     subagent: SubagentViewModel;
@@ -40,9 +39,6 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
     const backgroundSubagents = () =>
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
     const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
-    const activeWorkflows = createMemo(() =>
-        props.snapshot.workflows.filter((run) => ["queued", "running", "paused"].includes(run.status)),
-    );
 
     return (
         <box
@@ -130,27 +126,6 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                             </box>
                         )}
                     </For>
-                </box>
-            </Show>
-
-            <Show when={activeWorkflows().length > 0}>
-                <box marginTop={1}>
-                    <text fg={theme.text}>
-                        <strong>Workflows</strong>
-                    </text>
-                    <For each={activeWorkflows().slice(0, 6)}>
-                        {(run) => (
-                            <text
-                                fg={workflowStatusTone(run.status) === "warning" ? theme.warning : theme.muted}
-                                wrapMode="none"
-                            >
-                                {formatWorkflowSummary(run)}
-                            </text>
-                        )}
-                    </For>
-                    <Show when={activeWorkflows().length > 6}>
-                        <text fg={theme.muted}>… more · /workflows</text>
-                    </Show>
                 </box>
             </Show>
 

@@ -42,8 +42,8 @@ type ExtensionDialogSpec =
 
 const MAX_PENDING_DIALOGS = 32;
 const MAX_TITLE = 512;
-/** A 64 KiB workflow script plus approval headers must remain inspectable byte-for-byte. */
-const MAX_CONFIRM_MESSAGE = 72 * 1024;
+/** Bound on untrusted extension content: a confirm body larger than this is rejected, not truncated. */
+const MAX_CONFIRM_MESSAGE = 16 * 1024;
 const MAX_INPUT_PLACEHOLDER = 1_024;
 const MAX_SELECT_OPTIONS = 100;
 const MAX_SELECT_OPTION_LENGTH = 4_096;

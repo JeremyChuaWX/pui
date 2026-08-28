@@ -5,7 +5,6 @@ import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import type { BundledSkillResources } from "#pi-core/bundled-skills.js";
-import { waitFor } from "#test-support/wait.js";
 import { type ControllerDependencies, PuiController } from "./controller.js";
 
 function usage() {
@@ -392,44 +391,6 @@ describe("PuiController tool event path", () => {
     });
 });
 
-const workflowUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 };
-function run(sessionId: string, cwd: string, id = "run-1") {
-    return {
-        schema: "pi.workflow" as const,
-        version: 1 as const,
-        id,
-        name: "Review",
-        sessionId,
-        cwd,
-        status: "running" as const,
-        phases: [],
-        agents: [
-            {
-                id: "agent-1",
-                label: "Agent",
-                role: "explore",
-                status: "running" as const,
-                updatedAt: 1,
-                usage: workflowUsage,
-                recentActivity: [],
-            },
-        ],
-        usage: workflowUsage,
-        limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
-        recentActivity: [],
-        updatedAt: 1,
-    };
-}
-const envelope = (sessionId: string, cwd: string, type: string, extra: object = {}) => ({
-    schema: "pi.workflow.background",
-    version: 1,
-    sessionId,
-    instanceId: "instance-1",
-    cwd,
-    type,
-    ...extra,
-});
-
 function harness(cwd: string) {
     const bus = createEventBus();
     let sessionListener: (() => void) | undefined;
@@ -470,7 +431,7 @@ function harness(cwd: string) {
     return { bus, controller, runtime, session, bind, sessionListener, bindings: () => extensionBindings };
 }
 
-describe("PuiController workflow bridge", () => {
+describe("PuiController session binding", () => {
     test("does not finish an out-of-order stale session bind", async () => {
         const h = harness(process.cwd());
         let releaseOld!: () => void;
@@ -515,65 +476,6 @@ describe("PuiController workflow bridge", () => {
         expect(h.controller.snapshot()).toBe(snapshot);
         expect(h.controller.snapshot().sessionId).toBe("session-2");
         await h.controller.dispose();
-    });
-
-    test("binds authoritative snapshots, routes controls, and disposes cleanly", async () => {
-        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-controller-"));
-        const h = harness(temp);
-        try {
-            const canonical = fs.realpathSync(temp);
-            h.session.bindExtensions = async () => {
-                h.bus.emit("pui.workflow.background", envelope("session-1", canonical, "ready"));
-                h.bus.emit(
-                    "pui.workflow.background",
-                    envelope("session-1", canonical, "upsert", { run: run("session-1", canonical) }),
-                );
-            };
-            await h.bind();
-            await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "run-1"));
-            expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["run-1"]);
-            expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
-            expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
-            expect(h.controller.handlePrompt("/workflow review.ts")).toBe("workflow");
-            expect(h.controller.handlePrompt("/workflow")).toBe("sent");
-
-            const controls: Array<Record<string, unknown>> = [];
-            h.bus.on("pui.workflow.background.control", (value) => controls.push(value as Record<string, unknown>));
-            const pause = h.controller.controlWorkflow("run-1", "pause");
-            await expect(h.controller.controlWorkflow("run-1", "restart-agent", "missing")).rejects.toThrow(
-                "Workflow agent is unavailable.",
-            );
-            const restart = h.controller.controlWorkflow("run-1", "restart-agent", "agent-1");
-            restart.catch(() => {});
-            expect(controls).toEqual([
-                expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
-                expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
-            ]);
-            h.bus.emit("pui.workflow.background.control.result", {
-                schema: "pi.workflow.background.control.result",
-                version: 1,
-                sessionId: "session-1",
-                instanceId: "instance-1",
-                cwd: canonical,
-                requestId: controls[0]?.requestId,
-                ok: true,
-            });
-            await expect(pause).resolves.toBeUndefined();
-            const prior = h.controller.snapshot();
-            h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
-            h.bus.emit("pui.workflow.background", envelope("session-1", `${canonical}/..`, "reset"));
-            h.bus.emit("pui.workflow.background", { ...envelope("session-1", canonical, "reset"), version: 2 });
-            expect(h.controller.snapshot()).toBe(prior);
-            await h.controller.dispose();
-            h.bus.emit(
-                "pui.workflow.background",
-                envelope("session-1", canonical, "upsert", { run: run("session-1", canonical, "late") }),
-            );
-            expect(h.controller.snapshot().workflows).toEqual([]);
-        } finally {
-            await h.controller.dispose();
-            await fs.promises.rm(temp, { recursive: true, force: true });
-        }
     });
 
     test("bridges queued extension dialogs with resolve, deny, abort, timeout, rebind, and dispose", async () => {
@@ -624,13 +526,13 @@ describe("PuiController workflow bridge", () => {
         }
     });
 
-    test("bounds extension dialogs without truncating a 64 KiB approval body", async () => {
+    test("bounds extension dialogs at the 16 KiB confirm cap", async () => {
         const h = harness(process.cwd());
         await h.bind();
         const ui = h.bindings().uiContext;
 
         expect(await ui.confirm("x".repeat(513), "body")).toBe(false);
-        expect(await ui.confirm("title", "x".repeat(72 * 1024 + 1))).toBe(false);
+        expect(await ui.confirm("title", "x".repeat(16 * 1024 + 1))).toBe(false);
         expect(
             await ui.select(
                 "title",
@@ -641,7 +543,7 @@ describe("PuiController workflow bridge", () => {
         expect(await ui.input("title", "x".repeat(1025))).toBeUndefined();
         expect(h.controller.snapshot().extensionDialog).toBeUndefined();
 
-        const exact = ui.confirm("title", "x".repeat(64 * 1024));
+        const exact = ui.confirm("title", "x".repeat(16 * 1024));
         const exactDialog = h.controller.snapshot().extensionDialog!;
         h.controller.resolveExtensionDialog(exactDialog.id, true);
         expect(await exact).toBe(true);
@@ -653,33 +555,6 @@ describe("PuiController workflow bridge", () => {
             h.controller.resolveExtensionDialog(dialog.id, `value ${index}`);
         }
         expect(await Promise.all(queued)).toHaveLength(32);
-        await h.controller.dispose();
-    });
-
-    test("resets on replacement and accepts only the replacement instance", async () => {
-        const h = harness(process.cwd());
-        await h.bind();
-        const cwd = fs.realpathSync(process.cwd());
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "ready"));
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "upsert", { run: run("session-1", cwd) }));
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "reset"));
-        h.bus.emit("pui.workflow.background", { ...envelope("session-1", cwd, "ready"), instanceId: "instance-2" });
-        h.bus.emit("pui.workflow.background", {
-            ...envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "new") }),
-            instanceId: "instance-2",
-        });
-        h.bus.emit(
-            "pui.workflow.background",
-            envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "stale") }),
-        );
-        await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "new"));
-        expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["new"]);
-
-        const replacement = { ...h.session, sessionId: "session-2" };
-        (h.runtime as any).session = replacement;
-        await h.bind(replacement);
-        expect(h.controller.snapshot().workflows).toEqual([]);
-        await expect(h.controller.controlWorkflow("new", "stop")).rejects.toThrow("Workflow control is unavailable.");
         await h.controller.dispose();
     });
 });

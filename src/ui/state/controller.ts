@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -20,11 +19,6 @@ import {
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { fdCompletionCommand } from "#modules/file-search/interfaces/ui.js";
 import { BackgroundSubagentBridge } from "#modules/subagents/interfaces/ui.js";
-import {
-    WorkflowBridge,
-    type WorkflowControlAction,
-    type WorkflowRunSummaryV1,
-} from "#modules/workflows/interfaces/ui.js";
 import { type BundledSkillResources, createBundledSkillResources } from "#pi-core/bundled-skills.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "#pi-core/register.js";
 import { errorMessage } from "#shared/lib/validate.js";
@@ -118,7 +112,6 @@ export type PaletteCommandId =
     | "models"
     | "sessions"
     | "subagents"
-    | "workflows"
     | "new-session"
     | "compact"
     | "thinking"
@@ -232,13 +225,6 @@ const COMMANDS: readonly CommandDescriptor[] = [
         palette: { id: "subagents", rank: 3, label: "Subagents", detail: "Inspect or cancel background jobs" },
     },
     {
-        name: "workflows",
-        description: "Inspect and control workflow runs",
-        hidden: true,
-        run: () => "workflows",
-        palette: { id: "workflows", rank: 4, label: "Workflows", detail: "Inspect and control workflow runs" },
-    },
-    {
         name: "thinking",
         description: "Cycle the thinking level",
         run: (controller) => {
@@ -295,14 +281,6 @@ function compactPath(cwd: string): string {
     return cwd;
 }
 
-function canonicalPath(cwd: string): string {
-    try {
-        return fs.realpathSync.native(cwd);
-    } catch {
-        return path.resolve(cwd);
-    }
-}
-
 function readGitBranch(cwd: string): string | undefined {
     try {
         const branch = execFileSync("git", ["branch", "--show-current"], {
@@ -333,7 +311,6 @@ export class PuiController {
     private readonly readGitBranch: (cwd: string) => string | undefined;
     private readonly toasts = new ToastQueue(() => this.refresh());
     private readonly extensionDialogs = new ExtensionDialogQueue(() => this.refresh());
-    private readonly workflows: WorkflowBridge;
     private readonly backgroundSubagents: BackgroundSubagentBridge;
     private readonly eventBus: EventBusController;
     private readonly bundledSkillResources?: BundledSkillResources;
@@ -343,7 +320,6 @@ export class PuiController {
         this.eventBus = dependencies.eventBus ?? createEventBus();
         this.readGitBranch = dependencies.readGitBranch ?? readGitBranch;
         this.bundledSkillResources = dependencies.bundledSkillResources;
-        this.workflows = new WorkflowBridge({ eventBus: this.eventBus, onChange: () => this.scheduleRefresh() });
         this.backgroundSubagents = new BackgroundSubagentBridge({
             eventBus: this.eventBus,
             onChange: () => this.scheduleRefresh(),
@@ -441,7 +417,6 @@ export class PuiController {
         const generation = ++this.bindGeneration;
         this.extensionDialogs.dismissAll();
         this.backgroundSubagents.bind(session.sessionId);
-        this.workflows.bind(session.sessionId, canonicalPath(this.runtime.cwd));
         this.unsubscribeSession?.();
         this.toolExecutions = new Map();
         this.displayItems = [];
@@ -533,10 +508,8 @@ export class PuiController {
         const context = session.getContextUsage();
         const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
         this.toolExecutions = this.reconcileToolExecutionState();
-        const workflows = this.workflows.runs();
         const display = buildDisplayItems(session.messages, streamingMessage, {
             toolExecutions: this.toolExecutions,
-            workflows,
         });
 
         if (this.runningBash) {
@@ -577,7 +550,6 @@ export class PuiController {
             display: stableDisplay,
             activeTools,
             backgroundSubagents: this.backgroundSubagents.jobs(),
-            workflows,
             extensionDialog: this.extensionDialogs.current(),
             toasts: this.toasts.list(),
             exitRequested: this.exitRequested,
@@ -732,7 +704,7 @@ export class PuiController {
                 },
             })
             .catch((error: unknown) => this.notify(errorMessage(error), "error"));
-        return command === "/workflow" && args ? "workflow" : "sent";
+        return "sent";
     }
 
     private async executeBash(command: string, excluded: boolean): Promise<void> {
@@ -885,14 +857,6 @@ export class PuiController {
         return this.backgroundSubagents.cancel(id);
     }
 
-    inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
-        return this.workflows.inspect(runId);
-    }
-
-    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): Promise<string | undefined> {
-        return this.workflows.control(runId, action, agentId);
-    }
-
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -914,11 +878,10 @@ export class PuiController {
         if (this.disposed) return;
         this.disposed = true;
         this.extensionDialogs.close();
-        this.workflows.dispose();
         this.backgroundSubagents.dispose();
         this.unsubscribeSession?.();
         this.eventBus.clear();
-        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
+        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);

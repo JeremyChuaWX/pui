@@ -98,7 +98,6 @@ describe("global key intents", () => {
             "Up / Down or Ctrl+P / Ctrl+N prompt history",
             "Ctrl+G edit in nvim with last agent response",
             "Escape abort the current operation",
-            "Esc/Ctrl+C return from workflow status",
             "Shift+Tab cycle thinking level",
             "Alt+N / Alt+P cycle models",
             "Ctrl+L model picker",

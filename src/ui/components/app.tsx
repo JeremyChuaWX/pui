@@ -14,7 +14,6 @@ import {
     cycleIndex,
     extensionConfirmKeyIntent,
     globalKeyIntent,
-    isDismissKey,
     isEnterKey,
     listNavigationDirection,
     promptHistoryDirection,
@@ -24,8 +23,6 @@ import { Prompt, PromptAutocomplete } from "./prompt.js";
 import { activeSubagentItems, Sidebar, ToastStack } from "./sidebar.js";
 import { theme } from "./theme.js";
 import { ExtensionConfirmation, MessageItem, QueuedMessage, Welcome } from "./transcript.js";
-import { WorkflowPage } from "./workflow-page.js";
-import { type PendingWorkflowNavigation, resolveWorkflowNavigation } from "./workflow-view.js";
 
 export function App(props: { controller: PuiController; initialPrompt?: string }) {
     const renderer = useRenderer();
@@ -38,8 +35,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     const [sidebarOverride, setSidebarOverride] = createSignal<boolean>();
     const [toolsExpanded, setToolsExpanded] = createSignal(false);
     const [thinkingExpanded, setThinkingExpanded] = createSignal(false);
-    const [activeWorkflowRunId, setActiveWorkflowRunId] = createSignal<string>();
-    const [pendingWorkflowRun, setPendingWorkflowRun] = createSignal<PendingWorkflowNavigation>();
     const [elapsedNow, setElapsedNow] = createSignal(Date.now());
     const promptHistory = new PromptHistory();
     let prompt: TextareaRenderable | undefined;
@@ -117,44 +112,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     });
 
     createEffect(() => {
-        const pending = pendingWorkflowRun();
-        if (!pending) return;
-        const resolution = resolveWorkflowNavigation(pending, snapshot, Date.now());
-        if (resolution.kind === "expire") {
-            setPendingWorkflowRun(undefined);
-            return;
-        }
-        if (resolution.kind === "navigate") {
-            setActiveWorkflowRunId(resolution.runId);
-            setPendingWorkflowRun(undefined);
-            return;
-        }
-        const timer = setTimeout(
-            () => setPendingWorkflowRun((current) => (current === pending ? undefined : current)),
-            resolution.recheckInMs,
-        );
-        onCleanup(() => clearTimeout(timer));
-    });
-
-    createEffect(() => {
-        const runId = activeWorkflowRunId();
-        onCleanup(() => {
-            transcript = undefined;
-            if (!runId) {
-                prompt = undefined;
-                promptAnchor = undefined;
-                releasePromptFocusTrap?.();
-                releasePromptFocusTrap = undefined;
-            }
-        });
-    });
-
-    createEffect(() => {
-        const runId = activeWorkflowRunId();
-        if (runId && !snapshot.workflows.some((run) => run.id === runId)) setActiveWorkflowRunId(undefined);
-    });
-
-    createEffect(() => {
         if (
             activeSubagentItems(snapshot.display).length === 0 &&
             !snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))
@@ -167,17 +124,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
 
     const wide = createMemo(() => dimensions().width >= 112);
     const sidebarVisible = createMemo(() => dimensions().width >= 72 && (sidebarOverride() ?? wide()));
-    const activeWorkflowRun = createMemo(() => snapshot.workflows.find((run) => run.id === activeWorkflowRunId()));
-
-    function closeWorkflowPage(): void {
-        setActiveWorkflowRunId(undefined);
-        setPendingWorkflowRun(undefined);
-        setTimeout(() => {
-            if (dialog() || extensionConfirmActive() || externalEditorOpen) return;
-            if (prompt && !prompt.isDestroyed) prompt.focus();
-        }, 0);
-    }
-
     function closePromptCompletions(): void {
         completionRequest += 1;
         completionAbort?.abort();
@@ -356,21 +302,14 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     });
 
     function dispatchPrompt(value: string, delivery: "steer" | "followUp" = "steer"): void {
-        const workflowRequest = {
-            ids: new Set(snapshot.workflows.map((run) => run.id)),
-            requestedAt: Date.now(),
-            sessionId: snapshot.sessionId,
-        };
         const action = props.controller.handlePrompt(value, delivery);
         clearPrompt();
         const promptActions: Record<PromptAction, () => void> = {
             sent: () => {},
             ignored: () => {},
-            workflow: () => setPendingWorkflowRun(workflowRequest),
             models: () => void menus.openModels(),
             sessions: () => void menus.openSessions(),
             subagents: menus.openSubagents,
-            workflows: menus.openWorkflows,
             commands: menus.openCommands,
             help: () => setDialog({ kind: "help" }),
         };
@@ -407,13 +346,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
             return;
         }
         if (dialog()) return;
-
-        if (activeWorkflowRun() && isDismissKey(key)) {
-            key.preventDefault();
-            key.stopPropagation();
-            closeWorkflowPage();
-            return;
-        }
 
         const historyDirection = promptHistoryDirection(key);
         if (
@@ -549,90 +481,68 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
             <box flexDirection="row" flexGrow={1} minHeight={0}>
                 <box flexGrow={1} minWidth={0} paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
                     <Show
-                        when={extensionConfirmActive() ? undefined : activeWorkflowRun()}
-                        fallback={
-                            <>
-                                <Show
-                                    when={snapshot.display.length > 0 || extensionConfirmActive()}
-                                    fallback={<Welcome cwd={snapshot.compactCwd} />}
-                                >
-                                    <scrollbox
-                                        ref={(value) => (transcript = value)}
-                                        flexGrow={1}
-                                        minHeight={0}
-                                        stickyScroll
-                                        stickyStart="bottom"
-                                        viewportOptions={{ paddingRight: 1 }}
-                                        verticalScrollbarOptions={{
-                                            visible: false,
-                                            trackOptions: {
-                                                backgroundColor: theme.element,
-                                                foregroundColor: theme.border,
-                                            },
-                                        }}
-                                        contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }}
-                                    >
-                                        <For each={snapshot.display}>
-                                            {(item) => (
-                                                <MessageItem
-                                                    item={() => item}
-                                                    toolsExpanded={toolsExpanded()}
-                                                    thinkingExpanded={thinkingExpanded()}
-                                                    now={elapsedNow()}
-                                                />
-                                            )}
-                                        </For>
-                                        <Index each={snapshot.queuedSteering}>
-                                            {(message) => (
-                                                <QueuedMessage
-                                                    message={message()}
-                                                    label="steer"
-                                                    color={theme.primary}
-                                                />
-                                            )}
-                                        </Index>
-                                        <Index each={snapshot.queuedFollowUp}>
-                                            {(message) => (
-                                                <QueuedMessage
-                                                    message={message()}
-                                                    label="follow up"
-                                                    color={theme.secondary}
-                                                />
-                                            )}
-                                        </Index>
-                                        <Show when={extensionConfirm()}>
-                                            {(request) => (
-                                                <ExtensionConfirmation
-                                                    title={request().title}
-                                                    message={request().message}
-                                                />
-                                            )}
-                                        </Show>
-                                    </scrollbox>
-                                </Show>
-                                <Show when={promptCompletions()}>
-                                    {(completions) => (
-                                        <PromptAutocomplete
-                                            completions={completions()}
-                                            selected={completionIndex()}
-                                            anchor={() => promptAnchor}
-                                        />
-                                    )}
-                                </Show>
-                                <Prompt
-                                    snapshot={snapshot}
-                                    focused={!dialog() && !extensionConfirmActive()}
-                                    setAnchorRef={(value) => (promptAnchor = value)}
-                                    setRef={setPromptRef}
-                                    onChange={handlePromptChange}
-                                    onCursorChange={handlePromptCursorChange}
-                                    onSubmit={() => submit("steer")}
-                                />
-                            </>
-                        }
+                        when={snapshot.display.length > 0 || extensionConfirmActive()}
+                        fallback={<Welcome cwd={snapshot.compactCwd} />}
                     >
-                        {(run) => <WorkflowPage run={run()} setRef={(value) => (transcript = value)} />}
+                        <scrollbox
+                            ref={(value) => (transcript = value)}
+                            flexGrow={1}
+                            minHeight={0}
+                            stickyScroll
+                            stickyStart="bottom"
+                            viewportOptions={{ paddingRight: 1 }}
+                            verticalScrollbarOptions={{
+                                visible: false,
+                                trackOptions: {
+                                    backgroundColor: theme.element,
+                                    foregroundColor: theme.border,
+                                },
+                            }}
+                            contentOptions={{ flexDirection: "column", paddingTop: 1, paddingBottom: 1 }}
+                        >
+                            <For each={snapshot.display}>
+                                {(item) => (
+                                    <MessageItem
+                                        item={() => item}
+                                        toolsExpanded={toolsExpanded()}
+                                        thinkingExpanded={thinkingExpanded()}
+                                        now={elapsedNow()}
+                                    />
+                                )}
+                            </For>
+                            <Index each={snapshot.queuedSteering}>
+                                {(message) => <QueuedMessage message={message()} label="steer" color={theme.primary} />}
+                            </Index>
+                            <Index each={snapshot.queuedFollowUp}>
+                                {(message) => (
+                                    <QueuedMessage message={message()} label="follow up" color={theme.secondary} />
+                                )}
+                            </Index>
+                            <Show when={extensionConfirm()}>
+                                {(request) => (
+                                    <ExtensionConfirmation title={request().title} message={request().message} />
+                                )}
+                            </Show>
+                        </scrollbox>
                     </Show>
+                    <Show when={promptCompletions()}>
+                        {(completions) => (
+                            <PromptAutocomplete
+                                completions={completions()}
+                                selected={completionIndex()}
+                                anchor={() => promptAnchor}
+                            />
+                        )}
+                    </Show>
+                    <Prompt
+                        snapshot={snapshot}
+                        focused={!dialog() && !extensionConfirmActive()}
+                        setAnchorRef={(value) => (promptAnchor = value)}
+                        setRef={setPromptRef}
+                        onChange={handlePromptChange}
+                        onCursorChange={handlePromptCursorChange}
+                        onSubmit={() => submit("steer")}
+                    />
                 </box>
                 <Show when={sidebarVisible()}>
                     <Sidebar snapshot={snapshot} now={elapsedNow()} />
