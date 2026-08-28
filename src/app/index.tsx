@@ -11,6 +11,7 @@ registerBunOAuthFlows();
 
 interface CliOptions extends UiStartOptions {
     help?: boolean;
+    smoke?: boolean;
 }
 
 function usage(): string {
@@ -24,6 +25,7 @@ Options:
   --session <path>     Open a Pi JSONL session
   --no-session         Do not persist this session
   --cwd <path>         Set the working directory
+  --smoke              Boot headlessly, print the registered bundled tools and skills as JSON, and exit
   -h, --help           Show this help
 
 Inside the TUI, press Ctrl+K for commands and /help for hotkeys.`;
@@ -37,6 +39,10 @@ function parseArgs(argv: string[]): CliOptions {
         const arg = argv[index] ?? "";
         if (arg === "-h" || arg === "--help") {
             options.help = true;
+            continue;
+        }
+        if (arg === "--smoke") {
+            options.smoke = true;
             continue;
         }
         if (arg === "-c" || arg === "--continue") {
@@ -71,6 +77,12 @@ async function main(): Promise<void> {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
         process.stdout.write(`${usage()}\n`);
+        return;
+    }
+    if (options.smoke) {
+        // The smoke entry is imported lazily so the TUI start path never evaluates it.
+        const { runSmoke } = await import("./smoke.js");
+        await runSmoke();
         return;
     }
     if (!process.stdout.isTTY || !process.stdin.isTTY) {

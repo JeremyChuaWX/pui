@@ -6,10 +6,10 @@
 
 **Blocked by:** 01 — Delete the workflows Module and everything that only served it.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `pui --smoke` prints JSON containing the bundled tool names and `["unslop"]` and exits 0 without rendering any UI
-- [ ] The entry is loaded lazily so the normal TUI start path imports nothing extra
-- [ ] The smoke build asserts every bundled tool (`fd`, `rg`, the subagent tools, `web_crawl`, `web_search`) and `unslop` appear in the output; the expected subagent tool list is updated again by ticket 06
-- [ ] `--smoke` appears in `pui --help`
-- [ ] `bun run check` is green
+- [x] `pui --smoke` prints JSON containing the bundled tool names and `["unslop"]` and exits 0 without rendering any UI
+- [x] The entry is loaded lazily so the normal TUI start path imports nothing extra
+- [x] The smoke build asserts every bundled tool (`fd`, `rg`, the subagent tools, `web_crawl`, `web_search`) and `unslop` appear in the output; the expected subagent tool list is updated again by ticket 06
+- [x] `--smoke` appears in `pui --help`
+- [x] `bun run check` is green

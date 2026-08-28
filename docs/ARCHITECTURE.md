@@ -43,6 +43,10 @@ smoke-test, and boundary-check scripts, and `docs/` and `issues/` hold documenta
 `src/app/index.tsx` parses CLI flags and starts the interactive TUI via `startUi` in
 `src/ui/start.tsx` — the UI's single start function, which creates the controller and renderer and
 mounts the Solid shell. The UI is imported lazily so `--help` never evaluates OpenTUI.
+`pui --smoke` dispatches to `src/app/smoke.ts` instead, which boots Pi headlessly against an
+isolated agent directory with the bundled Extensions and skills, prints the registered tool and
+skill names as one JSON line, and exits. It is also imported lazily, so the TUI path pays nothing
+for it.
 
 A prompt argument is handed to the App as `initialPrompt` and dispatched through the same
 prompt-action record as interactive input, so command-line slash invocations (`pui "/models"`)
@@ -270,7 +274,8 @@ the view models bound every string.
   Pi's public resource loader.
 - `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
   (`bun test src scripts`), a binary build, and a smoke test of the
-  built executable (`scripts/smoke-build.ts` → `dist/pui --help`).
+  built executable (`scripts/smoke-build.ts` runs `dist/pui --help` and `dist/pui --smoke`, and
+  fails if any bundled tool or the `unslop` skill is missing from the printed JSON).
 
 ## Notes
 
