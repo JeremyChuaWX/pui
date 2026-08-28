@@ -28,19 +28,19 @@ reviews:
     - "!.pui/**"
 
   path_instructions:
-    - path: "extensions/file-search/**"
+    - path: "src/modules/file-search/**"
       instructions: |
         Focus on shell-injection safety, argument boundaries, bounded output,
         temporary-file cleanup and permissions, cancellation, timeouts, and
         complete process-tree termination on supported platforms.
 
-    - path: "extensions/subagent/**"
+    - path: "src/modules/subagents/**"
       instructions: |
         Focus on child-process isolation and cleanup, FIFO concurrency,
         cancellation races, bounded protocol fields, exact-once delivery,
         session teardown, and backward-compatible renderer-neutral details.
 
-    - path: "src/**"
+    - path: "src/ui/**"
       instructions: |
         Focus on controller lifecycle races, stale session or extension events,
         display reconciliation, keyboard accessibility, and compatibility with

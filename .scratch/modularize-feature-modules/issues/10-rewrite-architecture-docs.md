@@ -6,9 +6,9 @@
 
 **Blocked by:** 09 — Boundary-check script in the check gate.
 
-**Status:** ready-for-agent
+**Status:** done (commit 326e35b on `modularize-feature-modules`)
 
-- [ ] Architecture doc reflects the new layout, edges, and entry conventions; no references to old paths remain
-- [ ] Agent-facing contribution docs point to the updated conventions
-- [ ] Superseded refactor-plan docs deleted
-- [ ] `bun run check` is green
+- [x] Architecture doc reflects the new layout, edges, and entry conventions; no references to old paths remain
+- [x] Agent-facing contribution docs point to the updated conventions
+- [x] Superseded refactor-plan docs deleted (all pass-1–4 plan docs were already removed before this branch; verified none remain outside `issues/` and `.scratch/`)
+- [x] `bun run check` is green

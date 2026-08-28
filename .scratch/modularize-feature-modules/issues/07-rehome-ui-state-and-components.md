@@ -6,10 +6,10 @@
 
 **Blocked by:** 02, 04, 05, 06.
 
-**Status:** ready-for-agent
+**Status:** done (commit 9dbe81e on `modularize-feature-modules`)
 
-- [ ] Controller and collaborators live in `ui/state/`; Solid shell and views in `ui/components/`
-- [ ] No view or state file imports a Module except through `interfaces/ui.ts`
-- [ ] The UI exposes exactly one start function owning renderer creation
-- [ ] TUI renders and behaves as before (transcript, menus, dialogs, sidebar, workflow page)
-- [ ] `bun run check` is green
+- [x] Controller and collaborators live in `ui/state/`; Solid shell and views in `ui/components/`
+- [x] No view or state file imports a Module except through `interfaces/ui.ts`
+- [x] The UI exposes exactly one start function owning renderer creation
+- [x] TUI renders and behaves as before (transcript, menus, dialogs, sidebar, workflow page)
+- [x] `bun run check` is green

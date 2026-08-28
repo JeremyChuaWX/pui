@@ -21,7 +21,7 @@ cannot trust that touching one feature won't ripple into the others.
 
 ## Solution
 
-Reorganize the repository into five top-level layers — `app/`, `pi-core/`,
+Reorganize the source under `src/` into five top-level layers — `app/`, `pi-core/`,
 `modules/`, `shared/`, `ui/` — where each feature is a self-contained Module whose
 only importable surface is its Interfaces Directory. The Pi model reaches features
 through Extensions loaded by Pi Core's Register File; the UI reaches features
@@ -35,14 +35,14 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 1. As a pui maintainer, I want each feature's code contained in a single Module directory, so that the blast radius of a feature change is visible from the file tree.
 2. As a pui maintainer, I want Modules forbidden from importing each other, so that features stay independently understandable and removable.
 3. As a pui maintainer, I want a boundary-check script in the standard check gate, so that architectural violations fail CI instead of accumulating silently.
-4. As a pui maintainer, I want the layer architecture visible in the repo root listing, so that newcomers can infer the design without reading docs first.
+4. As a pui maintainer, I want the layer architecture to be the whole `src/` listing, so that newcomers can infer the design without reading docs first and without picking the layers out from among configs, docs, and tooling at the repo root.
 5. As an AI agent contributor, I want a fixed Interfaces Directory convention (`pi`, `host`, `ui`, `api`), so that I can locate any Module's public surface without exploring its internals.
 6. As an AI agent contributor, I want the glossary and architecture docs to match the directory layout, so that I don't act on stale structural descriptions.
 7. As the Pi model, I want feature tools registered through each Module's Extension via Pi Core's Register File, so that tool availability is composed in exactly one place.
 8. As a workflow author, I want my `.pui/` scripts' `"pui/workflow"` import to keep working unchanged, so that the refactor doesn't break my existing workflows.
 9. As a pui user, I want the compiled binary to behave identically after the refactor, so that the release containing it is a non-event.
 10. As a pui user running `pui workflow`, I want the headless path to work without loading any UI code, so that scripted runs stay lean.
-11. As a Pi power user, I want each Module's Extension to remain loadable standalone via `pi -e`, so that I can use a single feature without the pui app.
+11. (Dropped.) The Extensions are built into pui and are not offered for standalone `pi -e` use; each `pi.ts` keeps a default export only because that is Pi's extension-module shape, which the registration tests exercise through Pi's resource loader.
 12. As a Module author, I want the Child-Agent Runtime and Agent Roles available as a Shared Primitive, so that I can spawn child Pi processes without depending on the subagents Module.
 13. As a Module author, I want generic utilities in a shared library separate from the Child-Agent Runtime, so that reaching for a validator doesn't entangle me with agent-spawning machinery.
 14. As a UI developer, I want each Module to publish a UI Entry with its view models and protocol parsers, so that views never parse or deep-import feature wire formats themselves.
@@ -53,12 +53,16 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 
 ## Implementation Decisions
 
-- Five top-level layers, no `src/` wrapper: `app/`, `pi-core/`, `modules/`,
-  `shared/`, `ui/`.
+- Five top-level layers under `src/`: `app/`, `pi-core/`, `modules/`, `shared/`, `ui/`. Only
+  source lives in `src/`; `scripts/`, `docs/`, `issues/`, and `.pui/` stay at the repo root. The
+  test-only helpers and the ambient asset declarations live at `src/test-support/` and
+  `src/assets.d.ts` — there is no `extensions/` directory, since Extensions live inside their
+  Modules. (An earlier revision of this decision kept the layers at the repo root; it was reversed
+  once the root listing mixed them with a dozen non-source entries.)
 - Four Modules: `subagents`, `workflows`, `web`, `file-search`. Each Module's only
   externally importable surface is its Interfaces Directory with fixed names:
-  `pi` (the Extension; required; keeps a default export for standalone `pi -e`
-  loading), `host` (Host Entry; required), `ui` (UI Entry; where needed), `api`
+  `pi` (the Extension; required; its default export is Pi's extension-module
+  shape — built into pui, not a standalone `pi` extension), `host` (Host Entry; required), `ui` (UI Entry; where needed), `api`
   (public authoring SDK; where needed). Everything else in a Module is private.
 - Dependency edges, all one-way: App → UI start function + Pi Core + Module Host
   Entries; UI → Pi Core + Module UI Entries + shared + Pi SDK; Pi Core → Module
@@ -91,9 +95,16 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   primitive, never a Module→Module edge.
 - The `"pui/workflow"` package export is repointed at the workflows Module's
   `api` entry; the import specifier seen by workflow scripts is unchanged.
+- Cross-layer imports are spelled with Node package subpath aliases (`package.json`
+  `"imports"`: `#<layer>/*` → `./src/<layer>/*`); intra-layer and intra-Module imports
+  stay relative. The `#` form is the one alias mechanism that Bun, `bun build`, `tsc`,
+  and Pi's own extension loader (jiti) all resolve natively — tsconfig `paths` does
+  not survive jiti.
+  The boundary check enforces the spelling both ways and rejects unresolvable `#`
+  specifiers.
 - Boundaries are enforced by convention plus a small boundary-check script
-  (import-specifier scan asserting the edge list and the
-  Interfaces-Directory-only rule) added to the standard check gate. UI→App is
+  (import-specifier scan asserting the edge list, the Interfaces-Directory-only
+  rule, and the import spelling) added to the standard check gate. UI→App is
   fully forbidden (not even type-only imports), since the Controller's move into
   the UI removes the need.
 - Delivery: one refactor branch, a sequence of mechanical move commits with
@@ -117,8 +128,8 @@ re-homing of existing code plus formalized entry points, not a rewrite.
   Interfaces Directory) plus a clean graph. It also runs against the real repo
   inside the check gate.
 - Preserved public seams needing no new tests: the `"pui/workflow"` specifier
-  (existing workflow API tests and the smoke build) and the `pi -e` default
-  exports (existing registration tests).
+  (existing workflow API tests and the smoke build) and the Extension default
+  exports (existing registration tests load them through Pi's resource loader).
 - Prior art: the existing per-extension test suites and the smoke-build script
   already model both styles — boundary-level behavior tests and a
   build-then-probe check.

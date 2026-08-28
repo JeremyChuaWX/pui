@@ -11,7 +11,7 @@ A self-contained feature (subagents, workflows, web, file search) owning its log
 _Avoid_: feature, extension (for the whole feature)
 
 **Extension**:
-The thin adapter a Module exposes to register its tools with the Pi process. Lives inside the Module; Pi Core loads it via the Register File.
+The thin adapter a Module exposes to register its tools with the Pi process. Lives inside the Module; Pi Core loads it via the Register File. Built into pui, never used as a standalone `pi` extension.
 _Avoid_: plugin
 
 **Pi Core**:
@@ -47,7 +47,7 @@ The only part of a Module importable from outside it. Holds the Module's Extensi
 _Avoid_: public folder, exports folder
 
 **Host Entry**:
-The interface a Module exports for Pi Core's host-side needs (completions, headless runs), distinct from its Extension.
+The interface a Module exports for the App layer's host-process needs (e.g., headless runs), distinct from its Extension.
 _Avoid_: bridge
 
 **UI Entry**:

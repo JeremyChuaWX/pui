@@ -6,9 +6,9 @@
 
 **Blocked by:** 02, 03, 04, 05 — all Module moves.
 
-**Status:** ready-for-agent
+**Status:** done (commits a11bfe3 on `modularize-feature-modules`)
 
-- [ ] Register File in `pi-core/` composes the four Extensions; tool registration behaves as before
-- [ ] Embedded skills data lives under Pi Core and is bundled into the binary as before
-- [ ] Pi Core imports nothing from Modules except `interfaces/pi.ts`
-- [ ] `bun run check` is green
+- [x] Register File in `pi-core/` composes the four Extensions; tool registration behaves as before
+- [x] Embedded skills data lives under Pi Core and is bundled into the binary as before
+- [x] Pi Core imports nothing from Modules except `interfaces/pi.ts`
+- [x] `bun run check` is green

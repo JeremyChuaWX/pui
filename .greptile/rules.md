@@ -4,7 +4,7 @@ Prioritize demonstrable correctness, security, lifecycle, compatibility, and
 resource-management problems. Avoid purely stylistic feedback already enforced
 by Biome or TypeScript.
 
-## File-search extension
+## File-search Module
 
 - Treat shell interpolation, option injection, unbounded output, temporary-file
   leakage, weak private-file permissions, and incomplete process-tree cleanup as
@@ -12,7 +12,7 @@ by Biome or TypeScript.
 - Verify timeout and cancellation paths on both supported POSIX platforms and do
   not assume a fast child-process startup.
 
-## Subagent extension
+## Subagents Module
 
 - Check FIFO concurrency, cancellation and shutdown races, exact-once result
   delivery, bounded wire fields, stale session or instance rejection, and child
@@ -20,7 +20,7 @@ by Biome or TypeScript.
 - Preserve renderer-neutral protocol details and compatibility with persisted
   sessions and unknown protocol versions.
 
-## Host and UI
+## UI
 
 - Check controller rebinding and disposal for stale events, leaked listeners,
   leaked child processes, and inconsistent snapshots.

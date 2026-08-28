@@ -40,7 +40,7 @@ bun run start -- --no-session
 bun run check
 ```
 
-`bun run check` runs Biome, type-checks, tests, builds, and smoke-tests the final executable. Use `bun run format` to format the project with Biome.
+`bun run check` runs Biome, type-checks, checks the layer boundaries, tests, builds, and smoke-tests the final executable. Use `bun run format` to format the project with Biome.
 
 ## Clipboard
 
@@ -65,27 +65,23 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 ## Skills
 
-pui bundles the [`unslop`](skills/unslop/SKILL.md) writing skill from
+pui bundles the [`unslop`](src/pi-core/skills/unslop/SKILL.md) writing skill from
 [`backnotprop/pstack`](https://github.com/backnotprop/pstack/blob/main/skills/unslop/SKILL.md). The skill and its
-[MIT license](skills/unslop/LICENSE.txt) are embedded in the standalone executable. At startup, pui copies them to a
+[MIT license](src/pi-core/skills/unslop/LICENSE.txt) are embedded in the standalone executable. At startup, pui copies them to a
 private temporary directory and passes its `SKILL.md` to Pi as an additional skill. This keeps the skill readable by
 Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the bundled Pi extension in [`extensions/subagent/`](extensions/subagent/), not Pi core. The extension owns presets, isolated child processes, concurrency, cancellation, timeouts, and output limits. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
 Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
 Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
-The regular `pi` command does not auto-load this application-owned extension. Load it explicitly when needed:
+This Extension is built into pui. It is not a standalone `pi` extension, and the regular `pi` command does not load it.
 
-```sh
-pi -e /absolute/path/to/pui/extensions/subagent/index.ts
-```
-
-See the [extension guide](extensions/subagent/README.md) for configuration and troubleshooting.
+See the [extension guide](src/modules/subagents/README.md) for configuration and troubleshooting.
 
 ## Workflows
 
@@ -150,46 +146,51 @@ Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is mis
 
 ## File-search tools
 
-pui bundles application-owned `fd` and `rg` tools from [`extensions/file-search/`](extensions/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](extensions/file-search/README.md).
+pui bundles application-owned `fd` and `rg` tools from [`src/modules/file-search/`](src/modules/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](src/modules/file-search/README.md).
 
-The regular `pi` command does not auto-load these tools; load them explicitly with `pi -e /absolute/path/to/pui/extensions/file-search/index.ts`.
+These tools are built into pui; the regular `pi` command does not load them.
 
 ## Web tools
 
-pui bundles the application-owned `web_search` and `web_crawl` tools from [`extensions/web/`](extensions/web/). `web_search` uses GPT built-in web search through an authenticated OpenAI Responses or ChatGPT/Codex model. It uses the active model when compatible; otherwise set `WEB_SEARCH_MODEL=provider/model` to a registered, authenticated compatible model. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
+pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/modules/web/`](src/modules/web/). `web_search` uses GPT built-in web search through an authenticated OpenAI Responses or ChatGPT/Codex model. It uses the active model when compatible; otherwise set `WEB_SEARCH_MODEL=provider/model` to a registered, authenticated compatible model. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
 
 Both tools cap returned output at 50KB and Pi's default line limit. `web_crawl` accepts a smaller `max_bytes` limit, and `web_search` returns at most 10 source URLs. Complete oversized results may be retained in private temporary files, limited to 10 MiB per result and 50 MiB per web-extension session. A retained path is valid only for the current session and is removed at session shutdown. Retention is best-effort: if storage fails or a quota is reached, the successful tool result still includes a bounded preview, reports that the complete output was not retained, and omits `fullOutputPath`.
 
-Like the bundled subagent, these tools are loaded by pui independently of normal extension discovery. The regular `pi` command does not auto-load them. To use them there, load the extension explicitly:
+Like the other Modules, these tools are built into pui and loaded independently of normal extension discovery; the regular `pi` command does not load them.
 
-```sh
-pi -e /absolute/path/to/pui/extensions/web/index.ts
-```
-
-See the [web extension guide](extensions/web/README.md) for the compact configuration reference.
+See the [web extension guide](src/modules/web/README.md) for the compact configuration reference.
 
 ## Architecture
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design: layers, module map, protocol
-ownership, dependency-injection conventions, and the testing strategy. The short version:
+ownership, dependency-injection conventions, and the testing strategy. The source under `src/` is
+five top-level layers (`app/`, `ui/`, `pi-core/`, `modules/`, `shared/`) with one-way dependency
+edges enforced by a boundary check in `bun run check`. The short version:
 
-- `src/index.tsx` owns CLI dispatch and OpenTUI renderer startup and shutdown.
-- `src/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
+- `src/app/index.tsx` owns CLI dispatch and invokes the UI's single start function, `src/ui/start.tsx`,
+  which owns OpenTUI renderer startup and shutdown.
+- `src/ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
-  production defaults: `src/workflow-bridge.ts` (workflow run map and control round-trips) and
-  `src/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
+  production defaults: the workflows Module's UI Entry (workflow run map and control round-trips) and
+  `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
   drives slash-command autocomplete and dispatch.
-- `src/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in `src/ui/`
-  (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns all keyboard
-  predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
-- `src/format.ts` projects Pi messages and live tool executions into display variants and preserves
-  item identity when presentation is unchanged; `src/tool-executions.ts` reduces tool lifecycle
-  events; `src/subagent.ts` validates and bounds the subagent protocol for display.
-- `extensions/` holds the bundled application-owned Pi extensions (file-search, subagent, workflow,
-  web), registered via `src/bundled-extensions.ts`. Each extension owns its wire protocol; `src/`
-  consumes those protocols directly instead of maintaining mirrors.
-- `skills/` holds application-owned skills, registered via `src/bundled-skills.ts`.
+- `src/ui/components/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in
+  `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns
+  all keyboard predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
+- `src/ui/state/format.ts` projects Pi messages and live tool executions into display variants and
+  preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces tool
+  lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
+  display.
+- `src/modules/file-search/`, `src/modules/web/`, `src/modules/subagents/`, and `src/modules/workflows/` are
+  the four Modules behind their Interfaces Directories, registered via Pi Core's
+  Register File `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed
+  state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
+  import resolves to the workflows Module's `interfaces/api.ts`.
+- `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/agent-runtime/` (the
+  Child-Agent Runtime for spawning child Pi processes, plus the Agent Roles) and `src/shared/lib/`
+  (the generic library: validation, bounded processes, retained output, semaphores, and friends).
+- `src/pi-core/skills/` holds application-owned skills, registered via `src/pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.
 

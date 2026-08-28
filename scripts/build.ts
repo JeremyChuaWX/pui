@@ -15,7 +15,7 @@ try {
     await fs.promises.rm(distDir, { recursive: true, force: true });
     await fs.promises.mkdir(distDir, { recursive: true });
     const result = await Bun.build({
-        entrypoints: [path.join(projectDir, "src", "index.tsx")],
+        entrypoints: [path.join(projectDir, "src", "app", "index.tsx")],
         target: "bun",
         format: "esm",
         minify: true,

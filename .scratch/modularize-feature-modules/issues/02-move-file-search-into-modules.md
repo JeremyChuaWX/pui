@@ -6,9 +6,9 @@
 
 **Blocked by:** 01 — Split shared into agent-runtime and lib.
 
-**Status:** ready-for-agent
+**Status:** done (commits 4622a98, 4da9533 on `modularize-feature-modules`)
 
-- [ ] `modules/file-search/interfaces/{pi,ui}.ts` are the only files imported from outside the Module
-- [ ] `@`-file completion in the TUI works exactly as before
-- [ ] Standalone loading via `pi -e` still works
-- [ ] `bun run check` is green
+- [x] `modules/file-search/interfaces/{pi,ui}.ts` are the only files imported from outside the Module (the Module's own tests still reach `extensions/test-support/`; flagged for the issue-09 boundary checker)
+- [x] `@`-file completion in the TUI works exactly as before (`ui.ts` now owns the fd-command fallback via `fdCompletionCommand()`)
+- [x] Standalone loading via `pi -e` still works (verified by loading `interfaces/pi.ts` through `DefaultResourceLoader`; `fd`/`rg` register with no errors)
+- [x] `bun run check` is green
