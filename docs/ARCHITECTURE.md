@@ -15,9 +15,8 @@ in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
 
 ```
 src/app/       entry points + pui process management
-  ├──▶ src/ui/start.tsx                    the UI's single start function
-  ├──▶ src/pi-core/                        bundled skills
-  └──▶ src/modules/*/interfaces/host.ts    Host Entries (host-process needs)
+  └──▶ src/ui/start.tsx                    the UI's single start function
+       (the rules also permit src/pi-core/ and Host Entries, currently unused)
 
 src/ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
   ├──▶ src/pi-core/                        extension factories + bundled skills
@@ -136,7 +135,7 @@ exactly one layer:
 | Entry | Consumer | Role |
 |---|---|---|
 | `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; its default export is Pi's extension-module shape. Built into pui, not a standalone `pi` extension |
-| `interfaces/host.ts` | the App | the Host Entry: host-process needs such as headless runs |
+| `interfaces/host.ts` | the App | the Host Entry: reserved for host-process needs; no Module currently exports one with content |
 | `interfaces/ui.ts` | the UI | the UI Entry: view models, protocol parsers, and bridges — the only way UI code reaches the Module |
 
 What each Module publishes:

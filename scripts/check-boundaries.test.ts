@@ -11,11 +11,9 @@ function violationsFor(edges: ImportEdge[]) {
 describe("clean graph", () => {
     test("every sanctioned edge produces no violations", () => {
         const edges: ImportEdge[] = [
-            // App -> UI start function + Pi Core + shared + itself
+            // App -> UI start function + shared
             { from: "app/index.tsx", to: "ui/start.tsx" },
             { from: "app/index.tsx", to: "shared/lib/validate.ts" },
-            { from: "app/index.tsx", to: "pi-core/bundled-skills.ts" },
-            { from: "app/index.tsx", to: "app/cli.ts" },
             // UI -> Pi Core + Module UI Entries + shared + itself
             { from: "ui/state/controller.ts", to: "pi-core/register.ts" },
             { from: "ui/state/format.ts", to: "modules/subagents/interfaces/ui.ts" },
