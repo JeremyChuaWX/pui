@@ -16,8 +16,8 @@ in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
 ```
 src/app/       entry points + pui process management
   ├──▶ src/ui/start.tsx                    the UI's single start function
-  ├──▶ src/pi-core/                        bundled skills for the smoke harness
-  └──▶ src/modules/*/interfaces/host.ts    Host Entries (headless workflow runs)
+  ├──▶ src/pi-core/                        bundled skills
+  └──▶ src/modules/*/interfaces/host.ts    Host Entries (host-process needs)
 
 src/ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
   ├──▶ src/pi-core/                        extension factories + bundled skills
@@ -26,32 +26,24 @@ src/ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
 src/pi-core/   the Register File + bundled skills
   └──▶ src/modules/*/interfaces/pi.ts      Extensions
 
-src/modules/   file-search   web   subagents   workflows
+src/modules/   file-search   web   subagents
   └──▶ src/shared/ only — never another Module
 
 src/shared/    Shared Primitives: agent-runtime (the Child-Agent Runtime) + lib
   └──▶ src/shared/ only
 ```
 
-`src/shared/` is importable from every layer; nothing imports `src/app/`. The `"pui/workflow"` package
-export resolves to `src/modules/workflows/interfaces/api.ts` and is consumed by workflow scripts, not
-by any layer. Two entries in `src/` sit outside the diagram: `src/test-support/` (test-only helpers
+`src/shared/` is importable from every layer; nothing imports `src/app/`. Two entries in `src/` sit
+outside the diagram: `src/test-support/` (test-only helpers
 that production code may not import) and `src/assets.d.ts` (ambient declarations for bundled
 text/Markdown assets). Everything else at the repo root is not source: `scripts/` holds the build,
-smoke-test, and boundary-check scripts, `docs/` and `issues/` hold documentation, and `.pui/` holds
-sample workflow scripts.
+smoke-test, and boundary-check scripts, and `docs/` and `issues/` hold documentation.
 
 ### App — `src/app/`
 
-`src/app/index.tsx` parses CLI flags and dispatches. Each dispatch target is imported lazily, so the
-interactive path never loads the workflow CLI and the headless path never loads the UI:
-
-- the interactive TUI, via `startUi` in `src/ui/start.tsx` — the UI's single start function, which
-  creates the controller and renderer and mounts the Solid shell;
-- `pui workflow …`, via `src/app/headless-workflow.ts`, which imports only the workflows Module's Host
-  Entry (`src/modules/workflows/interfaces/host.ts`) — no UI code, no TUI, no Pi session;
-- the compiled-binary smoke harness `src/app/workflow-smoke.ts`, gated behind `PUI_WORKFLOW_SMOKE=1`
-  but statically linked so the built executable can self-test.
+`src/app/index.tsx` parses CLI flags and starts the interactive TUI via `startUi` in
+`src/ui/start.tsx` — the UI's single start function, which creates the controller and renderer and
+mounts the Solid shell. The UI is imported lazily so `--help` never evaluates OpenTUI.
 
 A prompt argument is handed to the App as `initialPrompt` and dispatched through the same
 prompt-action record as interactive input, so command-line slash invocations (`pui "/models"`)
@@ -80,10 +72,9 @@ The controller delegates to focused collaborators rather than owning every conce
 
 | Collaborator | Interface | Hides |
 |---|---|---|
-| `src/modules/workflows/interfaces/ui.ts` | `WorkflowBridge` (`bind / runs / inspect / control / dispose`) | workflow background-event parsing and control correlation |
 | `src/modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
 | `src/modules/file-search/interfaces/ui.ts` | `fdCompletionCommand` | system `fd`/`fdfind` resolution for `@` file completion |
-| `src/shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps shared by both bridges |
+| `src/shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps behind the bridge |
 | `src/ui/state/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
 The controller's command descriptor list is the single source for slash-command autocomplete,
@@ -98,20 +89,18 @@ The controller's remaining state collaborators live beside it in `src/ui/state/`
 
 #### Components — `src/ui/components/`
 
-`App` (`src/ui/components/app.tsx`) owns only UI state (prompt text, dialogs, completions, workflow
-page routing, keyboard handling) and renders snapshots:
+`App` (`src/ui/components/app.tsx`) owns only UI state (prompt text, dialogs, completions, keyboard
+handling) and renders snapshots:
 
 | File | Contents |
 |---|---|
 | `src/ui/components/menus.ts` | every picker/palette, built behind the `MenuHost` seam (`openDialog`, `openAsyncPicker`, a narrow `MenuController` slice of the controller) — pure data, unit-tested with fakes |
 | `src/ui/components/dialogs.tsx` | `DialogState`, modal `Dialog` (picker / confirm / input / help), and the pure `extensionDialogState` derivation from extension dialog requests |
 | `src/ui/components/transcript.tsx` | message, tool, subagent, bash, and summary cards |
-| `src/ui/components/workflow-page.tsx` | the read-only workflow status page |
 | `src/ui/components/prompt.tsx` | prompt textarea + autocomplete popover |
 | `src/ui/components/sidebar.tsx` | session sidebar and toast stack |
 | `src/ui/components/keys.ts` | all keyboard knowledge: the global shortcut table (one entry per binding drives `globalKeyIntent` dispatch in the app and the Help dialog's `globalKeyHelp` lines), `listNavigationDirection` list cycling, dismissal, enter detection, prompt-history keys, extension-confirm intents (and the hint strings derived from them) |
 | `src/ui/components/subagent-view.ts` | subagent presentation: status icons/labels/colors, elapsed, usage summaries |
-| `src/ui/components/workflow-view.ts` | workflow presentation (status icons/labels/tones, run summaries) and the pure `resolveWorkflowNavigation` routing for pending workflow-page navigation |
 
 View-side helpers `app-support.ts` (prompt history, selection copy, focus trapping, external
 editor) and `theme.ts` also live in `src/ui/components/`.
@@ -149,16 +138,14 @@ exactly one layer:
 | `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; its default export is Pi's extension-module shape. Built into pui, not a standalone `pi` extension |
 | `interfaces/host.ts` | the App | the Host Entry: host-process needs such as headless runs |
 | `interfaces/ui.ts` | the UI | the UI Entry: view models, protocol parsers, and bridges — the only way UI code reaches the Module |
-| `interfaces/api.ts` | workflow scripts | the public authoring SDK behind the `"pui/workflow"` package export |
 
 What each Module publishes:
 
-| Module | `pi` | `host` | `ui` | `api` |
-|---|---|---|---|---|
-| `file-search` | `fd`/`rg` tools | — | the `@`-completion command | — |
-| `web` | `web_search`/`web_crawl` | — | — | — |
-| `subagents` | `subagent` + background tools | reserved (documented empty stub) | bounded subagent view models + `BackgroundSubagentBridge` | — |
-| `workflows` | the `workflow` tool | headless run path + backend/manager/storage for the smoke harness | `WorkflowBridge`, the run-event reducer, `resolveWorkflowRun` | type-only `"pui/workflow"` SDK |
+| Module | `pi` | `host` | `ui` |
+|---|---|---|---|
+| `file-search` | `fd`/`rg` tools | — | the `@`-completion command |
+| `web` | `web_search`/`web_crawl` | — | — |
+| `subagents` | `subagent` + background tools | reserved (documented empty stub) | bounded subagent view models + `BackgroundSubagentBridge` |
 
 Inside their private files, the Modules are deep:
 
@@ -172,25 +159,6 @@ Inside their private files, the Modules are deep:
   `background-manager.ts` owns background-job delivery semantics; `background-protocol.ts` owns the
   background bus envelopes; `view-model.ts` and `background-bridge.ts` bound protocol payloads into
   host view models behind the UI Entry.
-- `src/modules/workflows/` — `backend.ts` (run lifecycle and active-run state; collaborators are
-  injectable through an options bag, including a `WorkflowPlatform` seam for
-  timings/uuid/log/worker source and a `WorkflowRunStore` storage interface), `preflight.ts`
-  (launch-time script vetting), `node-resolution.ts` (sandbox Node discovery and the default host
-  shell executor), `worker-host.ts` (`WorkflowWorker`: sandboxed spawn, frame decoding, stderr
-  tail, and watchdog/timeout supervision of one worker process), `rpc-handler.ts` (the
-  phase/log/shell/agent RPC dispatch and reply framing for one run), `worker-protocol.ts` +
-  `worker/*.js.txt` (untrusted worker-frame validation, NDJSON decoding, and sandboxed worker
-  source), `rpc-operations.ts` (pure request/result validators and the one durable-operation
-  pipeline behind shell/agent RPCs), `run-storage.ts` (durable run directories), `durable-fs.ts`
-  (safe-directory traversal, atomic-write/fsync, and the cross-process directory-lock protocol
-  with per-caller policies), `source.ts` (workflow file parsing), `js-scan.ts` (the one JavaScript
-  tokenizer shared by preflight and source parsing), `approval.ts` (cross-process approval store),
-  `session-lifecycle.ts` (session epoch/generation guards for the Extension), `worktree.ts`,
-  `manager.ts`, `protocol.ts` (run and background wire formats). `agent-executor.ts` provides the
-  default child-Pi agent executor — a thin adapter over the Child-Agent Runtime — and the shared
-  production backend wiring used by the Extension, the headless CLI, and the smoke harness. The
-  default policy's role allowlist, model resolution, and per-role timeout defaults all derive from
-  the Agent Roles in `src/shared/agent-runtime/presets.ts`, the single role definition.
 - `src/modules/web/` — `output-retention.ts` is the deep module (bounded previews, private temp-file
   retention with per-result/per-session quotas); `tool-shell.ts` is the shared execute wrapper;
   `search.ts`/`crawl.ts` hold provider-specific logic only.
@@ -204,9 +172,9 @@ not entangle a Module with agent-spawning machinery:
   shell-free detached spawn, NDJSON parsing into throttled neutral `ChildAgentEvent` flushes,
   bounded stderr, usage aggregation with fingerprint dedupe, model-label canonicalization,
   terminal-status classification, SIGTERM→SIGKILL termination, and the process-wide child-Pi
-  semaphore; the subagent runner and the workflow agent executor are both adapters over it) and
+  semaphore; the subagent runner is an adapter over it) and
   `presets.ts` (the Agent Roles: `worker`/`explore`/`generic` child-agent presets, the single role
-  allowlist, and the model/timeout resolution used by both subagents and workflows; the bundled
+  allowlist, and the model/timeout resolution used by subagents; the bundled
   agent guidance lives in `src/shared/agent-runtime/agents/`). Agent Roles belong here, not to the
   subagents Module — see ADR 0001 in `docs/adr/`.
 - `src/shared/lib/` — the generic library: `background-channel.ts` (producer-side
@@ -214,8 +182,8 @@ not entangle a Module with agent-spawning machinery:
   `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
   `createGracefulTermination` SIGTERM→SIGKILL escalation and `killProcessTree` group signaling
   used by every child supervisor), `instance-scoped-runs.ts` (the routed copy-on-write run-set
-  reducer — producer authority, reset/replacement gating, and run caps — shared by the subagent
-  and workflow bridges), `json-events.ts` (the JSONL splitter for child NDJSON streams),
+  reducer — producer authority, reset/replacement gating, and run caps — behind the subagent
+  bridge), `json-events.ts` (the JSONL splitter for child NDJSON streams),
   `retained-output.ts` (quota-bounded spill storage plus `composeBoundedOutput`, the single
   fixed-point composer that fits a truncated preview and its accurate truncation notice inside one
   byte/line budget for every extension), `semaphore.ts` (abort-aware FIFO concurrency), and
@@ -270,11 +238,8 @@ parsed state through the Module's UI Entry instead of maintaining mirrors:
   `background-bridge.ts` consumes its parser, bounds strings into host view models, and exposes a
   bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
   published through `interfaces/ui.ts`.
-- `src/modules/workflows/protocol.ts` — workflow summaries, background events, and control envelopes.
-  The Module's `bridge.ts` consumes the parsers and owns control correlation, and `view-model.ts`
-  resolves tool-result details against authoritative runs, both published through
-  `interfaces/ui.ts`. Both bridges delegate instance authority, routed copy-on-write updates,
-  reset/replacement gating, and run caps to `src/shared/lib/instance-scoped-runs.ts`.
+  The bridge delegates instance authority, routed copy-on-write updates, reset/replacement gating,
+  and run caps to `src/shared/lib/instance-scoped-runs.ts`.
 
 The UI still treats extension payloads as untrusted input: parsers validate shape and routing, and
 the view models bound every string.
@@ -288,11 +253,9 @@ the view models bound every string.
   `AgentSessionRuntime`, private `EventBus`, fake `MenuHost`, fake filesystem) instead of casting
   through private APIs.
 - Narrow seams are preferred over mocks: `MenuController` is a `Pick<>` of the controller, the web
-  retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, the
-  workflow Extension accepts a whole `backend`.
+  retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`.
 - One deliberate exception: the Child-Agent Runtime caches its process-wide semaphore on
-  `globalThis` so a duplicated module instance still shares one concurrency limit. Subagents and
-  workflow agents draw from the same slots.
+  `globalThis` so a duplicated module instance still shares one concurrency limit.
 
 ## Testing strategy
 
@@ -302,18 +265,17 @@ the view models bound every string.
   drives `createMenus` with a fake host). The boundary checker's public interface is
   `checkBoundaries`, tested as a function from an import graph to a violation list.
 - Where the real boundary is a process or the filesystem, tests use the real thing: the
-  Child-Agent Runtime and the subagent runner spawn a fixture child, the approval store races a
-  real second process, worktree tests run real `git`, run-storage tests inject real corruption.
+  Child-Agent Runtime and the subagent runner spawn a fixture child, and the file-search and web
+  Modules run real bounded processes.
 - Bundled-skill tests materialize the real embedded assets and load the resulting path through
-  Pi's public resource loader. The compiled executable smoke test verifies that `fs.access` and
-  reads work against those ordinary files.
+  Pi's public resource loader.
 - `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
   (`bun test src scripts`), a binary build, and a smoke test of the
-  built executable (`scripts/smoke-build.ts` → `dist/pui --workflow-smoke`).
+  built executable (`scripts/smoke-build.ts` → `dist/pui --help`).
 
 ## Notes
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its
 `CombinedAutocompleteProvider`; pui's visible renderer remains OpenTUI. Bundled resources augment
 normal Pi discovery. Global and trusted project extensions and skills still load from Pi's regular
-configuration. The four Extensions are built into pui and are not offered for standalone `pi` use.
+configuration. The three Extensions are built into pui and are not offered for standalone `pi` use.

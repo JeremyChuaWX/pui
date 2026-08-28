@@ -83,67 +83,6 @@ This Extension is built into pui. It is not a standalone `pi` extension, and the
 
 See the [extension guide](src/modules/subagents/README.md) for configuration and troubleshooting.
 
-## Workflows
-
-Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. A file can also run without the TUI or a Pi session:
-
-```sh
-pui workflow [--cwd /path/to/project] ./review.ts '{"user":"Ada"}'
-```
-
-The explicit command authorizes that exact file for this invocation, so the interactive approval and project-trust prompts are intentionally bypassed. JSON args are optional. Progress (phases, logs, shell calls, and agent lifecycle) is written to stderr while the workflow runs; stdout remains reserved for the final JSON result. Launch or workflow failures are written to stderr and produce a nonzero exit. Durable run artifacts and all normal sandbox, policy, Node-resolution, and worktree rules still apply. Headless runs are not delivered, recovered, or continued by a later TUI session.
-
-Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
-
-Inline workflows accept TypeScript (and its JavaScript subset) using `agent`, `shell`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
-
-```ts
-type ReviewRequest = { user: string };
-await phase("review");
-const reports: unknown[] = await parallel([
-    agent("Review API", { role: "explore" }),
-    agent("Review UI", { role: "explore" }),
-]);
-const tests = await shell("bun test", { timeoutMs: 120_000 });
-return { reports, tests, requestedBy: (args as ReviewRequest).user };
-```
-
-The `workflow` tool accepts exactly one source: inline TypeScript in `script`, or an explicit canonical `.ts` workflow file in `path`. `/workflow <path> [JSON args]` launches a `.ts` file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
-
-Workflow files default-export a named async function. pui calls it with a frozen explicit context and the supplied JSON arguments:
-
-```ts
-import type { WorkflowContext, WorkflowMetadata } from "pui/workflow";
-
-type ReviewRequest = { user: string };
-
-export const meta = {
-    name: "review-pair",
-    description: "Run two independent reviews",
-} satisfies WorkflowMetadata;
-
-export default async function reviewPair(context: WorkflowContext, args: ReviewRequest) {
-    await context.phase("review");
-    const reports = await context.parallel([
-        context.agent("Review API", { role: "explore" }),
-        context.agent("Review UI", { role: "explore" }),
-    ]);
-    return { reports, requestedBy: args.user };
-}
-```
-
-The context provides `agent`, `shell`, `pipeline`, `parallel`, `phase`, and `log`; unlike inline scripts, file workflows do not receive those as ambient globals. `shell(command, options?)` runs a platform-shell command in the workflow cwd without starting an agent and returns `{ exitCode, stdout, stderr }`. A nonzero exit is returned normally. Options support `timeoutMs` and string-valued `env` overrides. File metadata is optional; without it, the display name falls back to the filename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name. Workflow TypeScript runs through Node's built-in strip-only support: there is no typechecking or `tsconfig` processing. The optional `pui/workflow` type-only import is erased before execution; runtime imports, other import sources, TSX, enums, runtime namespaces, decorators, and other transform-required syntax are unsupported.
-
-Every exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Accepting the approval immediately runs the workflow and trusts that exact source in the project. Approval is tied to the canonical file path, exact source, and workflow host-capability version, so moving or changing a file—or upgrading to a newly exposed host capability—requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. File paths are explicit inputs, not implicit trust: the host reads the file and approval covers the bytes that will launch.
-
-Starting `/workflow <path>` replaces the central chat transcript with a read-only status page showing phases, agents, and their current statuses. Press `Esc` or `Ctrl+C` to return to chat. Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, or restart a completed agent. Pause lets active agent and shell operations finish but starts no new work. Stop aborts the worker and active operations. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
-
-Private run artifacts are stored under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/` (exact source/arguments, snapshots, journal, result, and summary). On startup pui discovers interrupted runs and asks whether to resume, inspect, stop, or defer. Completed agent and shell operations replay from the journal; an operation interrupted before durable completion runs again. Model, command, tool, and filesystem side effects are therefore **at least once**, not exactly once. Terminal result delivery uses a durable claim to suppress duplicates during ordinary recovery, but a crash between the external message send and recording delivery has an unavoidable duplicate-versus-loss window; it does not promise strict exactly-once delivery across that send.
-
-Defaults are 4 concurrent agents (configurable ceiling 16), a warning at 25 scheduled agents, 1,000 agents maximum, a 10-minute run/agent/shell timeout, 128 KiB combined shell output, 128 MiB worker old-space, 64 KiB scripts, and 256 KiB worker protocol frames. Direct filesystem, environment, network, runtime imports, child processes, and signals remain unavailable inside the worker. The approved `shell()` primitive is the explicit exception: the trusted host runs it in the workflow cwd with the host environment plus declared overrides. Scripts run in a separate permission-restricted Node process with a stripped VM realm, static preflight, bounded NDJSON, heartbeat supervision, and host-side RPC validation. This is a layered sandbox boundary—not a claim that `node:vm` or agent tool allowlists alone are OS sandboxes. Host agents remain trusted code with capabilities selected by role and policy.
-
-Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is missing or the wrong version is found; ensure that path reports >=22.19 with `node --version`. If a run is interrupted, reopen `/workflows` and inspect its recovery artifact before resuming. Permission errors should be fixed by selecting a canonical external Node path, not by weakening Node permission flags.
-
 ## File-search tools
 
 pui bundles application-owned `fd` and `rg` tools from [`src/modules/file-search/`](src/modules/file-search/). They resolve system `fd`/`fdfind` and `rg`, execute without a shell, and retain complete truncated output in a private temporary file. The same `fd` resolver powers `@` completion. See the [file-search extension guide](src/modules/file-search/README.md).
@@ -172,21 +111,20 @@ edges enforced by a boundary check in `bun run check`. The short version:
 - `src/ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
-  production defaults: the workflows Module's UI Entry (workflow run map and control round-trips) and
+  production defaults: the subagents Module's UI Entry (`BackgroundSubagentBridge`) and
   `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
   drives slash-command autocomplete and dispatch.
 - `src/ui/components/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in
   `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns
-  all keyboard predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
+  all keyboard predicates, plus dialog/transcript/prompt/sidebar components).
 - `src/ui/state/format.ts` projects Pi messages and live tool executions into display variants and
   preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces tool
   lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
   display.
-- `src/modules/file-search/`, `src/modules/web/`, `src/modules/subagents/`, and `src/modules/workflows/` are
-  the four Modules behind their Interfaces Directories, registered via Pi Core's
-  Register File `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed
-  state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
-  import resolves to the workflows Module's `interfaces/api.ts`.
+- `src/modules/file-search/`, `src/modules/web/`, and `src/modules/subagents/` are the three Modules
+  behind their Interfaces Directories, registered via Pi Core's Register File
+  `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed state
+  through the Module's UI Entry instead of maintaining mirrors.
 - `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/agent-runtime/` (the
   Child-Agent Runtime for spawning child Pi processes, plus the Agent Roles) and `src/shared/lib/`
   (the generic library: validation, bounded processes, retained output, semaphores, and friends).
