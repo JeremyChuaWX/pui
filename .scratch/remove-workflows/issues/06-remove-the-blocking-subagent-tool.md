@@ -6,12 +6,12 @@
 
 **Blocked by:** 05 — `explorer` and `worker` spawn tools with Profile directories.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The blocking `subagent` tool, the `tool_result` details-retention hook, and the run-job / runner code that only served it are removed
-- [ ] The tool-details protocol, its transcript renderer, the subagent view helpers used only by that renderer, and their tests are deleted
-- [ ] The UI Entry no longer exports the normalisation view model or the active-tools constant; the formatter has no subagent tool-details branch
-- [ ] Active and recent Jobs still render in the sidebar with status, elapsed time, and title; cancel from the palette still works
-- [ ] Controller-seam tests assert snapshots carry background Jobs and that Jobs abort across new session, switch, fork, and dispose
-- [ ] The Register File test and the smoke build expect exactly the five tools
-- [ ] `bun run check` is green
+- [x] The blocking `subagent` tool, the `tool_result` details-retention hook, and the run-job / runner code that only served it are removed
+- [x] The tool-details protocol, its transcript renderer, the subagent view helpers used only by that renderer, and their tests are deleted
+- [x] The UI Entry no longer exports the normalisation view model or the active-tools constant; the formatter has no subagent tool-details branch
+- [x] Active and recent Jobs still render in the sidebar with status, elapsed time, and title; cancel from the palette still works
+- [x] Controller-seam tests assert snapshots carry background Jobs and that Jobs abort across new session, switch, fork, and dispose
+- [x] The Register File test and the smoke build expect exactly the five tools
+- [x] `bun run check` is green
