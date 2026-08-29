@@ -83,7 +83,7 @@ test("background delivery persists once on resume and wait consumption suppresse
                             {
                                 type: "toolCall",
                                 id: "spawn-background",
-                                name: "subagent_spawn",
+                                name: "worker",
                                 arguments: { prompt: "Produce the large fixture", cwd: temp, name: requestedTitle },
                             },
                         ];
@@ -168,7 +168,7 @@ test("background delivery persists once on resume and wait consumption suppresse
             resourceLoader: loader,
             settingsManager: settings,
             sessionManager: manager,
-            tools: ["subagent_spawn", "subagent_wait"],
+            tools: ["worker", "subagent_wait"],
         });
         let outputDirectory: string | undefined;
         try {

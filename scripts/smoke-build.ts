@@ -24,11 +24,11 @@ if (help.exitCode !== 0) throw new Error(`Standalone executable smoke failed: ${
 const expectedTools = [
     "fd",
     "rg",
-    "subagent_spawn",
+    "explorer",
+    "worker",
     "subagent_wait",
     "subagent_check",
     "subagent_cancel",
-    "subagent_list",
     "subagent",
     "web_search",
     "web_crawl",

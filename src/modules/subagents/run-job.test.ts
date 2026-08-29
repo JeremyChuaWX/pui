@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { defineProfile } from "./profiles/profile.ts";
 import { createInitialSubagentDetails, createTerminalSubagentDetails } from "./protocol.ts";
 import { runSubagentJob } from "./run-job.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const details = () =>
-    createInitialSubagentDetails({ id: "job-1", agent: "explore", model: "fixture/model", cwd: "/repo", now: 1 });
+    createInitialSubagentDetails({ id: "job-1", agent: "explorer", model: "fixture/model", cwd: "/repo", now: 1 });
 
 function request(signal = new AbortController().signal) {
     const updates: string[] = [];
@@ -12,13 +13,19 @@ function request(signal = new AbortController().signal) {
         updates,
         value: {
             details: details(),
-            agent: {
+            profile: defineProfile({
+                name: "fixture",
+                label: "Fixture",
                 description: "fixture",
+                promptSnippet: "fixture",
+                promptGuidelines: [],
                 tools: ["read"],
+                defaultModel: "fixture/default",
+                modelEnv: "PI_FIXTURE_MODEL",
                 timeoutMs: 100,
-                promptFlag: "--system-prompt" as const,
+                promptFlag: "--system-prompt",
                 prompt: "Explore",
-            },
+            }),
             model: "fixture/model",
             prompt: "Inspect",
             cwd: "/repo",

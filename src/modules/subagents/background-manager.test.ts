@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { waitFor as waitUntil } from "#test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
+import worker from "./profiles/worker/index.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
@@ -55,7 +56,7 @@ function controlled(limit = 1) {
 describe("BackgroundSubagentManager", () => {
     test("spawn validates cwd and returns before the runner completes", async () => {
         const fixture = controlled();
-        const job = await fixture.manager.spawn({ prompt: "Do work", cwd }, cwd);
+        const job = await fixture.manager.spawn({ profile: worker, prompt: "Do work", cwd }, cwd);
         expect(job.run.status).toBe("queued");
         await waitUntil(() => fixture.starts.length === 1);
         expect(fixture.manager.check(job.id).run.status).toBe("running");
@@ -65,8 +66,8 @@ describe("BackgroundSubagentManager", () => {
 
     test("uses FIFO semaphore queuing and queued cancellation never starts", async () => {
         const fixture = controlled(1);
-        const first = await fixture.manager.spawn({ prompt: "first", cwd }, cwd);
-        const second = await fixture.manager.spawn({ prompt: "second", cwd }, cwd);
+        const first = await fixture.manager.spawn({ profile: worker, prompt: "first", cwd }, cwd);
+        const second = await fixture.manager.spawn({ profile: worker, prompt: "second", cwd }, cwd);
         await waitUntil(() => fixture.semaphore.active === 1 && fixture.semaphore.queued === 1);
         expect(fixture.manager.check(second.id).run.status).toBe("queued");
         await fixture.manager.cancel([second.id]);
@@ -77,7 +78,7 @@ describe("BackgroundSubagentManager", () => {
 
     test("an aborted wait leaves running work alive", async () => {
         const fixture = controlled();
-        const job = await fixture.manager.spawn({ prompt: "work", cwd }, cwd);
+        const job = await fixture.manager.spawn({ profile: worker, prompt: "work", cwd }, cwd);
         await waitUntil(() => fixture.starts.length === 1);
         const abort = new AbortController();
         const waiting = fixture.manager.wait([job.id], abort.signal);
@@ -107,7 +108,7 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
-        const job = await manager.spawn({ prompt: "race", cwd }, cwd);
+        const job = await manager.spawn({ profile: worker, prompt: "race", cwd }, cwd);
         const waiting = manager.wait([job.id], abort.signal);
         await waitUntil(() => finish !== undefined);
         finish();
@@ -125,7 +126,7 @@ describe("BackgroundSubagentManager", () => {
     test("multiple successful waiters consume one terminal result without automatic delivery", async () => {
         const fixture = controlled();
         fixture.setIdle(true);
-        const job = await fixture.manager.spawn({ prompt: "shared wait", cwd }, cwd);
+        const job = await fixture.manager.spawn({ profile: worker, prompt: "shared wait", cwd }, cwd);
         await waitUntil(() => fixture.gates.length === 1);
         const first = fixture.manager.wait([job.id]);
         const second = fixture.manager.wait([job.id]);
@@ -154,7 +155,7 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "done", stderr: "", exitCode: 0, signal: null };
             },
         });
-        const job = await manager.spawn({ prompt: "wait flush race", cwd }, cwd);
+        const job = await manager.spawn({ profile: worker, prompt: "wait flush race", cwd }, cwd);
         await waitUntil(() => finish !== undefined);
         const waiting = manager.wait([job.id]);
         finish();
@@ -165,7 +166,7 @@ describe("BackgroundSubagentManager", () => {
 
     test("wait interest consumes delivery and deferred results flush exactly once", async () => {
         const fixture = controlled();
-        const waited = await fixture.manager.spawn({ prompt: "waited", cwd }, cwd);
+        const waited = await fixture.manager.spawn({ profile: worker, prompt: "waited", cwd }, cwd);
         await waitUntil(() => fixture.gates.length === 1);
         const waiting = fixture.manager.wait([waited.id]);
         fixture.gates[0]!();
@@ -173,7 +174,7 @@ describe("BackgroundSubagentManager", () => {
         fixture.manager.flushDeferred();
         expect(fixture.deliveries).toHaveLength(0);
 
-        const deferred = await fixture.manager.spawn({ prompt: "deferred", cwd }, cwd);
+        const deferred = await fixture.manager.spawn({ profile: worker, prompt: "deferred", cwd }, cwd);
         await waitUntil(() => fixture.gates.length === 2);
         fixture.gates[1]!();
         await waitUntil(() => fixture.manager.check(deferred.id).run.status === "succeeded");
@@ -185,14 +186,14 @@ describe("BackgroundSubagentManager", () => {
     test("idle settlement delivers immediately and shutdown suppresses stale delivery", async () => {
         const fixture = controlled();
         fixture.setIdle(true);
-        const immediate = await fixture.manager.spawn({ prompt: "immediate", cwd }, cwd);
+        const immediate = await fixture.manager.spawn({ profile: worker, prompt: "immediate", cwd }, cwd);
         await waitUntil(() => fixture.gates.length === 1);
         fixture.gates[0]!();
         await waitUntil(() => fixture.deliveries.length === 1);
         expect(fixture.deliveries[0].id).toBe(immediate.id);
 
         fixture.setIdle(false);
-        await fixture.manager.spawn({ prompt: "shutdown", cwd }, cwd);
+        await fixture.manager.spawn({ profile: worker, prompt: "shutdown", cwd }, cwd);
         await waitUntil(() => fixture.gates.length === 2);
         await fixture.manager.shutdown(100);
         fixture.manager.flushDeferred();
@@ -213,7 +214,7 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output, stderr: "", exitCode: 0, signal: null };
             },
         });
-        const job = await manager.spawn({ prompt: "large output", cwd }, cwd);
+        const job = await manager.spawn({ profile: worker, prompt: "large output", cwd }, cwd);
         await waitUntil(() => deliveries.length === 1);
         const result = deliveries[0];
         expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(12 * 1024);
@@ -241,7 +242,7 @@ describe("BackgroundSubagentManager", () => {
             },
         });
 
-        const spawned = await manager.spawn({ prompt: "copy boundary", cwd }, cwd);
+        const spawned = await manager.spawn({ profile: worker, prompt: "copy boundary", cwd }, cwd);
         const [result] = await manager.wait([spawned.id]);
         expect(result?.id).toBe(spawned.id);
         expect(result?.status).toBe("succeeded");
@@ -270,7 +271,7 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
-        const job = await manager.spawn({ prompt: "shutdown race", cwd }, cwd);
+        const job = await manager.spawn({ profile: worker, prompt: "shutdown race", cwd }, cwd);
         await waitUntil(() => finish !== undefined);
         await manager.shutdown(0);
         finish();
@@ -296,7 +297,7 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
-        const job = await manager.spawn({ prompt: "deliver", cwd }, cwd);
+        const job = await manager.spawn({ profile: worker, prompt: "deliver", cwd }, cwd);
         await waitUntil(() => deliveryAttempts === 1);
         await expect(manager.cancel([job.id])).resolves.toEqual([
             expect.objectContaining({ id: job.id, run: expect.objectContaining({ status: "succeeded" }) }),
@@ -322,12 +323,13 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
-        const first = await manager.spawn({ prompt: "emit", cwd }, cwd);
+        const first = await manager.spawn({ profile: worker, prompt: "emit", cwd }, cwd);
         await expect(manager.wait([first.id])).resolves.toHaveLength(1);
-        for (let index = 0; index < 64; index++) await manager.spawn({ prompt: `prune ${index}`, cwd }, cwd);
+        for (let index = 0; index < 64; index++)
+            await manager.spawn({ profile: worker, prompt: `prune ${index}`, cwd }, cwd);
         await waitUntil(() => manager.list().every((job) => job.run.status === "succeeded"));
         expect(manager.list()).toHaveLength(64);
-        const cancelled = await manager.spawn({ prompt: "cancel", cwd }, cwd);
+        const cancelled = await manager.spawn({ profile: worker, prompt: "cancel", cwd }, cwd);
         await expect(manager.cancel([cancelled.id])).resolves.toHaveLength(1);
         await expect(manager.shutdown()).resolves.toBeUndefined();
     });
@@ -350,9 +352,12 @@ describe("BackgroundSubagentManager", () => {
                 return { details, output: "", stderr: "", exitCode: null, signal: "SIGTERM" };
             },
         });
-        for (let index = 0; index < 64; index++) await manager.spawn({ prompt: `active ${index}`, cwd }, cwd);
+        for (let index = 0; index < 64; index++)
+            await manager.spawn({ profile: worker, prompt: `active ${index}`, cwd }, cwd);
         expect(manager.list()).toHaveLength(64);
-        await expect(manager.spawn({ prompt: "one too many", cwd }, cwd)).rejects.toThrow("more than 64");
+        await expect(manager.spawn({ profile: worker, prompt: "one too many", cwd }, cwd)).rejects.toThrow(
+            "more than 64",
+        );
         await manager.shutdown(500);
     });
 
@@ -395,12 +400,15 @@ describe("BackgroundSubagentManager", () => {
             },
         });
         try {
-            const first = await manager.spawn({ prompt: "spill", cwd }, cwd);
+            const first = await manager.spawn({ profile: worker, prompt: "spill", cwd }, cwd);
             await waitUntil(() => saveStarted);
-            for (let index = 0; index < 63; index++) await manager.spawn({ prompt: `active ${index}`, cwd }, cwd);
+            for (let index = 0; index < 63; index++)
+                await manager.spawn({ profile: worker, prompt: `active ${index}`, cwd }, cwd);
             await waitUntil(() => semaphore.active === 63);
 
-            await expect(manager.spawn({ prompt: "must not prune spill", cwd }, cwd)).rejects.toThrow("more than 64");
+            await expect(manager.spawn({ profile: worker, prompt: "must not prune spill", cwd }, cwd)).rejects.toThrow(
+                "more than 64",
+            );
             expect(manager.check(first.id).run.status).toBe("succeeded");
             expect(semaphore.active).toBe(63);
             const waiting = manager.wait([first.id]);
@@ -429,7 +437,7 @@ describe("BackgroundSubagentManager", () => {
         });
         const ids: string[] = [];
         for (let index = 0; index < 65; index++)
-            ids.push((await manager.spawn({ prompt: `job ${index}`, cwd }, cwd)).id);
+            ids.push((await manager.spawn({ profile: worker, prompt: `job ${index}`, cwd }, cwd)).id);
         await waitUntil(() => manager.list().every((job) => job.run.status === "succeeded"));
         expect(manager.list()).toHaveLength(64);
         expect(() => manager.check(ids[0]!)).toThrow("Unknown");

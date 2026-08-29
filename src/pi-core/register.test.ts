@@ -22,14 +22,7 @@ import { BUNDLED_EXTENSION_FACTORIES, createBundledExtensionFactories } from "./
 
 const bundledTools = {
     "<inline:pui-file-search>": ["fd", "rg"],
-    "<inline:pui-subagent>": [
-        "subagent",
-        "subagent_spawn",
-        "subagent_wait",
-        "subagent_check",
-        "subagent_cancel",
-        "subagent_list",
-    ],
+    "<inline:pui-subagent>": ["explorer", "worker", "subagent_wait", "subagent_check", "subagent_cancel", "subagent"],
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
@@ -113,7 +106,7 @@ describe("bundled extensions", () => {
             await loader.reload();
             expect(loader.getExtensions().errors).toEqual([]);
             expect(loader.getExtensions().extensions).toHaveLength(1);
-            for (const relativePath of ["modules/subagents/presets.ts", "modules/subagents/semaphore.ts"]) {
+            for (const relativePath of ["modules/subagents/profiles/index.ts", "modules/subagents/semaphore.ts"]) {
                 expect((await fs.promises.stat(path.resolve(import.meta.dir, "..", relativePath))).isFile()).toBe(true);
             }
         } finally {
@@ -354,9 +347,9 @@ export default function (pi: any) {
             for (const relativePath of [
                 path.join("modules", "subagents", "protocol.ts"),
                 path.join("modules", "subagents", "runner.ts"),
-                path.join("modules", "subagents", "agents", "worker.md"),
-                path.join("modules", "subagents", "agents", "worker-guidance.LICENSE"),
-                path.join("modules", "subagents", "agents", "explore.md"),
+                path.join("modules", "subagents", "profiles", "worker", "prompt.md"),
+                path.join("modules", "subagents", "profiles", "worker", "prompt.LICENSE"),
+                path.join("modules", "subagents", "profiles", "explorer", "prompt.md"),
             ]) {
                 expect((await fs.promises.stat(path.join(sourceRoot, relativePath))).isFile()).toBe(true);
             }

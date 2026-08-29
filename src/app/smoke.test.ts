@@ -12,11 +12,11 @@ describe("headless smoke entry", () => {
             expect(report.tools).toEqual([
                 "fd",
                 "rg",
-                "subagent_spawn",
+                "explorer",
+                "worker",
                 "subagent_wait",
                 "subagent_check",
                 "subagent_cancel",
-                "subagent_list",
                 "subagent",
                 "web_search",
                 "web_crawl",

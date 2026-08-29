@@ -98,7 +98,7 @@ describe("controller background runtime lifecycle", () => {
                 const oldSession = runtime.session;
                 const ready = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
                 expect(ready).toBeDefined();
-                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "subagent_spawn");
+                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "worker");
                 if (!spawn) throw new Error("Missing background spawn tool");
                 const result = await spawn.execute(
                     `spawn-${randomUUID()}`,
@@ -133,7 +133,7 @@ describe("controller background runtime lifecycle", () => {
 
                 const newReady = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
                 expect(newReady?.instanceId).not.toBe(ready.instanceId);
-                expect(runtime.session.agent.state.tools.some((tool) => tool.name === "subagent_spawn")).toBe(true);
+                expect(runtime.session.agent.state.tools.some((tool) => tool.name === "worker")).toBe(true);
                 const replacementEnvelope = {
                     ...newReady,
                     type: "upsert",
@@ -188,7 +188,7 @@ describe("controller background runtime lifecycle", () => {
                 await exercise(() => runtime.fork(cloneEntry, { position: "at" }));
 
                 const oldSession = runtime.session;
-                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "subagent_spawn");
+                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "worker");
                 if (!spawn) throw new Error("Missing final background spawn tool");
                 await spawn.execute(
                     "final-spawn",

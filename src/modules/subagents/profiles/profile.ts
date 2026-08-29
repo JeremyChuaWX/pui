@@ -1,0 +1,92 @@
+/** The three watchdogs every Job runs under. Ticket 07 enforces the stall timers; the wall clock is enforced today. */
+export interface JobLimits {
+    /** Whole-Job wall clock in milliseconds. */
+    timeoutMs: number;
+    /** Time without child progress while no tool is active. */
+    stallTimeoutMs: number;
+    /** Time without child progress while a tool is active. */
+    toolStallTimeoutMs: number;
+}
+
+const MINUTE = 60_000;
+
+/** Default Limits shared by every Profile. A Profile may override any one of them. */
+export const DEFAULT_LIMITS: JobLimits = {
+    timeoutMs: 60 * MINUTE,
+    stallTimeoutMs: 10 * MINUTE,
+    toolStallTimeoutMs: 15 * MINUTE,
+};
+
+export const CHILD_ISOLATION_FLAGS = [
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-context-files",
+] as const;
+
+/** One child-agent configuration: a spawn tool name, its child tool allowlist, model, prompt, and Limits. */
+export interface SubagentProfile extends JobLimits {
+    name: string;
+    label: string;
+    /** What the child is for and what it may touch; the registered tool description adds tools, model, and Limits. */
+    description: string;
+    promptSnippet: string;
+    promptGuidelines: string[];
+    tools: readonly string[];
+    defaultModel: string;
+    /** Environment variable consulted before the default model. */
+    modelEnv: string;
+    prompt: string;
+    /** Whether the prompt replaces Pi's coding prompt or is appended to it. */
+    promptFlag: "--system-prompt" | "--append-system-prompt";
+}
+
+export type ProfileDeclaration = Omit<SubagentProfile, keyof JobLimits> & Partial<JobLimits>;
+
+export function defineProfile(profile: ProfileDeclaration): SubagentProfile {
+    return { ...DEFAULT_LIMITS, ...profile };
+}
+
+/** Explicit argument first, then the Profile's environment variable, then its default. Blank values are ignored. */
+export function resolveProfileModel(
+    profile: SubagentProfile,
+    override: string | undefined,
+    environment: NodeJS.ProcessEnv,
+): string {
+    const explicit = override?.trim();
+    if (explicit) return explicit;
+    const configured = environment[profile.modelEnv]?.trim();
+    return configured || profile.defaultModel;
+}
+
+/** The child Pi argument list: JSON event mode, isolation flags, the tool allowlist, model, prompt, and task. */
+export function childArgs(profile: SubagentProfile, model: string, prompt: string): string[] {
+    return [
+        "--mode",
+        "json",
+        ...CHILD_ISOLATION_FLAGS,
+        "--tools",
+        profile.tools.join(","),
+        "--model",
+        model,
+        profile.promptFlag,
+        profile.prompt,
+        prompt,
+    ];
+}
+
+function minutes(ms: number): string {
+    const value = ms / MINUTE;
+    return `${Number.isInteger(value) ? value : value.toFixed(1)} minutes`;
+}
+
+/** The sentence a spawn tool description ends with so the model can pick a Profile without reading docs. */
+export function describeProfile(profile: SubagentProfile): string {
+    return (
+        `Tools: ${profile.tools.join(", ")}. ` +
+        `Default model: ${profile.defaultModel} (override with the model argument or ${profile.modelEnv}). ` +
+        `Limits: ${minutes(profile.timeoutMs)} wall clock, ${minutes(profile.stallTimeoutMs)} stall, ` +
+        `${minutes(profile.toolStallTimeoutMs)} tool stall.`
+    );
+}

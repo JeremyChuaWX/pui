@@ -3,7 +3,7 @@ import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import { getPiInvocation } from "./child-agent.js";
-import { AGENTS, type AgentName, type ResolvedAgentName, resolveModel, resolveWorkingDirectory } from "./presets.js";
+import { resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
 import {
     createInitialSubagentDetails,
     SUBAGENT_PROTOCOL_VERSION,
@@ -14,6 +14,7 @@ import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
 import type { AbortableSemaphore } from "./semaphore.js";
+import { resolveWorkingDirectory } from "./working-directory.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
@@ -23,10 +24,10 @@ const WAIT_JOB_BYTES = 24 * 1024;
 const WAIT_TOTAL_BYTES = 48 * 1024;
 const DELIVERY_MAX_LINES = DEFAULT_MAX_LINES - 8;
 
-interface SpawnInput {
+export interface SpawnInput {
+    profile: SubagentProfile;
     prompt: string;
     cwd: string;
-    agent?: AgentName;
     model?: string;
     name?: string;
 }
@@ -113,12 +114,10 @@ export class BackgroundSubagentManager {
         if (this.jobs.size >= MAX_JOBS) {
             throw new Error(`Cannot track more than ${MAX_JOBS} active background subagents.`);
         }
-        const agentName: ResolvedAgentName = input.agent ?? "generic";
-        const agent = AGENTS[agentName];
-        const model = resolveModel(agent, input.model, this.options.environment);
+        const model = resolveProfileModel(input.profile, input.model, this.options.environment);
         const id = randomUUID();
         const now = this.options.now();
-        const details = createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now });
+        const details = createInitialSubagentDetails({ id, agent: input.profile.name, model, cwd, now });
         const controller = new AbortController();
         const job: Job = {
             snapshot: {
@@ -136,7 +135,7 @@ export class BackgroundSubagentManager {
         this.emit(job);
         this.prune();
         // Deliberately detach only after all synchronous/async validation succeeds.
-        job.settlement = this.execute(job, input.prompt, agentName, model, cwd);
+        job.settlement = this.execute(job, input.prompt, input.profile, model, cwd);
         return copyJob(job);
     }
 
@@ -269,8 +268,8 @@ export class BackgroundSubagentManager {
     private async execute(
         job: Job,
         prompt: string,
-        agentName: ResolvedAgentName,
-        model: string | undefined,
+        profile: SubagentProfile,
+        model: string,
         cwd: string,
     ): Promise<void> {
         const details: SubagentDetailsV1 = {
@@ -287,7 +286,7 @@ export class BackgroundSubagentManager {
             },
             {
                 details,
-                agent: AGENTS[agentName],
+                profile,
                 model,
                 prompt,
                 cwd,

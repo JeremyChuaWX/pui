@@ -169,7 +169,7 @@ Inside their private files, the Modules are deep:
 ### Shared Primitives — `src/shared/`
 
 Cross-cutting code importable by every layer. Only files with two or more consuming Modules live
-here; the child-agent runner, its presets and prompt assets, the semaphore, the background channel,
+here; the child-agent runner, its Profiles and prompt assets, the semaphore, the background channel,
 the instance-scoped run reducer, and the JSONL splitter belong to the subagents Module
 (`src/modules/subagents/`), their single consumer.
 

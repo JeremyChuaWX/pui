@@ -2,7 +2,7 @@ import { DEFAULT_MAX_BYTES, truncateHead } from "@earendil-works/pi-coding-agent
 import { truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
 import type { getPiInvocation } from "./child-agent.js";
-import { type AgentPreset, childArgs } from "./presets.js";
+import { childArgs, type SubagentProfile } from "./profiles/index.js";
 import {
     appendSubagentActivity,
     createTerminalSubagentDetails,
@@ -42,8 +42,8 @@ export interface SubagentJobSpillPolicy {
 export interface SubagentJobRequest {
     /** Queued protocol snapshot whose cwd has already been resolved. */
     details: SubagentDetailsV1;
-    agent: AgentPreset;
-    model: string | undefined;
+    profile: SubagentProfile;
+    model: string;
     prompt: string;
     cwd: string;
     signal: AbortSignal;
@@ -137,13 +137,13 @@ export async function runSubagentJob(
         );
         publish(details);
 
-        const child = invocation(childArgs(request.agent, request.model, request.prompt));
+        const child = invocation(childArgs(request.profile, request.model, request.prompt));
         const execution = await run({
             details,
             command: child.command,
             args: child.args,
             cwd: request.cwd,
-            timeoutMs: request.agent.timeoutMs,
+            timeoutMs: request.profile.timeoutMs,
             signal: request.signal,
             onSnapshot: (next) => {
                 details = next;

@@ -16,39 +16,35 @@ import {
 } from "../background-protocol.js";
 import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../child-agent.js";
 import {
-    AGENT_NAMES,
-    AGENT_SUMMARY,
-    AGENTS,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-    workingDirectoryCandidate,
-} from "../presets.js";
+    describeProfile,
+    PROFILE_NAMES,
+    PROFILES,
+    PROFILES_BY_NAME,
+    resolveProfileModel,
+    type SubagentProfile,
+} from "../profiles/index.js";
 import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "../protocol.js";
 import { runSubagentJob, synthesizeSubagentFailure } from "../run-job.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
 import type { AbortableSemaphore } from "../semaphore.js";
+import { resolveWorkingDirectory, workingDirectoryCandidate } from "../working-directory.js";
 
-const UNGUIDED_AGENT_NAME = "generic" as const;
-
-const BackgroundSpawnParams = Type.Object({
-    prompt: Type.String(),
-    cwd: Type.String(),
-    agent: Type.Optional(StringEnum(AGENT_NAMES)),
-    model: Type.Optional(Type.String()),
-    name: Type.Optional(Type.String()),
+const SpawnParams = Type.Object({
+    prompt: Type.String({ description: "Task prompt for the child. Self-contained: the child sees nothing else." }),
+    cwd: Type.String({
+        description:
+            "Working directory for the child process. Relative paths resolve from the parent working directory.",
+    }),
+    model: Type.Optional(Type.String({ description: "Optional model override for this Job." })),
+    name: Type.Optional(Type.String({ description: "Optional short title shown in Job listings." })),
 });
 const BackgroundIdsParams = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }) });
 const BackgroundCheckParams = Type.Object({ id: Type.String() });
-const BackgroundListParams = Type.Object({});
 
 const SubagentParams = Type.Object({
-    agent: Type.Optional(
-        StringEnum(AGENT_NAMES, {
-            description:
-                "Fixed guided preset to use. Omit for an unguided, write-capable child using Pi's normal coding prompt.",
-        }),
-    ),
+    agent: StringEnum(PROFILE_NAMES, {
+        description: `Profile to run the child under: ${PROFILE_NAMES.join(" or ")}.`,
+    }),
     prompt: Type.String({
         description: "Task prompt for the subagent.",
     }),
@@ -56,11 +52,7 @@ const SubagentParams = Type.Object({
         description:
             "Working directory for the subagent process. Relative paths resolve from the parent working directory.",
     }),
-    model: Type.Optional(
-        Type.String({
-            description: "Optional model override. Omitted-agent calls otherwise use child Pi's default model.",
-        }),
-    ),
+    model: Type.Optional(Type.String({ description: "Optional model override for this call." })),
 });
 
 export interface SubagentExtensionDependencies {
@@ -211,23 +203,25 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
               )
             : content;
     };
-    pi.registerTool({
-        name: "subagent_spawn",
-        label: "Spawn Background Subagent",
-        description: "Start an isolated Pi subagent in the background and return its job id immediately.",
-        promptSnippet: "Start delegated work in the background",
-        promptGuidelines: [
-            "After subagent_spawn, continue useful parent work; use subagent_wait only when progress depends on the result.",
-        ],
-        parameters: BackgroundSpawnParams,
-        async execute(_id, params, signal, _update, ctx) {
-            const job = await background.spawn(params, ctx.cwd, signal);
-            return {
-                content: [{ type: "text", text: `Started background subagent ${job.id} (${job.title}).` }],
-                details: job,
-            };
-        },
-    });
+    /** One spawn tool per Profile. Each returns a Job id at once and queues behind the process-wide semaphore. */
+    function registerSpawnTool(profile: SubagentProfile): void {
+        pi.registerTool({
+            name: profile.name,
+            label: profile.label,
+            description: `${profile.description} ${describeProfile(profile)}`,
+            promptSnippet: profile.promptSnippet,
+            promptGuidelines: profile.promptGuidelines,
+            parameters: SpawnParams,
+            async execute(_id, params, signal, _update, ctx) {
+                const job = await background.spawn({ ...params, profile }, ctx.cwd, signal);
+                return {
+                    content: [{ type: "text", text: `Started ${profile.name} Job ${job.id} (${job.title}).` }],
+                    details: job,
+                };
+            },
+        });
+    }
+    for (const profile of PROFILES) registerSpawnTool(profile);
     pi.registerTool({
         name: "subagent_wait",
         label: "Wait for Background Subagents",
@@ -269,55 +263,29 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             };
         },
     });
-    pi.registerTool({
-        name: "subagent_list",
-        label: "List Background Subagents",
-        description: "List jobs tracked by this extension instance.",
-        parameters: BackgroundListParams,
-        async execute() {
-            const jobs = background.list();
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: jobs.length
-                            ? jobs.map((job) => `[${job.id}] ${job.title} — ${job.run.status}`).join("\n")
-                            : "No background subagents.",
-                    },
-                ],
-                details: { jobs },
-            };
-        },
-    });
-
     pi.registerTool<typeof SubagentParams, SubagentDetailsV1>({
         name: "subagent",
         label: "Subagent",
         description:
-            "Spawn an isolated Pi subagent for delegated coding work. " +
-            `Available modes: ${AGENT_SUMMARY}. ` +
-            "Omitting agent uses no bundled agent prompt or model and leaves the input prompt to steer a write-capable child. " +
-            "An optional model argument overrides model selection. Output is capped at 50KB or 2000 lines.",
-        promptSnippet:
-            "Delegate implementation, review, debugging, testing, or read-only exploration to an isolated Pi subagent.",
+            "Spawn an isolated Pi subagent under a Profile and block until it finishes. " +
+            PROFILES.map((profile) => `${profile.name}: ${describeProfile(profile)}`).join(" ") +
+            " Output is capped at 50KB or 2000 lines.",
+        promptSnippet: "Delegate coding work or read-only exploration to an isolated Pi subagent and wait for it.",
         promptGuidelines: [
-            "Use subagent instead of bash launching headless Pi when the user asks to delegate work to a worker, implementer, reviewer, or another agent.",
-            'Omit subagent\'s agent argument for unguided general coding with read/write tools; select "worker" for bundled coding guidance or "explore" for read-only reconnaissance.',
+            "Prefer the explorer and worker spawn tools; use subagent only when the result is needed before anything else can happen.",
             "Give subagent a focused, self-contained prompt and the exact working directory because child context files, skills, and extensions are disabled.",
-            "Issue multiple independent subagent calls in the same turn when their tasks can run in parallel.",
             "Omit subagent's model argument unless a model override is specifically useful.",
         ],
         parameters: SubagentParams,
 
         async execute(toolCallId, params, signal, onUpdate, ctx) {
-            const agentName: ResolvedAgentName = params.agent ?? UNGUIDED_AGENT_NAME;
-            const agent = AGENTS[agentName];
-            const model = resolveModel(agent, params.model, environment);
+            const profile = PROFILES_BY_NAME[params.agent];
+            const model = resolveProfileModel(profile, params.model, environment);
             const cwdCandidate = workingDirectoryCandidate(params.cwd, ctx.cwd);
             let details = createInitialSubagentDetails({
                 id: toolCallId,
-                agent: agentName,
-                model: model ?? "default",
+                agent: profile.name,
+                model,
                 cwd: cwdCandidate,
                 now: now(),
             });
@@ -349,7 +317,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 { semaphore, run, invocation: resolveInvocation, now },
                 {
                     details,
-                    agent,
+                    profile,
                     model,
                     prompt: params.prompt,
                     cwd,

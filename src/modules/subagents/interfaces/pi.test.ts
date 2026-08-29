@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createExtensionApiHarness } from "#test-support/extension-api.ts";
@@ -7,20 +9,7 @@ import { AbortableSemaphore } from "../semaphore.ts";
 import { registerSubagentExtension } from "./pi.ts";
 
 const extensionCwd = path.dirname(fileURLToPath(import.meta.url));
-
-function extensionHost() {
-    const host = createExtensionApiHarness();
-    return {
-        ...host,
-        pi: host.api,
-        get tool() {
-            return host.tool("subagent");
-        },
-        get sent() {
-            return host.messages.map(([message, options]) => ({ message, options }));
-        },
-    };
-}
+const MINUTE = 60_000;
 
 function successRun(output = "delegated answer") {
     return async (options: any) => {
@@ -36,22 +25,39 @@ function successRun(output = "delegated answer") {
     };
 }
 
-function execute(
-    tool: any,
-    id: string,
-    options: {
-        params?: { agent?: "worker" | "explore"; prompt: string; cwd: string; model?: string };
-        signal?: AbortSignal;
-        onUpdate?: (value: any) => void;
-    } = {},
-) {
-    return tool.execute(
-        id,
-        options.params ?? { agent: "explore", prompt: "Inspect the target", cwd: extensionCwd },
-        options.signal,
-        options.onUpdate,
-        { cwd: extensionCwd },
-    );
+/** An extension host whose fake child spawner records every runner invocation. */
+function spawnHost(environment: NodeJS.ProcessEnv = {}) {
+    const host = createExtensionApiHarness();
+    const runs: any[] = [];
+    registerSubagentExtension(host.api, {
+        semaphore: new AbortableSemaphore(4),
+        environment,
+        invocation: (args) => ({ command: "fake-pi", args }),
+        run: async (options) => {
+            runs.push(options);
+            return successRun()(options);
+        },
+    });
+    return {
+        host,
+        runs,
+        /** Spawn under a Profile, then wait for the Job so the recorded runner options are complete. */
+        async spawnAndWait(profile: "explorer" | "worker", params: Record<string, unknown> = {}) {
+            const spawned = await host
+                .tool(profile)
+                .execute(
+                    `${profile}-call`,
+                    { prompt: `Use ${profile}`, cwd: extensionCwd, ...params },
+                    undefined,
+                    undefined,
+                    {
+                        cwd: extensionCwd,
+                    },
+                );
+            const waited = await host.tool("subagent_wait").execute("wait", { ids: [spawned.details.id] });
+            return { spawned, waited, run: runs.at(-1) };
+        },
+    };
 }
 
 function argumentAfter(args: string[], flag: string): string | undefined {
@@ -60,92 +66,36 @@ function argumentAfter(args: string[], flag: string): string | undefined {
 }
 
 describe("subagent extension integration", () => {
-    test("runs omitted agents without a bundled prompt or model", async () => {
-        const host = extensionHost();
-        let runnerOptions: any;
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            environment: {},
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-                runnerOptions = options;
-                return successRun()(options);
-            },
-        });
-
-        const result = await execute(host.tool, "default-call", {
-            params: { prompt: "Implement the target", cwd: extensionCwd },
-        });
-
-        expect(host.tool.parameters.required).toEqual(["prompt", "cwd"]);
-        expect(host.tool.parameters.properties.agent.enum).toEqual(["worker", "explore"]);
-        expect(result.details.run.agent).toBe("generic");
-        expect(result.details.run.model).toBe("default");
-        expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
-        expect(runnerOptions.args).not.toContain("--append-system-prompt");
-        expect(runnerOptions.args).not.toContain("--system-prompt");
-        expect(runnerOptions.args).not.toContain("--model");
-        expect(runnerOptions.args.at(-1)).toBe("Implement the target");
-        expect(runnerOptions.timeoutMs).toBe(600_000);
-
-        const metadata = [host.tool.description, host.tool.promptSnippet, ...(host.tool.promptGuidelines ?? [])].join(
-            "\n",
-        );
-        expect(metadata).toContain("Omitting agent uses no bundled agent prompt or model");
-        expect(metadata).toContain("instead of bash launching headless Pi");
+    test("registers the two Profile spawn tools, the Job tools, and the lifecycle handlers", () => {
+        const { host } = spawnHost();
+        expect([...host.tools.keys()]).toEqual([
+            "explorer",
+            "worker",
+            "subagent_wait",
+            "subagent_check",
+            "subagent_cancel",
+            "subagent",
+        ]);
+        expect(host.handlers.has("session_start")).toBe(true);
+        expect(host.handlers.has("agent_settled")).toBe(true);
+        expect(host.handlers.has("tool_result")).toBe(true);
+        expect(host.handlers.has("session_shutdown")).toBe(true);
     });
 
-    test("allows an explicit model without adding a prompt to an omitted-agent call", async () => {
-        const host = extensionHost();
-        let runnerOptions: any;
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            environment: { PI_WORKER_MODEL: "fixture/ignored-worker-model" },
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-                runnerOptions = options;
-                return successRun()(options);
-            },
-        });
+    test("explorer returns a Job id immediately and runs a read-only child with its own system prompt", async () => {
+        const fixture = spawnHost();
+        const { spawned, waited, run } = await fixture.spawnAndWait("explorer", { prompt: "Inspect the target" });
 
-        const result = await execute(host.tool, "default-explicit-model", {
-            params: { prompt: "Implement the target", cwd: extensionCwd, model: "fixture/default-model" },
-        });
+        expect(spawned.details.id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(spawned.details.run.status).toBe("queued");
+        expect(spawned.details.run.agent).toBe("explorer");
+        expect(spawned.details.run.model).toBe("openrouter/z-ai/glm-5.3-flash:low");
+        expect(spawned.content[0].text).toContain(spawned.details.id);
+        expect(waited.details.results[0].status).toBe("succeeded");
 
-        expect(result.details.run.agent).toBe("generic");
-        expect(result.details.run.model).toBe("fixture/default-model");
-        expect(argumentAfter(runnerOptions.args, "--model")).toBe("fixture/default-model");
-        expect(runnerOptions.args).not.toContain("--append-system-prompt");
-        expect(runnerOptions.args).not.toContain("--system-prompt");
-    });
-
-    test("preserves explicit explore behavior, outer id, isolation flags, and lifecycle snapshots", async () => {
-        const host = extensionHost();
-        let runnerOptions: any;
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(4),
-            environment: {},
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-                runnerOptions = options;
-                return successRun()(options);
-            },
-        });
-        const updates: any[] = [];
-
-        const result = await execute(host.tool, "outer-call-42", {
-            onUpdate: (update) => updates.push(update),
-        });
-
-        expect(result.details.run.id).toBe("outer-call-42");
-        expect(result.details.run.agent).toBe("explore");
-        expect(result.details.run.model).toBe("openai-codex/gpt-5.4-mini:off");
-        expect(result.content[0].text).toBe("delegated answer");
-        expect(updates.map((item) => item.details.run.status)).toEqual(["queued", "starting", "running", "succeeded"]);
-        expect(updates.every((item) => item.details.run.id === "outer-call-42")).toBe(true);
-        expect(runnerOptions.command).toBe("fake-pi");
-        expect(runnerOptions.args).toContain("--mode");
-        expect(runnerOptions.args).toContain("json");
+        expect(run.command).toBe("fake-pi");
+        expect(run.cwd).toBe(extensionCwd);
+        expect(argumentAfter(run.args, "--mode")).toBe("json");
         for (const flag of [
             "--no-session",
             "--no-extensions",
@@ -153,135 +103,116 @@ describe("subagent extension integration", () => {
             "--no-prompt-templates",
             "--no-context-files",
         ]) {
-            expect(runnerOptions.args).toContain(flag);
+            expect(run.args).toContain(flag);
         }
-        expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,grep,find,ls");
-        expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.4-mini:off");
-        expect(runnerOptions.args).toContain("--system-prompt");
-        expect(runnerOptions.args).not.toContain("--append-system-prompt");
-        expect(runnerOptions.timeoutMs).toBe(120_000);
-        expect(runnerOptions.args.at(-1)).toBe("Inspect the target");
-        expect(result.details.run.fullOutputPath).toBeUndefined();
+        expect(argumentAfter(run.args, "--tools")).toBe("read,grep,find,ls");
+        expect(argumentAfter(run.args, "--model")).toBe("openrouter/z-ai/glm-5.3-flash:low");
+        expect(argumentAfter(run.args, "--system-prompt")).toContain("read-only codebase exploration subagent");
+        expect(run.args).not.toContain("--append-system-prompt");
+        expect(run.args.at(-1)).toBe("Inspect the target");
+        expect(run.timeoutMs).toBe(60 * MINUTE);
     });
 
-    test("uses bundled guidance for an explicit worker", async () => {
-        const host = extensionHost();
-        let runnerOptions: any;
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            environment: {},
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-                runnerOptions = options;
-                return successRun()(options);
-            },
-        });
+    test("worker runs a write-capable child with the Ponytail guidance appended", async () => {
+        const fixture = spawnHost();
+        const { spawned, run } = await fixture.spawnAndWait("worker", { prompt: "Implement the target" });
 
-        const result = await execute(host.tool, "explicit-worker", {
-            params: { agent: "worker", prompt: "Implement the target", cwd: extensionCwd },
-        });
-
-        expect(result.details.run.agent).toBe("worker");
-        expect(result.details.run.model).toBe("openai-codex/gpt-5.6-sol:low");
-        expect(argumentAfter(runnerOptions.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
-        expect(runnerOptions.args).toContain("--append-system-prompt");
-        const workerPrompt = argumentAfter(runnerOptions.args, "--append-system-prompt") ?? "";
-        expect(workerPrompt).toContain("Lazy means efficient, not careless.");
-        expect(workerPrompt).toContain("Bug fix = root cause, not symptom");
-        expect(workerPrompt.toLowerCase()).not.toContain("ponytail");
-        expect(runnerOptions.args).not.toContain("--system-prompt");
-        expect(argumentAfter(runnerOptions.args, "--model")).toBe("openai-codex/gpt-5.6-sol:low");
-        expect(runnerOptions.timeoutMs).toBe(600_000);
+        expect(spawned.details.run.agent).toBe("worker");
+        expect(spawned.details.run.model).toBe("openrouter/z-ai/glm-5.3-flash:high");
+        expect(argumentAfter(run.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
+        expect(argumentAfter(run.args, "--model")).toBe("openrouter/z-ai/glm-5.3-flash:high");
+        const guidance = argumentAfter(run.args, "--append-system-prompt") ?? "";
+        expect(guidance).toContain("Lazy means efficient, not careless.");
+        expect(guidance).toContain("Bug fix = root cause, not symptom");
+        expect(guidance.toLowerCase()).not.toContain("ponytail");
+        expect(run.args).not.toContain("--system-prompt");
+        expect(run.args.at(-1)).toBe("Implement the target");
+        expect(run.timeoutMs).toBe(60 * MINUTE);
     });
 
-    test("resolves worker models from explicit input, then PI_WORKER_MODEL", async () => {
-        const host = extensionHost();
-        const invocations: string[][] = [];
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            environment: { PI_WORKER_MODEL: "fixture/environment-model" },
-            invocation: (args) => {
-                invocations.push(args);
-                return { command: "fake-pi", args };
-            },
-            run: successRun(),
+    test("resolves each Profile's model from the argument, then its environment variable, then the default", async () => {
+        const fixture = spawnHost({
+            PI_EXPLORER_MODEL: "fixture/explorer-env",
+            PI_WORKER_MODEL: "fixture/worker-env",
         });
 
-        const fromEnvironment = await execute(host.tool, "worker-environment-model", {
-            params: { agent: "worker", prompt: "Implement one", cwd: extensionCwd },
-        });
-        const fromInput = await execute(host.tool, "worker-explicit-model", {
-            params: {
-                prompt: "Implement two",
-                cwd: extensionCwd,
-                model: "fixture/explicit-model",
-            },
-        });
+        const explorerEnv = await fixture.spawnAndWait("explorer");
+        const explorerExplicit = await fixture.spawnAndWait("explorer", { model: "fixture/explorer-explicit" });
+        const workerEnv = await fixture.spawnAndWait("worker");
+        const workerExplicit = await fixture.spawnAndWait("worker", { model: " fixture/worker-explicit " });
 
-        expect(fromEnvironment.details.run.model).toBe("fixture/environment-model");
-        expect(argumentAfter(invocations[0]!, "--model")).toBe("fixture/environment-model");
-        expect(fromInput.details.run.model).toBe("fixture/explicit-model");
-        expect(argumentAfter(invocations[1]!, "--model")).toBe("fixture/explicit-model");
+        expect(argumentAfter(explorerEnv.run.args, "--model")).toBe("fixture/explorer-env");
+        expect(argumentAfter(explorerExplicit.run.args, "--model")).toBe("fixture/explorer-explicit");
+        expect(argumentAfter(workerEnv.run.args, "--model")).toBe("fixture/worker-env");
+        expect(argumentAfter(workerExplicit.run.args, "--model")).toBe("fixture/worker-explicit");
+        expect(workerExplicit.spawned.details.run.model).toBe("fixture/worker-explicit");
+
+        const blank = spawnHost({ PI_WORKER_MODEL: "   " });
+        const fallback = await blank.spawnAndWait("worker", { model: "" });
+        expect(argumentAfter(fallback.run.args, "--model")).toBe("openrouter/z-ai/glm-5.3-flash:high");
     });
 
-    test("keeps lifecycle content renderer-neutral while child tools are active", async () => {
-        const host = extensionHost();
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: async (options) => {
-                const timestamp = Date.now();
-                const previousSequence = options.details.run.recentActivity.at(-1)?.sequence ?? 0;
-                let details = updateSubagentDetails(options.details, {
-                    status: "running",
-                    phase: "tool",
-                    startedAt: options.details.run.startedAt ?? timestamp,
-                    activeTools: [
-                        { id: "child-read", name: "read", title: "read src/controller.ts", startedAt: timestamp },
-                    ],
-                    recentActivity: [
-                        ...options.details.run.recentActivity,
-                        {
-                            sequence: previousSequence + 1,
-                            timestamp,
-                            kind: "tool_start",
-                            title: "read src/controller.ts",
-                        },
-                    ],
-                });
-                options.onSnapshot?.(details);
-                details = createTerminalSubagentDetails(details, { status: "succeeded", outputPreview: "done" });
-                options.onSnapshot?.(details);
-                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
-            },
-        });
+    test("tool descriptions state each Profile's tools, default model, and Limits", () => {
+        const { host } = spawnHost();
+        const explorer = host.tool("explorer");
+        const worker = host.tool("worker");
+
+        expect(explorer.description).toContain("read, grep, find, ls");
+        expect(explorer.description).toContain("openrouter/z-ai/glm-5.3-flash:low");
+        expect(explorer.description).toContain("PI_EXPLORER_MODEL");
+        expect(worker.description).toContain("read, bash, edit, write, grep, find, ls");
+        expect(worker.description).toContain("openrouter/z-ai/glm-5.3-flash:high");
+        expect(worker.description).toContain("PI_WORKER_MODEL");
+        for (const tool of [explorer, worker]) {
+            expect(tool.description).toContain("60 minutes");
+            expect(tool.description).toContain("10 minutes");
+            expect(tool.description).toContain("15 minutes");
+            expect(tool.parameters.required).toEqual(["prompt", "cwd"]);
+            expect(Object.keys(tool.parameters.properties)).toEqual(["prompt", "cwd", "model", "name"]);
+        }
+    });
+
+    test("normalises a relative cwd, a home-relative cwd, and a stray leading @", async () => {
+        const fixture = spawnHost();
+        const relative = path.relative(process.cwd(), extensionCwd);
+
+        const fromRelative = await fixture.spawnAndWait("explorer", { cwd: `@../${path.basename(extensionCwd)}` });
+        expect(fromRelative.run.cwd).toBe(extensionCwd);
+        expect(fromRelative.spawned.details.run.cwd).toBe(extensionCwd);
+
+        const fromParent = await fixture.host
+            .tool("explorer")
+            .execute("parent-relative", { prompt: "x", cwd: relative }, undefined, undefined, { cwd: process.cwd() });
+        expect(fromParent.details.run.cwd).toBe(extensionCwd);
+
+        const fromHome = await fixture.host
+            .tool("worker")
+            .execute("home", { prompt: "x", cwd: "~" }, undefined, undefined, { cwd: extensionCwd });
+        expect(fromHome.details.run.cwd).toBe(fs.realpathSync(os.homedir()));
+    });
+
+    test("the blocking subagent tool requires a Profile name and reuses its child arguments", async () => {
+        const fixture = spawnHost();
+        const tool = fixture.host.tool("subagent");
+        expect(tool.parameters.required).toEqual(["agent", "prompt", "cwd"]);
+        expect(tool.parameters.properties.agent.enum).toEqual(["explorer", "worker"]);
+        expect(tool.description).not.toContain("generic");
+
         const updates: any[] = [];
-        await execute(host.tool, "active-tool-render", {
-            onUpdate: (update) => updates.push(update),
-        });
-        const runningUpdate = updates.find((update) => update.details.run.activeTools.length > 0);
-        expect(runningUpdate.content[0].text).toBe("explore subagent is running...");
-    });
-
-    test("registers blocking and background tools plus extension lifecycle handlers", () => {
-        const host = extensionHost();
-        registerSubagentExtension(host.pi, {
-            semaphore: new AbortableSemaphore(1),
-            invocation: (args) => ({ command: "fake-pi", args }),
-            run: successRun(),
-        });
-
-        expect([...host.tools.keys()]).toEqual([
-            "subagent_spawn",
-            "subagent_wait",
-            "subagent_check",
-            "subagent_cancel",
-            "subagent_list",
-            "subagent",
-        ]);
-        expect(host.handlers.has("session_start")).toBe(true);
-        expect(host.handlers.has("agent_settled")).toBe(true);
-        expect(host.handlers.has("tool_result")).toBe(true);
-        expect(host.handlers.has("session_shutdown")).toBe(true);
+        const result = await tool.execute(
+            "outer-call-42",
+            { agent: "explorer", prompt: "Inspect the target", cwd: extensionCwd },
+            undefined,
+            (update: any) => updates.push(update),
+            { cwd: extensionCwd },
+        );
+        expect(result.details.run.id).toBe("outer-call-42");
+        expect(result.details.run.agent).toBe("explorer");
+        expect(result.content[0].text).toBe("delegated answer");
+        expect(updates.map((item) => item.details.run.status)).toEqual(["queued", "starting", "running", "succeeded"]);
+        expect(argumentAfter(fixture.runs.at(-1).args, "--tools")).toBe("read,grep,find,ls");
+        expect(updates.find((item) => item.details.run.status === "running").content[0].text).toBe(
+            "explorer subagent is running...",
+        );
     });
 });

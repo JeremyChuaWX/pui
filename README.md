@@ -75,7 +75,7 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
 
-Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
+The `worker` tool spawns a write-capable child with [Ponytail](https://ponytail.dev/) minimal-coding guidance; the `explorer` tool spawns a read-only child for reconnaissance. Each returns a Job id at once. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
 Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
 
@@ -127,7 +127,7 @@ edges enforced by a boundary check in `bun run check`. The short version:
   through the Module's UI Entry instead of maintaining mirrors.
 - `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/lib/` (the
   generic library: validation, bounded processes, and retained output). The child-agent runner
-  and its presets live in `src/modules/subagents/`.
+  and its Profiles live in `src/modules/subagents/`.
 - `src/pi-core/skills/` holds application-owned skills, registered via `src/pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.
