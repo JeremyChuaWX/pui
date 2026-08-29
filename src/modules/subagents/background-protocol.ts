@@ -1,5 +1,5 @@
 import { isRecord } from "#shared/lib/validate.js";
-import { isSubagentDetailsV1, type SubagentRunV1 } from "./protocol.js";
+import { isSubagentRunV1, type SubagentRunV1 } from "./run-state.js";
 
 export const BACKGROUND_SUBAGENT_CHANNEL = "pui.subagent.background" as const;
 export const BACKGROUND_SUBAGENT_CONTROL_CHANNEL = "pui.subagent.background.control" as const;
@@ -61,8 +61,8 @@ export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagent
         job.title.length > MAX_JOB_TITLE ||
         (job.prompt !== undefined &&
             (typeof job.prompt !== "string" || Buffer.byteLength(job.prompt, "utf8") > MAX_JOB_PROMPT)) ||
-        !isSubagentDetailsV1({ schema: "pi.subagent", version: 1, run: job.run }) ||
-        (job.run as SubagentRunV1).id !== job.id
+        !isSubagentRunV1(job.run) ||
+        job.run.id !== job.id
     )
         return undefined;
     return value as unknown as BackgroundSubagentEventV1;

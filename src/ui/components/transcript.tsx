@@ -1,15 +1,6 @@
-import { createMemo, For, Match, Show, Switch } from "solid-js";
-import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
-import { formatCount } from "../state/format.js";
-import type { DisplayItem, ToolDisplayItem } from "../state/types.js";
+import { createMemo, Match, Show, Switch } from "solid-js";
+import type { DisplayItem } from "../state/types.js";
 import { extensionConfirmKeyHint } from "./keys.js";
-import {
-    subagentColor,
-    subagentElapsed,
-    subagentStatusIcon,
-    subagentStatusLabel,
-    subagentSummary,
-} from "./subagent-view.js";
 import { syntaxStyle, theme } from "./theme.js";
 
 export function Welcome(props: { cwd: string }) {
@@ -97,46 +88,23 @@ export function MessageItem(props: {
                 </box>
             </Match>
             <Match when={toolItem()}>
-                <Show
-                    when={toolItem()?.subagent}
-                    fallback={
-                        <box
-                            marginTop={1}
-                            border={["left"]}
-                            borderColor={toolColor()}
-                            backgroundColor={theme.toolBackground}
-                        >
-                            <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-                                <box flexDirection="row">
-                                    <text fg={toolColor()}>
-                                        {toolItem()?.running ? "◌" : toolItem()?.isError ? "×" : "✓"}{" "}
-                                    </text>
-                                    <text fg={theme.text}>{toolItem()?.title}</text>
-                                </box>
-                                <Show when={props.toolsExpanded && toolItem()?.args}>
-                                    <text fg={theme.muted}>{toolItem()?.args}</text>
-                                </Show>
-                                <Show when={props.toolsExpanded && toolItem()?.result}>
-                                    <text fg={toolItem()?.isError ? theme.error : theme.subtle}>
-                                        {toolItem()?.result}
-                                    </text>
-                                </Show>
-                                <Show when={!props.toolsExpanded && toolItem()?.result}>
-                                    <text fg={theme.muted}>Ctrl+O to show output</text>
-                                </Show>
-                            </box>
+                <box marginTop={1} border={["left"]} borderColor={toolColor()} backgroundColor={theme.toolBackground}>
+                    <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+                        <box flexDirection="row">
+                            <text fg={toolColor()}>{toolItem()?.running ? "◌" : toolItem()?.isError ? "×" : "✓"} </text>
+                            <text fg={theme.text}>{toolItem()?.title}</text>
                         </box>
-                    }
-                >
-                    {(subagent) => (
-                        <SubagentTool
-                            item={toolItem()}
-                            subagent={subagent()}
-                            expanded={props.toolsExpanded}
-                            now={props.now}
-                        />
-                    )}
-                </Show>
+                        <Show when={props.toolsExpanded && toolItem()?.args}>
+                            <text fg={theme.muted}>{toolItem()?.args}</text>
+                        </Show>
+                        <Show when={props.toolsExpanded && toolItem()?.result}>
+                            <text fg={toolItem()?.isError ? theme.error : theme.subtle}>{toolItem()?.result}</text>
+                        </Show>
+                        <Show when={!props.toolsExpanded && toolItem()?.result}>
+                            <text fg={theme.muted}>Ctrl+O to show output</text>
+                        </Show>
+                    </box>
+                </box>
             </Match>
             <Match when={bashItem()}>
                 <box marginTop={1} border={["left"]} borderColor={bashColor()} backgroundColor={theme.toolBackground}>
@@ -190,139 +158,6 @@ export function MessageItem(props: {
                 </box>
             </Match>
         </Switch>
-    );
-}
-
-function SubagentTool(props: { item?: ToolDisplayItem; subagent: SubagentViewModel; expanded: boolean; now: number }) {
-    const color = () => subagentColor(props.subagent.status);
-    const finalOutput = () =>
-        isTerminalSubagentStatus(props.subagent.status) && !props.item?.isError ? props.item?.result : undefined;
-    const livePreview = () =>
-        !isTerminalSubagentStatus(props.subagent.status) ? props.subagent.outputPreview : undefined;
-    const usageDetails = () => {
-        const usage = props.subagent.usage;
-        return [
-            `${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`,
-            `${formatCount(usage.input)} in`,
-            `${formatCount(usage.output)} out`,
-            `${formatCount(usage.cacheRead)} cache read`,
-            `${formatCount(usage.cacheWrite)} cache write`,
-            `${formatCount(usage.totalTokens)} total`,
-        ].join(" · ");
-    };
-
-    return (
-        <box marginTop={1} border={["left"]} borderColor={color()} backgroundColor={theme.toolBackground}>
-            <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-                <box flexDirection="row" minWidth={0}>
-                    <text fg={color()}>{subagentStatusIcon(props.subagent.status)} </text>
-                    <text fg={theme.text} wrapMode="none">
-                        {subagentSummary(props.subagent, props.now)}
-                    </text>
-                </box>
-                <Show when={!props.expanded && props.subagent.error}>
-                    <text fg={theme.error} wrapMode="none">
-                        {props.subagent.error}
-                    </text>
-                </Show>
-                <Show when={props.expanded}>
-                    <box marginTop={1} gap={1}>
-                        <Show when={props.subagent.prompt}>
-                            {(prompt) => (
-                                <box>
-                                    <text fg={theme.secondary}>Delegated prompt</text>
-                                    <text fg={theme.text}>{prompt()}</text>
-                                </box>
-                            )}
-                        </Show>
-
-                        <box>
-                            <text fg={theme.secondary}>Run</text>
-                            <text fg={theme.muted}>{props.subagent.cwd || "(working directory unavailable)"}</text>
-                            <text fg={theme.muted}>
-                                {subagentStatusLabel(props.subagent.status)} · {props.subagent.model} ·{" "}
-                                {subagentElapsed(props.subagent, props.now)}
-                            </text>
-                        </box>
-
-                        <Show when={props.subagent.activeTools.length > 0}>
-                            <box>
-                                <text fg={theme.secondary}>Active child tools</text>
-                                <For each={props.subagent.activeTools}>
-                                    {(tool) => <text fg={theme.warning}>◌ {tool.title}</text>}
-                                </For>
-                            </box>
-                        </Show>
-
-                        <Show when={props.subagent.recentActivity.length > 0}>
-                            <box>
-                                <text fg={theme.secondary}>Recent activity</text>
-                                <For each={props.subagent.recentActivity}>
-                                    {(activity) => (
-                                        <text fg={activity.isError ? theme.error : theme.muted}>
-                                            {activity.kind === "tool_start" ? "›" : "·"} {activity.title}
-                                        </text>
-                                    )}
-                                </For>
-                            </box>
-                        </Show>
-
-                        <box>
-                            <text fg={theme.secondary}>Usage</text>
-                            <text fg={theme.muted}>{usageDetails()}</text>
-                        </box>
-
-                        <Show when={props.subagent.error}>
-                            {(error) => (
-                                <box>
-                                    <text fg={theme.error}>Diagnostic</text>
-                                    <text fg={theme.error}>{error()}</text>
-                                </box>
-                            )}
-                        </Show>
-
-                        <Show when={livePreview()}>
-                            {(preview) => (
-                                <box>
-                                    <text fg={theme.secondary}>Live output</text>
-                                    <markdown
-                                        syntaxStyle={syntaxStyle}
-                                        internalBlockMode="top-level"
-                                        content={preview()}
-                                        conceal
-                                        fg={theme.subtle}
-                                        bg={theme.toolBackground}
-                                    />
-                                </box>
-                            )}
-                        </Show>
-
-                        <Show when={finalOutput()}>
-                            {(output) => (
-                                <box>
-                                    <text fg={theme.secondary}>Output</text>
-                                    <markdown
-                                        syntaxStyle={syntaxStyle}
-                                        internalBlockMode="top-level"
-                                        content={output()}
-                                        conceal
-                                        fg={theme.text}
-                                        bg={theme.toolBackground}
-                                    />
-                                </box>
-                            )}
-                        </Show>
-
-                        <Show when={props.subagent.fullOutputPath}>
-                            {(outputPath) => <text fg={theme.muted}>Full output: {outputPath()}</text>}
-                        </Show>
-                    </box>
-                </Show>
-                <Show when={!props.expanded && (finalOutput() || livePreview())}>
-                    <text fg={theme.muted}>Ctrl+O to show subagent details</text>
-                </Show>
-            </box>
-        </box>
     );
 }
 

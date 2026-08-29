@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js";
-import { isTerminalSubagentStatus, type SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
+import { isTerminalSubagentStatus } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
-import type { DisplayItem, PuiSnapshot, ToastMessage, ToolDisplayItem } from "../state/types.js";
+import type { PuiSnapshot, ToastMessage } from "../state/types.js";
 import {
     compactSubagentUsage,
     subagentColor,
@@ -11,17 +11,6 @@ import {
 } from "./subagent-view.js";
 import { theme } from "./theme.js";
 
-export interface SubagentDisplayItem extends ToolDisplayItem {
-    subagent: SubagentViewModel;
-}
-
-export function activeSubagentItems(display: readonly DisplayItem[]): SubagentDisplayItem[] {
-    return display.filter((item): item is SubagentDisplayItem => {
-        if (item.kind !== "tool" || !item.subagent) return false;
-        return !isTerminalSubagentStatus(item.subagent.status);
-    });
-}
-
 function progressBar(percent: number | null | undefined, width = 14): string {
     const value = Math.max(0, Math.min(100, percent ?? 0));
     const filled = Math.round((value / 100) * width);
@@ -29,16 +18,9 @@ function progressBar(percent: number | null | undefined, width = 14): string {
 }
 
 export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
-    const subagents = () => activeSubagentItems(props.snapshot.display);
-    const subagentIds = () =>
-        new Set(
-            props.snapshot.display
-                .filter((item): item is ToolDisplayItem => item.kind === "tool" && Boolean(item.subagent))
-                .map((item) => item.toolCallId),
-        );
     const backgroundSubagents = () =>
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
-    const genericTools = () => props.snapshot.activeTools.filter((tool) => !subagentIds().has(tool.id));
+    const genericTools = () => props.snapshot.activeTools;
 
     return (
         <box
@@ -93,20 +75,11 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 </text>
             </box>
 
-            <Show when={subagents().length > 0 || backgroundSubagents().length > 0}>
+            <Show when={backgroundSubagents().length > 0}>
                 <box marginTop={1}>
                     <text fg={theme.text}>
                         <strong>Subagents</strong>
                     </text>
-                    <For each={subagents()}>
-                        {(item) => (
-                            <text fg={subagentColor(item.subagent.status)} wrapMode="none">
-                                {subagentStatusIcon(item.subagent.status)} {item.subagent.agent} · {item.subagent.model}{" "}
-                                · {subagentStatusLabel(item.subagent.status)} ·{" "}
-                                {subagentElapsed(item.subagent, props.now)}
-                            </text>
-                        )}
-                    </For>
                     <For each={backgroundSubagents()}>
                         {(job) => (
                             <box marginBottom={1}>

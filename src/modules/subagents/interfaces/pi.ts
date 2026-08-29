@@ -1,9 +1,7 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
-import { errorMessage } from "#shared/lib/validate.js";
+import { composeBoundedOutput, RetainedOutputStore } from "#shared/lib/retained-output.js";
 import { createBackgroundChannel } from "../background-channel.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "../background-manager.js";
 import {
@@ -15,19 +13,9 @@ import {
     parseBackgroundSubagentControl,
 } from "../background-protocol.js";
 import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../child-agent.js";
-import {
-    describeProfile,
-    PROFILE_NAMES,
-    PROFILES,
-    PROFILES_BY_NAME,
-    resolveProfileModel,
-    type SubagentProfile,
-} from "../profiles/index.js";
-import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "../protocol.js";
-import { runSubagentJob, synthesizeSubagentFailure } from "../run-job.js";
+import { describeProfile, PROFILES, type SubagentProfile } from "../profiles/index.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
 import type { AbortableSemaphore } from "../semaphore.js";
-import { resolveWorkingDirectory, workingDirectoryCandidate } from "../working-directory.js";
 
 const SpawnParams = Type.Object({
     prompt: Type.String({ description: "Task prompt for the child. Self-contained: the child sees nothing else." }),
@@ -40,20 +28,6 @@ const SpawnParams = Type.Object({
 });
 const BackgroundIdsParams = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }) });
 const BackgroundCheckParams = Type.Object({ id: Type.String() });
-
-const SubagentParams = Type.Object({
-    agent: StringEnum(PROFILE_NAMES, {
-        description: `Profile to run the child under: ${PROFILE_NAMES.join(" or ")}.`,
-    }),
-    prompt: Type.String({
-        description: "Task prompt for the subagent.",
-    }),
-    cwd: Type.String({
-        description:
-            "Working directory for the subagent process. Relative paths resolve from the parent working directory.",
-    }),
-    model: Type.Optional(Type.String({ description: "Optional model override for this call." })),
-});
 
 export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
@@ -76,19 +50,6 @@ export function createDefaultSubagentDependencies(
     };
 }
 
-function lifecycleText(details: SubagentDetailsV1): string {
-    const { run } = details;
-    if (run.status === "queued") return `${run.agent} subagent is queued...`;
-    if (run.status === "starting") return `${run.agent} subagent is starting...`;
-    if (run.status === "running") return `${run.agent} subagent is running...`;
-    if (run.status === "succeeded") return `${run.agent} subagent completed.`;
-    return run.error || `${run.agent} subagent ${run.status}.`;
-}
-
-function combineAbortSignals(first: AbortSignal | undefined, second: AbortSignal): AbortSignal {
-    return first ? AbortSignal.any([first, second]) : second;
-}
-
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
     const {
         semaphore,
@@ -97,9 +58,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         now,
         environment,
     } = createDefaultSubagentDependencies(dependencies);
-    let shutdownController = new AbortController();
     const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
-    const failedDetails = new Map<string, SubagentDetailsV1>();
     let shuttingDown = false;
     let sessionId = "unbound";
     const instanceId = crypto.randomUUID();
@@ -151,7 +110,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     });
     pi.on("session_start", (_event, ctx) => {
         shuttingDown = false;
-        if (shutdownController.signal.aborted) shutdownController = new AbortController();
         outputStore.startSession();
         background.startSession();
         sessionId = ctx.sessionManager.getSessionId();
@@ -167,17 +125,8 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         background.flushDeferred();
     });
 
-    pi.on("tool_result", (event) => {
-        const saved = failedDetails.get(event.toolCallId);
-        if (!saved) return;
-        failedDetails.delete(event.toolCallId);
-        return { details: saved };
-    });
-
     pi.on("session_shutdown", async () => {
         shuttingDown = true;
-        shutdownController.abort();
-        failedDetails.clear();
         await channel.shutdown(async () => {
             await background.shutdown();
             await outputStore.cleanup();
@@ -260,100 +209,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
             return {
                 content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.run.status}`).join("\n") }],
                 details: { jobs },
-            };
-        },
-    });
-    pi.registerTool<typeof SubagentParams, SubagentDetailsV1>({
-        name: "subagent",
-        label: "Subagent",
-        description:
-            "Spawn an isolated Pi subagent under a Profile and block until it finishes. " +
-            PROFILES.map((profile) => `${profile.name}: ${describeProfile(profile)}`).join(" ") +
-            " Output is capped at 50KB or 2000 lines.",
-        promptSnippet: "Delegate coding work or read-only exploration to an isolated Pi subagent and wait for it.",
-        promptGuidelines: [
-            "Prefer the explorer and worker spawn tools; use subagent only when the result is needed before anything else can happen.",
-            "Give subagent a focused, self-contained prompt and the exact working directory because child context files, skills, and extensions are disabled.",
-            "Omit subagent's model argument unless a model override is specifically useful.",
-        ],
-        parameters: SubagentParams,
-
-        async execute(toolCallId, params, signal, onUpdate, ctx) {
-            const profile = PROFILES_BY_NAME[params.agent];
-            const model = resolveProfileModel(profile, params.model, environment);
-            const cwdCandidate = workingDirectoryCandidate(params.cwd, ctx.cwd);
-            let details = createInitialSubagentDetails({
-                id: toolCallId,
-                agent: profile.name,
-                model,
-                cwd: cwdCandidate,
-                now: now(),
-            });
-            const combinedSignal = combineAbortSignals(signal, shutdownController.signal);
-
-            const publish = (next: SubagentDetailsV1) => {
-                details = next;
-                try {
-                    onUpdate?.({
-                        content: [{ type: "text", text: lifecycleText(next) }],
-                        details: next,
-                    });
-                } catch {
-                    // A presentation callback must not change process or persistence semantics.
-                }
-            };
-
-            let cwd: string;
-            try {
-                cwd = await resolveWorkingDirectory(params.cwd, ctx.cwd);
-            } catch (error) {
-                publish(synthesizeSubagentFailure(details, "failed", errorMessage(error), now()));
-                if (!shuttingDown) failedDetails.set(toolCallId, details);
-                throw new Error(details.run.error || errorMessage(error), { cause: error });
-            }
-            details = updateSubagentDetails(details, { cwd }, now());
-
-            const outcome = await runSubagentJob(
-                { semaphore, run, invocation: resolveInvocation, now },
-                {
-                    details,
-                    profile,
-                    model,
-                    prompt: params.prompt,
-                    cwd,
-                    signal: combinedSignal,
-                    publish,
-                    spill: { store: outputStore, maxLines: DEFAULT_MAX_LINES },
-                },
-            );
-            details = outcome.details;
-
-            if (details.run.status !== "succeeded") {
-                if (!shuttingDown) failedDetails.set(toolCallId, details);
-                throw new Error(details.run.error || `Subagent ${details.run.status}.`, {
-                    cause: outcome.failure,
-                });
-            }
-
-            const { truncation } = outcome;
-            const resultText = truncation.truncated
-                ? composeBoundedOutput(
-                      outcome.delivered,
-                      { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
-                      outcome.fullOutputPath
-                          ? { retainedPath: outcome.fullOutputPath }
-                          : { nonRetentionReason: "complete output retention was unavailable" },
-                  )
-                : truncation.content;
-            details = updateSubagentDetails(
-                details,
-                { outputPreview: truncateUtf8(outcome.delivered, 4 * 1024).content },
-                now(),
-            );
-
-            return {
-                content: [{ type: "text", text: resultText }],
-                details,
             };
         },
     });

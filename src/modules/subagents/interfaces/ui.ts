@@ -1,8 +1,7 @@
 /**
- * UI Entry: the parsed subagent state the TUI consumes. The view model
- * validates extension-owned wire payloads and bounds every string for
- * rendering; the background bridge owns event subscription, instance
- * authority, and cancellation routing.
+ * UI Entry: the Background Protocol as the TUI consumes it. The parser validates
+ * extension-owned wire payloads and bounds every string for rendering; the bridge
+ * owns event subscription, instance authority, and cancellation routing.
  */
 export {
     BackgroundSubagentBridge,
@@ -11,13 +10,4 @@ export {
     parseBackgroundSubagentEvent,
     reduceBackgroundSubagentEvent,
 } from "../background-bridge.js";
-export { MAX_SUBAGENT_ACTIVE_TOOLS } from "../protocol.js";
-export {
-    isTerminalSubagentStatus,
-    type NormalizeSubagentOptions,
-    normalizeSubagentDetails,
-    type SubagentStatus,
-    type SubagentUsage,
-    type SubagentViewModel,
-    subagentPresentationKey,
-} from "../view-model.js";
+export { isTerminalSubagentStatus, type SubagentStatus, type SubagentUsageV1 as SubagentUsage } from "../run-state.js";

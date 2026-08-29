@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { BackgroundSubagentViewModel, SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
+import type { BackgroundSubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 
 interface DisplayItemBase {
     id: string;
@@ -43,8 +43,6 @@ export interface ToolDisplayItem extends DisplayItemBase {
     result?: string;
     isError?: boolean;
     running?: boolean;
-    subagent?: SubagentViewModel;
-    subagentKey?: string;
 }
 
 interface BashDisplayItem extends DisplayItemBase {

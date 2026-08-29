@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createExtensionApiHarness } from "#test-support/extension-api.ts";
-import { createTerminalSubagentDetails, updateSubagentDetails } from "../protocol.ts";
+import { createTerminalSubagentRun, updateSubagentRun } from "../run-state.ts";
 import { AbortableSemaphore } from "../semaphore.ts";
 import { registerSubagentExtension } from "./pi.ts";
 
@@ -13,15 +13,15 @@ const MINUTE = 60_000;
 
 function successRun(output = "delegated answer") {
     return async (options: any) => {
-        let details = updateSubagentDetails(options.details, {
+        let details = updateSubagentRun(options.run, {
             status: "running",
             phase: "thinking",
-            startedAt: options.details.run.startedAt ?? Date.now(),
+            startedAt: options.run.startedAt ?? Date.now(),
         });
         options.onSnapshot?.(details);
-        details = createTerminalSubagentDetails(details, { status: "succeeded", outputPreview: output });
+        details = createTerminalSubagentRun(details, { status: "succeeded", outputPreview: output });
         options.onSnapshot?.(details);
-        return { details, output, stderr: "", exitCode: 0, signal: null };
+        return { run: details, output, stderr: "", exitCode: 0, signal: null };
     };
 }
 
@@ -74,11 +74,10 @@ describe("subagent extension integration", () => {
             "subagent_wait",
             "subagent_check",
             "subagent_cancel",
-            "subagent",
         ]);
         expect(host.handlers.has("session_start")).toBe(true);
         expect(host.handlers.has("agent_settled")).toBe(true);
-        expect(host.handlers.has("tool_result")).toBe(true);
+        expect(host.handlers.has("tool_result")).toBe(false);
         expect(host.handlers.has("session_shutdown")).toBe(true);
     });
 
@@ -189,30 +188,5 @@ describe("subagent extension integration", () => {
             .tool("worker")
             .execute("home", { prompt: "x", cwd: "~" }, undefined, undefined, { cwd: extensionCwd });
         expect(fromHome.details.run.cwd).toBe(fs.realpathSync(os.homedir()));
-    });
-
-    test("the blocking subagent tool requires a Profile name and reuses its child arguments", async () => {
-        const fixture = spawnHost();
-        const tool = fixture.host.tool("subagent");
-        expect(tool.parameters.required).toEqual(["agent", "prompt", "cwd"]);
-        expect(tool.parameters.properties.agent.enum).toEqual(["explorer", "worker"]);
-        expect(tool.description).not.toContain("generic");
-
-        const updates: any[] = [];
-        const result = await tool.execute(
-            "outer-call-42",
-            { agent: "explorer", prompt: "Inspect the target", cwd: extensionCwd },
-            undefined,
-            (update: any) => updates.push(update),
-            { cwd: extensionCwd },
-        );
-        expect(result.details.run.id).toBe("outer-call-42");
-        expect(result.details.run.agent).toBe("explorer");
-        expect(result.content[0].text).toBe("delegated answer");
-        expect(updates.map((item) => item.details.run.status)).toEqual(["queued", "starting", "running", "succeeded"]);
-        expect(argumentAfter(fixture.runs.at(-1).args, "--tools")).toBe("read,grep,find,ls");
-        expect(updates.find((item) => item.details.run.status === "running").content[0].text).toBe(
-            "explorer subagent is running...",
-        );
     });
 });

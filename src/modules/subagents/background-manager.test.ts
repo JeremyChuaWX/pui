@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { waitFor as waitUntil } from "#test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
 import worker from "./profiles/worker/index.ts";
-import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
+import { createTerminalSubagentRun, updateSubagentRun } from "./run-state.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
@@ -23,21 +23,21 @@ function controlled(limit = 1) {
         deliver: (result) => deliveries.push(result),
         isIdle: () => idle,
         run: async (options) => {
-            starts.push(options.details.run.id);
-            let details = updateSubagentDetails(options.details, { status: "running", phase: "thinking" });
+            starts.push(options.run.id);
+            let details = updateSubagentRun(options.run, { status: "running", phase: "thinking" });
             options.onSnapshot?.(details);
             await new Promise<void>((resolve) => {
                 gates.push(resolve);
                 options.signal?.addEventListener("abort", () => resolve(), { once: true });
             });
-            details = createTerminalSubagentDetails(
+            details = createTerminalSubagentRun(
                 details,
                 options.signal?.aborted
                     ? { status: "cancelled", error: "cancelled" }
                     : { status: "succeeded", outputPreview: "done" },
             );
             options.onSnapshot?.(details);
-            return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+            return { run: details, output: "done", stderr: "", exitCode: 0, signal: null };
         },
     });
     return {
@@ -103,9 +103,9 @@ describe("BackgroundSubagentManager", () => {
             },
             run: async (options) => {
                 await new Promise<void>((resolve) => (finish = resolve));
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded" });
                 options.onSnapshot?.(details);
-                return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
+                return { run: details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ profile: worker, prompt: "race", cwd }, cwd);
@@ -151,8 +151,8 @@ describe("BackgroundSubagentManager", () => {
             },
             run: async (options) => {
                 await new Promise<void>((resolve) => (finish = resolve));
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
-                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded" });
+                return { run: details, output: "done", stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ profile: worker, prompt: "wait flush race", cwd }, cwd);
@@ -210,8 +210,8 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
-                return { details, output, stderr: "", exitCode: 0, signal: null };
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded" });
+                return { run: details, output, stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ profile: worker, prompt: "large output", cwd }, cwd);
@@ -237,8 +237,8 @@ describe("BackgroundSubagentManager", () => {
             deliver: () => {},
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded", model });
-                return { details, output: "done", stderr: "", exitCode: 0, signal: null };
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded", model });
+                return { run: details, output: "done", stderr: "", exitCode: 0, signal: null };
             },
         });
 
@@ -264,11 +264,11 @@ describe("BackgroundSubagentManager", () => {
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
                 await new Promise<void>((resolve) => (finish = resolve));
-                const details = createTerminalSubagentDetails(options.details, {
+                const details = createTerminalSubagentRun(options.run, {
                     status: "succeeded",
                     fullOutputPath: externalPath,
                 });
-                return { details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
+                return { run: details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ profile: worker, prompt: "shutdown race", cwd }, cwd);
@@ -293,8 +293,8 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
-                return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded" });
+                return { run: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
         const job = await manager.spawn({ profile: worker, prompt: "deliver", cwd }, cwd);
@@ -317,10 +317,10 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentDetails(options.details, {
+                const details = createTerminalSubagentRun(options.run, {
                     status: options.signal?.aborted ? "cancelled" : "succeeded",
                 });
-                return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
+                return { run: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
         const first = await manager.spawn({ profile: worker, prompt: "emit", cwd }, cwd);
@@ -345,11 +345,11 @@ describe("BackgroundSubagentManager", () => {
                 await new Promise<void>((resolve) =>
                     options.signal?.addEventListener("abort", () => resolve(), { once: true }),
                 );
-                const details = createTerminalSubagentDetails(options.details, {
+                const details = createTerminalSubagentRun(options.run, {
                     status: "cancelled",
                     error: "cancelled",
                 });
-                return { details, output: "", stderr: "", exitCode: null, signal: "SIGTERM" };
+                return { run: details, output: "", stderr: "", exitCode: null, signal: "SIGTERM" };
             },
         });
         for (let index = 0; index < 64; index++)
@@ -387,11 +387,11 @@ describe("BackgroundSubagentManager", () => {
                     await new Promise<void>((resolve) =>
                         options.signal?.addEventListener("abort", () => resolve(), { once: true }),
                     );
-                const details = createTerminalSubagentDetails(options.details, {
+                const details = createTerminalSubagentRun(options.run, {
                     status: options.signal?.aborted ? "cancelled" : "succeeded",
                 });
                 return {
-                    details,
+                    run: details,
                     output: index === 0 ? "x".repeat(20_000) : "ok",
                     stderr: "",
                     exitCode: 0,
@@ -431,8 +431,8 @@ describe("BackgroundSubagentManager", () => {
             isIdle: () => true,
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentDetails(options.details, { status: "succeeded" });
-                return { details, output: "ok", stderr: "", exitCode: 0, signal: null };
+                const details = createTerminalSubagentRun(options.run, { status: "succeeded" });
+                return { run: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
         const ids: string[] = [];

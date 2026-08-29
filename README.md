@@ -50,8 +50,7 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
-- Live and resumed subagent cards with lifecycle, child activity, usage, output, and diagnostics
-- Responsive OpenCode-style session sidebar with active blocking and background subagents
+- Responsive OpenCode-style session sidebar with active background Jobs
 - Model, session, and `/subagents` background-job pickers plus a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
@@ -73,11 +72,11 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its Background Protocol to list and cancel Jobs.
 
 The `worker` tool spawns a write-capable child with [Ponytail](https://ponytail.dev/) minimal-coding guidance; the `explorer` tool spawns a read-only child for reconnaissance. Each returns a Job id at once. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
 
-Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
+Background jobs stay visible in the sidebar with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages.
 
 This Extension is built into pui. It is not a standalone `pi` extension, and the regular `pi` command does not load it.
 

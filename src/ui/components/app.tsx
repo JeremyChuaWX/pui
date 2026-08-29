@@ -20,7 +20,7 @@ import {
 } from "./keys.js";
 import { createMenus } from "./menus.js";
 import { Prompt, PromptAutocomplete } from "./prompt.js";
-import { activeSubagentItems, Sidebar, ToastStack } from "./sidebar.js";
+import { Sidebar, ToastStack } from "./sidebar.js";
 import { theme } from "./theme.js";
 import { ExtensionConfirmation, MessageItem, QueuedMessage, Welcome } from "./transcript.js";
 
@@ -112,11 +112,7 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     });
 
     createEffect(() => {
-        if (
-            activeSubagentItems(snapshot.display).length === 0 &&
-            !snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))
-        )
-            return;
+        if (!snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))) return;
         setElapsedNow(Date.now());
         const timer = setInterval(() => setElapsedNow(Date.now()), 1_000);
         onCleanup(() => clearInterval(timer));

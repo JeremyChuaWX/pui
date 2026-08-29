@@ -1,7 +1,5 @@
 import { isRecord } from "#shared/lib/validate.js";
 
-export const SUBAGENT_SCHEMA = "pi.subagent" as const;
-export const SUBAGENT_PROTOCOL_VERSION = 1 as const;
 export const MAX_RECENT_ACTIVITY = 20;
 export const MAX_SUBAGENT_ACTIVE_TOOLS = 64;
 
@@ -36,6 +34,7 @@ export interface SubagentUsageV1 {
     turns: number;
 }
 
+/** The state of one child run. A Job carries one of these on the Background Protocol. */
 export interface SubagentRunV1 {
     id: string;
     agent: string;
@@ -54,13 +53,7 @@ export interface SubagentRunV1 {
     fullOutputPath?: string;
 }
 
-export interface SubagentDetailsV1 {
-    schema: typeof SUBAGENT_SCHEMA;
-    version: typeof SUBAGENT_PROTOCOL_VERSION;
-    run: SubagentRunV1;
-}
-
-interface CreateSubagentDetailsInput {
+interface CreateSubagentRunInput {
     id: string;
     agent: string;
     model: string;
@@ -113,63 +106,53 @@ export function isTerminalSubagentStatus(status: SubagentStatus): status is Suba
     return TERMINAL_STATUSES.has(status);
 }
 
-export function createInitialSubagentDetails(input: CreateSubagentDetailsInput): SubagentDetailsV1 {
+export function createInitialSubagentRun(input: CreateSubagentRunInput): SubagentRunV1 {
     const now = input.now ?? Date.now();
     return {
-        schema: SUBAGENT_SCHEMA,
-        version: SUBAGENT_PROTOCOL_VERSION,
-        run: {
-            id: input.id,
-            agent: input.agent,
-            model: input.model,
-            cwd: input.cwd,
-            status: "queued",
-            phase: "queued",
-            updatedAt: now,
-            activeTools: [],
-            recentActivity: [],
-            usage: emptySubagentUsage(),
-        },
+        id: input.id,
+        agent: input.agent,
+        model: input.model,
+        cwd: input.cwd,
+        status: "queued",
+        phase: "queued",
+        updatedAt: now,
+        activeTools: [],
+        recentActivity: [],
+        usage: emptySubagentUsage(),
     };
 }
 
-export function updateSubagentDetails(
-    details: SubagentDetailsV1,
-    patch: SubagentRunPatch,
-    now = Date.now(),
-): SubagentDetailsV1 {
-    const status = patch.status ?? details.run.status;
+export function updateSubagentRun(previous: SubagentRunV1, patch: SubagentRunPatch, now = Date.now()): SubagentRunV1 {
+    const status = patch.status ?? previous.status;
     const terminal = isTerminalSubagentStatus(status);
     const run: SubagentRunV1 = {
-        ...details.run,
+        ...previous,
         ...patch,
-        id: details.run.id,
+        id: previous.id,
         status,
         updatedAt: now,
-        activeTools: terminal
-            ? []
-            : [...(patch.activeTools ?? details.run.activeTools)].slice(-MAX_SUBAGENT_ACTIVE_TOOLS),
-        recentActivity: [...(patch.recentActivity ?? details.run.recentActivity)].slice(-MAX_RECENT_ACTIVITY),
-        usage: { ...(patch.usage ?? details.run.usage) },
+        activeTools: terminal ? [] : [...(patch.activeTools ?? previous.activeTools)].slice(-MAX_SUBAGENT_ACTIVE_TOOLS),
+        recentActivity: [...(patch.recentActivity ?? previous.recentActivity)].slice(-MAX_RECENT_ACTIVITY),
+        usage: { ...(patch.usage ?? previous.usage) },
     };
 
     if (terminal) {
         run.phase = "exiting";
-        run.endedAt = patch.endedAt ?? details.run.endedAt ?? now;
+        run.endedAt = patch.endedAt ?? previous.endedAt ?? now;
     } else {
         delete run.endedAt;
     }
 
-    return { schema: SUBAGENT_SCHEMA, version: SUBAGENT_PROTOCOL_VERSION, run };
+    return run;
 }
 
-export function createTerminalSubagentDetails(
-    details: SubagentDetailsV1,
+export function createTerminalSubagentRun(
+    previous: SubagentRunV1,
     patch: SubagentTerminalPatch,
     now = Date.now(),
-): SubagentDetailsV1 {
-    return updateSubagentDetails(
-        details,
+): SubagentRunV1 {
+    return updateSubagentRun(
+        previous,
         {
             ...patch,
             phase: "exiting",
@@ -181,16 +164,16 @@ export function createTerminalSubagentDetails(
 }
 
 export function appendSubagentActivity(
-    details: SubagentDetailsV1,
+    previous: SubagentRunV1,
     activity: Omit<SubagentActivityV1, "sequence"> & { sequence?: number },
     now = activity.timestamp,
-): SubagentDetailsV1 {
-    const previous = details.run.recentActivity.at(-1)?.sequence ?? 0;
-    const sequence = Math.max(previous + 1, activity.sequence ?? 0);
+): SubagentRunV1 {
+    const last = previous.recentActivity.at(-1)?.sequence ?? 0;
+    const sequence = Math.max(last + 1, activity.sequence ?? 0);
     const next: SubagentActivityV1 = { ...activity, sequence };
-    return updateSubagentDetails(
-        details,
-        { recentActivity: [...details.run.recentActivity, next].slice(-MAX_RECENT_ACTIVITY) },
+    return updateSubagentRun(
+        previous,
+        { recentActivity: [...previous.recentActivity, next].slice(-MAX_RECENT_ACTIVITY) },
         now,
     );
 }
@@ -199,10 +182,8 @@ function isFiniteNonNegative(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-export function isSubagentDetailsV1(value: unknown): value is SubagentDetailsV1 {
-    if (!isRecord(value) || value.schema !== SUBAGENT_SCHEMA || value.version !== SUBAGENT_PROTOCOL_VERSION)
-        return false;
-    const run = value.run;
+/** Structural validator for an untrusted run payload, used by the Background Protocol parser. */
+export function isSubagentRunV1(run: unknown): run is SubagentRunV1 {
     if (!isRecord(run)) return false;
     if (
         typeof run.id !== "string" ||

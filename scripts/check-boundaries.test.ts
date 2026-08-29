@@ -43,8 +43,8 @@ describe("forbidden edges", () => {
     });
 
     test("deep import bypassing an Interfaces Directory is a violation", () => {
-        const edges: ImportEdge[] = [{ from: "ui/components/app.tsx", to: "modules/subagents/view-model.ts" }];
-        expect(violationsFor(edges)).toEqual(["ui/components/app.tsx -> modules/subagents/view-model.ts"]);
+        const edges: ImportEdge[] = [{ from: "ui/components/app.tsx", to: "modules/subagents/background-bridge.ts" }];
+        expect(violationsFor(edges)).toEqual(["ui/components/app.tsx -> modules/subagents/background-bridge.ts"]);
     });
 
     test("UI -> App is a violation", () => {
@@ -57,13 +57,13 @@ describe("forbidden edges", () => {
             { from: "app/index.tsx", to: "modules/subagents/interfaces/host.ts" },
             { from: "app/index.tsx", to: "modules/subagents/interfaces/pi.ts" },
             { from: "app/index.tsx", to: "modules/subagents/interfaces/ui.ts" },
-            { from: "app/index.tsx", to: "modules/subagents/view-model.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/background-bridge.ts" },
         ];
         expect(violationsFor(edges)).toEqual([
             "app/index.tsx -> modules/subagents/interfaces/host.ts",
             "app/index.tsx -> modules/subagents/interfaces/pi.ts",
             "app/index.tsx -> modules/subagents/interfaces/ui.ts",
-            "app/index.tsx -> modules/subagents/view-model.ts",
+            "app/index.tsx -> modules/subagents/background-bridge.ts",
         ]);
         expect(checkBoundaries(edges)[0]?.rule).toBe("app must not import Modules");
     });
@@ -165,11 +165,11 @@ describe("import spelling", () => {
         const edges: ImportEdge[] = [
             {
                 from: "modules/subagents/test-support/fixture.ts",
-                to: "modules/subagents/protocol.ts",
-                specifier: "../protocol.js",
+                to: "modules/subagents/run-state.ts",
+                specifier: "../run-state.js",
             },
             {
-                from: "modules/subagents/protocol.test.ts",
+                from: "modules/subagents/run-state.test.ts",
                 to: "modules/subagents/test-support/fixture.ts",
                 specifier: "./test-support/fixture.js",
             },

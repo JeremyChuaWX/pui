@@ -18,26 +18,22 @@ function usage() {
     };
 }
 
-function details(id: string, status: "queued" | "running" | "succeeded" | "failed") {
+function run(id: string, status: "queued" | "running" | "succeeded" | "failed") {
     const terminal = status === "succeeded" || status === "failed";
     return {
-        schema: "pi.subagent",
-        version: 1,
-        run: {
-            id,
-            agent: "explore",
-            model: "fixture/model",
-            cwd: process.cwd(),
-            status,
-            phase: status === "queued" ? "queued" : terminal ? "exiting" : "thinking",
-            ...(status === "queued" ? {} : { startedAt: 10 }),
-            updatedAt: 20,
-            ...(terminal ? { endedAt: 30 } : {}),
-            activeTools: [],
-            recentActivity: [],
-            usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
-            ...(status === "failed" ? { error: "fixture failure" } : {}),
-        },
+        id,
+        agent: "explorer",
+        model: "fixture/model",
+        cwd: process.cwd(),
+        status,
+        phase: status === "queued" ? "queued" : terminal ? "exiting" : "thinking",
+        ...(status === "queued" ? {} : { startedAt: 10 }),
+        updatedAt: 20,
+        ...(terminal ? { endedAt: 30 } : {}),
+        activeTools: [],
+        recentActivity: [],
+        usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
+        ...(status === "failed" ? { error: "fixture failure" } : {}),
     };
 }
 
@@ -165,9 +161,7 @@ describe("PuiController background event bridge", () => {
             sessionId: "fixture-session",
             instanceId: "live-instance",
             type,
-            ...(type === "upsert"
-                ? { job: { id: "job", title: "Background", run: details("job", status as any).run } }
-                : {}),
+            ...(type === "upsert" ? { job: { id: "job", title: "Background", run: run("job", status as any) } } : {}),
         });
         bus.emit("pui.subagent.background", envelope("ready"));
         bus.emit("pui.subagent.background", envelope("upsert", "queued"));
@@ -224,7 +218,7 @@ describe("PuiController assistant reference text", () => {
 });
 
 describe("PuiController tool event path", () => {
-    test("transports partial subagent snapshots and preserves a running sibling", async () => {
+    test("keeps sibling tool cards stable while one tool updates", async () => {
         const ids = ["slow", "fast"];
         const { controller, state, emit } = await createController([
             assistantText("Stable context"),
@@ -239,7 +233,7 @@ describe("PuiController tool event path", () => {
                 toolCallId: id,
                 toolName: "delegator",
                 args,
-                partialResult: { content: [{ type: "text", text: "queued" }], details: details(id, "queued") },
+                partialResult: { content: [{ type: "text", text: "queued" }] },
             });
         }
         await Bun.sleep(25);
@@ -253,9 +247,7 @@ describe("PuiController tool event path", () => {
         expect(queuedFast).toBeDefined();
         expect(snapshot.activeTools.map((tool) => tool.id).sort()).toEqual([...ids].sort());
         expect(
-            snapshot.display
-                .filter((item) => item.kind === "tool")
-                .map((item) => [item.toolCallId, item.subagent?.status]),
+            snapshot.display.filter((item) => item.kind === "tool").map((item) => [item.toolCallId, item.result]),
         ).toEqual([
             ["slow", "queued"],
             ["fast", "queued"],
@@ -267,7 +259,7 @@ describe("PuiController tool event path", () => {
             toolCallId: "slow",
             toolName: "delegator",
             args: slowArgs,
-            partialResult: { content: [{ type: "text", text: "working" }], details: details("slow", "running") },
+            partialResult: { content: [{ type: "text", text: "working" }] },
         });
         await Bun.sleep(25);
         snapshot = controller.snapshot();
@@ -275,18 +267,13 @@ describe("PuiController tool event path", () => {
         expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
         expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(queuedFast);
         expect(runningSlow).not.toBe(queuedSlow);
-        expect(runningSlow).toEqual(
-            expect.objectContaining({ running: true, subagent: expect.objectContaining({ status: "running" }) }),
-        );
+        expect(runningSlow).toEqual(expect.objectContaining({ running: true, result: "working" }));
 
         emit({
             type: "tool_execution_end",
             toolCallId: "fast",
             toolName: "delegator",
-            result: {
-                content: [{ type: "text", text: "fixture failure" }],
-                details: details("fast", "failed"),
-            },
+            result: { content: [{ type: "text", text: "fixture failure" }] },
             isError: true,
         });
         snapshot = controller.snapshot();
@@ -296,11 +283,7 @@ describe("PuiController tool event path", () => {
         const failedFast = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast");
         expect(failedFast).not.toBe(queuedFast);
         expect(failedFast).toEqual(
-            expect.objectContaining({
-                running: false,
-                isError: true,
-                subagent: expect.objectContaining({ status: "failed" }),
-            }),
+            expect.objectContaining({ running: false, isError: true, result: "fixture failure" }),
         );
 
         state.messages.push({
@@ -308,7 +291,6 @@ describe("PuiController tool event path", () => {
             toolCallId: "fast",
             toolName: "delegator",
             content: [{ type: "text", text: "fixture failure" }],
-            details: details("fast", "failed"),
             isError: true,
             timestamp: 2,
         } as AgentMessage);
@@ -316,7 +298,7 @@ describe("PuiController tool event path", () => {
             type: "tool_execution_end",
             toolCallId: "slow",
             toolName: "delegator",
-            result: { content: [{ type: "text", text: "done" }], details: details("slow", "succeeded") },
+            result: { content: [{ type: "text", text: "done" }] },
             isError: false,
         });
         snapshot = controller.snapshot();
@@ -325,23 +307,13 @@ describe("PuiController tool event path", () => {
         expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(failedFast);
         const succeededSlow = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow");
         expect(succeededSlow).not.toBe(runningSlow);
-        expect(succeededSlow).toEqual(
-            expect.objectContaining({
-                running: false,
-                isError: false,
-                subagent: expect.objectContaining({ status: "succeeded" }),
-            }),
-        );
-        expect(failedFast).toEqual(
-            expect.objectContaining({ subagent: expect.objectContaining({ status: "failed" }) }),
-        );
+        expect(succeededSlow).toEqual(expect.objectContaining({ running: false, isError: false, result: "done" }));
 
         state.messages.push({
             role: "toolResult",
             toolCallId: "slow",
             toolName: "delegator",
             content: [{ type: "text", text: "done" }],
-            details: details("slow", "succeeded"),
             isError: false,
             timestamp: 3,
         } as AgentMessage);
@@ -349,12 +321,10 @@ describe("PuiController tool event path", () => {
         emit({ type: "agent_settled" });
         snapshot = controller.snapshot();
         expect(
-            snapshot.display
-                .filter((item) => item.kind === "tool")
-                .map((item) => [item.toolCallId, item.subagent?.status]),
+            snapshot.display.filter((item) => item.kind === "tool").map((item) => [item.toolCallId, item.isError]),
         ).toEqual([
-            ["slow", "succeeded"],
-            ["fast", "failed"],
+            ["slow", false],
+            ["fast", true],
         ]);
 
         await controller.dispose();
@@ -385,8 +355,6 @@ describe("PuiController tool event path", () => {
         expect(controller.snapshot().display[0]).toEqual(
             expect.objectContaining({ kind: "tool", name: "read", running: true, result: "partial read" }),
         );
-        const item = controller.snapshot().display[0];
-        expect(item && item.kind === "tool" ? item.subagent : undefined).toBeUndefined();
         await controller.dispose();
     });
 });

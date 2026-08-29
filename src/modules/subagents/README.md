@@ -1,6 +1,6 @@
 # Subagent extension
 
-This extension supplies the `explorer` and `worker` spawn tools plus `subagent_wait`, `subagent_check`, and `subagent_cancel` for session-scoped background work, and the blocking `subagent` tool (slated for removal). Subagents are **not a Pi core feature**: the extension owns its Profiles, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Pi transports those snapshots as ordinary tool execution updates, so clients that do not understand the protocol still receive a normal tool result.
+This extension supplies the `explorer` and `worker` spawn tools plus `subagent_wait`, `subagent_check`, and `subagent_cancel` for session-scoped background work. Those five are the whole tool set. Subagents are **not a Pi core feature**: the extension owns its Profiles, queuing, child-process execution, cancellation, timeouts, and progress snapshots. Progress reaches the host over the Background Protocol on `pi.events`; the tool results themselves are plain text plus the Job snapshot.
 
 ## Tool shape
 
@@ -22,8 +22,6 @@ Each Profile is a spawn tool. Both take the same arguments and return a Job id a
 
 Only the wall clock is enforced today; the two stall timers arrive with the watchdog. Each Profile lives in its own directory under [`profiles/`](./profiles/) holding its declaration (`index.ts`) and `prompt.md`; `profiles/profile.ts` supplies the default Limits and the child argument list, and `profiles/index.ts` lists what gets registered.
 
-The blocking `subagent` tool takes the same arguments plus a required `agent` naming the Profile, and waits for the child instead of returning a Job id.
-
 The worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`profiles/worker/prompt.LICENSE`](profiles/worker/prompt.LICENSE).
 
 Both Profiles disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt tells the child to discover `AGENTS.md` and contribution documentation before editing. No project-local or user-defined Profiles are loaded, and the child cannot recursively load this extension.
@@ -32,7 +30,7 @@ Relative working directories resolve from the parent session's working directory
 
 ## Background jobs
 
-`explorer` and `worker` validate the prompt and working directory, then immediately return a Job id while the child waits on the same process-wide FIFO concurrency limit as blocking calls. Continue useful parent work after spawning. Use `subagent_check` for non-blocking inspection, `subagent_wait` only when progress depends on results, and `subagent_cancel` for explicit cancellation. Aborting a wait never cancels its jobs.
+`explorer` and `worker` validate the prompt and working directory, then immediately return a Job id while the child waits on the process-wide FIFO concurrency limit. Continue useful parent work after spawning. Use `subagent_check` for non-blocking inspection, `subagent_wait` only when progress depends on results, and `subagent_cancel` for explicit cancellation. Aborting a wait never cancels its jobs.
 
 Background completion is delivered exactly once as a persisted `subagent-result` custom message unless a wait consumes it first. Completion while the parent is busy is deferred until `agent_settled`; idle completion is delivered immediately. Wait and automatic-delivery output have smaller budgets within Pi's 50KB/2000-line hard ceiling, and truncated complete output retains a private file path.
 
@@ -46,21 +44,9 @@ Reload, session replacement, fork, and quit abort all queued/running background 
 
 The explorer's Pi tool allowlist is read-only, but it is likewise not an operating-system sandbox and does not confine reads to `cwd` or scrub the inherited environment.
 
-## Progress protocol
+## Run state
 
-Every partial and final `details` value uses the versioned renderer-neutral protocol defined in [`protocol.ts`](./protocol.ts):
-
-- `schema: "pi.subagent"`
-- `version: 1`
-- `run.id` equal to the outer Pi tool call ID
-- a complete snapshot on every update, never an event delta
-- at most 20 recent activity entries
-- only currently executing child tools in `activeTools`
-- aggregate finalized-assistant usage, final status, preview, and diagnostic metadata
-
-Unknown future versions should be rendered as generic tools. The extension does not implement regular-Pi rendering; regular Pi uses its documented generic tool fallback. Protocol details contain no raw child transcript or unbounded stdout/stderr. The final assistant text remains the ordinary model-visible tool `content` and final details are stored in the parent session's tool result.
-
-When an execution throws, the extension temporarily retains terminal details by tool call ID and restores them in Pi's `tool_result` hook before session persistence.
+Every Job carries one `SubagentRunV1` defined in [`run-state.ts`](./run-state.ts): status, phase, timestamps, at most 64 active child tools, at most 20 recent activity entries, aggregate usage, an output preview, an error, and the retained full-output path. The manager republishes the complete run on every transition, never a delta, and the Background Protocol validates it before the host renders anything. Run state contains no raw child transcript or unbounded stdout/stderr.
 
 ## Configuration and limits
 
@@ -75,7 +61,7 @@ When an execution throws, the extension temporarily retains terminal details by 
 
 A call's non-empty `model` value always overrides model selection. Otherwise the Profile consults `PI_WORKER_MODEL` or `PI_EXPLORER_MODEL`, then uses its default.
 
-Sibling outer tool calls are the concurrency unit. Additional calls stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
+Jobs are the concurrency unit. Additional Jobs stay visibly queued and can be cancelled before they spawn. Cancellation and timeout are separate terminal statuses.
 
 If final output exceeds the model-visible limit, the extension writes the complete assistant output to a mode-`0600` file in a private temporary directory and includes its path in the result. The file remains available for inspection during the active session and is removed at session shutdown. Paths supplied by the child runner remain externally owned and are not removed. No file is created for untruncated output.
 

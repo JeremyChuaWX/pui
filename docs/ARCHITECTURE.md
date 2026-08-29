@@ -100,7 +100,7 @@ handling) and renders snapshots:
 |---|---|
 | `src/ui/components/menus.ts` | every picker/palette, built behind the `MenuHost` seam (`openDialog`, `openAsyncPicker`, a narrow `MenuController` slice of the controller) — pure data, unit-tested with fakes |
 | `src/ui/components/dialogs.tsx` | `DialogState`, modal `Dialog` (picker / confirm / input / help), and the pure `extensionDialogState` derivation from extension dialog requests |
-| `src/ui/components/transcript.tsx` | message, tool, subagent, bash, and summary cards |
+| `src/ui/components/transcript.tsx` | message, tool, bash, summary, and background-result cards |
 | `src/ui/components/prompt.tsx` | prompt textarea + autocomplete popover |
 | `src/ui/components/sidebar.tsx` | session sidebar and toast stack |
 | `src/ui/components/keys.ts` | all keyboard knowledge: the global shortcut table (one entry per binding drives `globalKeyIntent` dispatch in the app and the Help dialog's `globalKeyHelp` lines), `listNavigationDirection` list cycling, dismissal, enter detection, prompt-history keys, extension-confirm intents (and the hint strings derived from them) |
@@ -148,20 +148,19 @@ What each Module publishes:
 |---|---|---|
 | `file-search` | `fd`/`rg` tools | the `@`-completion command |
 | `web` | `web_search`/`web_crawl` | — |
-| `subagents` | `subagent` + background tools | bounded subagent view models + `BackgroundSubagentBridge` |
+| `subagents` | `explorer`, `worker`, `subagent_check`, `subagent_wait`, `subagent_cancel` | Background Protocol parser, reducer, `BackgroundSubagentBridge`, and status helpers |
 
 Inside their private files, the Modules are deep:
 
 - `src/modules/file-search/` — `process.ts` is the deep module: `runFileSearch` hides shell-free
   spawning, process-group kill, timeouts, and bounded output capture with temp-file spill (capture
   creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves system binaries.
-- `src/modules/subagents/` — `protocol.ts` owns the versioned `pi.subagent` wire format (types,
-  transitions, validator); `runner.ts` is a thin adapter that folds Child-Agent Runtime events into
-  `SubagentDetailsV1` snapshots; `run-job.ts` is the single run pipeline (queueing, semaphore,
-  spawn, terminal synthesis, output spill) shared by the blocking tool and the background manager;
-  `background-manager.ts` owns background-job delivery semantics; `background-protocol.ts` owns the
-  background bus envelopes; `view-model.ts` and `background-bridge.ts` bound protocol payloads into
-  host view models behind the UI Entry.
+- `src/modules/subagents/` — `run-state.ts` owns the run state a Job carries (types, transitions,
+  validator); `runner.ts` is a thin adapter that folds Child-Agent Runtime events into
+  `SubagentRunV1` snapshots; `background-manager.ts` owns the whole Job pipeline (queueing,
+  semaphore, spawn, terminal synthesis, output spill) and delivery semantics;
+  `background-protocol.ts` owns the background bus envelopes; `background-bridge.ts` bounds
+  protocol payloads into host view models behind the UI Entry.
 - `src/modules/web/` — `output-retention.ts` is the deep module (bounded previews, private temp-file
   retention with per-result/per-session quotas); `tool-shell.ts` is the shared execute wrapper;
   `search.ts`/`crawl.ts` hold provider-specific logic only.
@@ -222,9 +221,6 @@ exempt as import sources (module tests use `src/test-support/`, and
 Wire formats have exactly one implementation, owned by the producing Module, and consumers reach
 parsed state through the Module's UI Entry instead of maintaining mirrors:
 
-- `src/modules/subagents/protocol.ts` — `pi.subagent` details. The Module's `view-model.ts` consumes
-  it: it validates with `isSubagentDetailsV1` and then bounds every string into a
-  `SubagentViewModel` safe for rendering and reconciliation, published through `interfaces/ui.ts`.
 - `src/modules/subagents/background-protocol.ts` — background-subagent bus channels. The Module's
   `background-bridge.ts` consumes its parser, bounds strings into host view models, and exposes a
   bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
