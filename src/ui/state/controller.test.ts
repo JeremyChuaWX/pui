@@ -496,6 +496,30 @@ describe("PuiController session binding", () => {
         }
     });
 
+    test("bounds a running shell command's transcript output to its tail", async () => {
+        const h = harness(process.cwd());
+        await h.bind();
+        let release!: () => void;
+        h.session.executeBash = async (_command: string, onChunk: (chunk: string) => void) => {
+            for (let index = 0; index < 5; index += 1) onChunk(`${index}`.repeat(100 * 1024));
+            onChunk("tail");
+            await new Promise<void>((resolve) => {
+                release = resolve;
+            });
+        };
+        expect(h.controller.handlePrompt("! yes")).toBe("sent");
+        await Bun.sleep(25);
+
+        const running = h.controller.snapshot().display.find((item) => item.kind === "bash");
+        expect(running).toMatchObject({ kind: "bash", command: "yes", running: true });
+        const output = (running as { output: string }).output;
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(256 * 1024);
+        expect(output.endsWith("tail")).toBe(true);
+        expect(output.startsWith("0")).toBe(false);
+        release();
+        await h.controller.dispose();
+    });
+
     test("bounds extension dialogs at the 16 KiB confirm cap", async () => {
         const h = harness(process.cwd());
         await h.bind();

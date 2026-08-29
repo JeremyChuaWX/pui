@@ -62,7 +62,7 @@ export function formatToolTitle(name: string, args: Record<string, unknown> = {}
     return `${name}  ${oneLine.length > 76 ? `${oneLine.slice(0, 73)}…` : oneLine}`;
 }
 
-export function formatToolArguments(args: Record<string, unknown>): string {
+function formatToolArguments(args: Record<string, unknown>): string {
     const entries = Object.entries(args);
     if (entries.length === 0) return "";
 

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -21,6 +21,7 @@ import { fdCompletionCommand } from "#modules/file-search/interfaces/ui.js";
 import { BackgroundSubagentBridge } from "#modules/subagents/interfaces/ui.js";
 import { type BundledSkillResources, createBundledSkillResources } from "#pi-core/bundled-skills.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "#pi-core/register.js";
+import { appendBoundedUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
@@ -55,7 +56,7 @@ export interface ControllerOptions {
 export interface ControllerDependencies {
     eventBus?: EventBusController;
     extensionFactories?: InlineExtension[];
-    readGitBranch?: (cwd: string) => string | undefined;
+    readGitBranch?: (cwd: string) => Promise<string | undefined>;
     /** Prepared skill files whose ownership transfers to the controller. */
     bundledSkillResources?: BundledSkillResources;
 }
@@ -88,6 +89,9 @@ export function createPuiRuntimeFactory(
 }
 
 type Listener = (snapshot: PuiSnapshot) => void;
+
+/** A `!` command keeps only the newest bytes of its output on screen; the terminal is not a log. */
+const BASH_OUTPUT_BYTES = 256 * 1024;
 
 const COALESCED_SESSION_EVENTS = new Set<AgentSessionEvent["type"]>([
     "queue_update",
@@ -281,17 +285,13 @@ function compactPath(cwd: string): string {
     return cwd;
 }
 
-function readGitBranch(cwd: string): string | undefined {
-    try {
-        const branch = execFileSync("git", ["branch", "--show-current"], {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        return branch || undefined;
-    } catch {
-        return undefined;
-    }
+/** Off the render path: git can take a while on a cold or networked filesystem. */
+function readGitBranch(cwd: string): Promise<string | undefined> {
+    return new Promise((resolve) => {
+        execFile("git", ["branch", "--show-current"], { cwd, encoding: "utf8" }, (error, stdout) => {
+            resolve(error ? undefined : stdout.trim() || undefined);
+        });
+    });
 }
 
 export class PuiController {
@@ -308,7 +308,7 @@ export class PuiController {
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
-    private readonly readGitBranch: (cwd: string) => string | undefined;
+    private readonly readGitBranch: (cwd: string) => Promise<string | undefined>;
     private readonly toasts = new ToastQueue(() => this.refresh());
     private readonly extensionDialogs = new ExtensionDialogQueue(() => this.refresh());
     private readonly backgroundSubagents: BackgroundSubagentBridge;
@@ -325,7 +325,7 @@ export class PuiController {
             onChange: () => this.scheduleRefresh(),
         });
         this.backgroundSubagents.bind(runtime.session.sessionId);
-        this.gitBranch = this.readGitBranch(runtime.cwd);
+        this.refreshGitBranch();
         this.currentSnapshot = this.buildSnapshot();
     }
 
@@ -421,7 +421,7 @@ export class PuiController {
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
-        this.gitBranch = this.readGitBranch(this.runtime.cwd);
+        this.refreshGitBranch();
 
         const existingUI = session.extensionRunner.getUIContext?.() ?? {};
         await session.bindExtensions({
@@ -707,6 +707,17 @@ export class PuiController {
         return "sent";
     }
 
+    private refreshGitBranch(): void {
+        const cwd = this.runtime.cwd;
+        void this.readGitBranch(cwd)
+            .then((branch) => {
+                if (this.runtime.cwd !== cwd || this.gitBranch === branch) return;
+                this.gitBranch = branch;
+                this.scheduleRefresh();
+            })
+            .catch(() => {});
+    }
+
     private async executeBash(command: string, excluded: boolean): Promise<void> {
         if (this.session.isBashRunning) {
             this.notify("A shell command is already running", "warning");
@@ -719,7 +730,7 @@ export class PuiController {
                 command,
                 (chunk) => {
                     if (!this.runningBash) return;
-                    this.runningBash.output += chunk;
+                    this.runningBash.output = appendBoundedUtf8(this.runningBash.output, chunk, BASH_OUTPUT_BYTES);
                     this.scheduleRefresh();
                 },
                 { excludeFromContext: excluded },

@@ -7,7 +7,7 @@ import { errorMessage } from "#shared/lib/validate.js";
 import type { PuiController } from "../state/controller.js";
 import { shouldTriggerPromptAutocomplete } from "../state/prompt-autocomplete.js";
 import type { PromptAction, PromptCompletions, PuiSnapshot } from "../state/types.js";
-import { copyCurrentSelection, editPromptInNvim, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
+import { copyCurrentSelection, editPromptInEditor, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
 import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./dialogs.js";
 import {
     canNavigatePromptHistory,
@@ -236,7 +236,7 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
             renderer.suspend();
             suspended = true;
             process.stdout.write("Launching nvim. pui will resume when the editor exits.\n");
-            const edited = await editPromptInNvim(draft, reference, snapshot.cwd);
+            const edited = await editPromptInEditor(draft, reference, snapshot.cwd);
             if (edited !== undefined && prompt && !prompt.isDestroyed) {
                 promptHistory.resetBrowsing();
                 prompt.setText(edited);

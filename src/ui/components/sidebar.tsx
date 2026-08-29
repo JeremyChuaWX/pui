@@ -20,7 +20,7 @@ function progressBar(percent: number | null | undefined, width = 14): string {
 export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
     const backgroundSubagents = () =>
         props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
-    const genericTools = () => props.snapshot.activeTools;
+    const parentTools = () => props.snapshot.activeTools;
 
     return (
         <box
@@ -102,12 +102,12 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                 </box>
             </Show>
 
-            <Show when={genericTools().length > 0}>
+            <Show when={parentTools().length > 0}>
                 <box marginTop={1}>
                     <text fg={theme.text}>
                         <strong>Running</strong>
                     </text>
-                    <For each={genericTools()}>
+                    <For each={parentTools()}>
                         {(tool) => (
                             <text fg={theme.warning} wrapMode="none">
                                 ◌ {tool.title}
