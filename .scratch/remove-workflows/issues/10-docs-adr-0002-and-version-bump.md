@@ -6,12 +6,12 @@
 
 **Blocked by:** 02 — Headless `--smoke` entry; 03 — Retire the Host Entry; 07 — Three-part Limits watchdog; 08 — Deliver results through Pi's `followUp`; 09 — Job vocabulary in the Background Protocol.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] ARCHITECTURE's diagram, layer descriptions, Module tables, and shared-primitive list match the tree with no Child-Agent Runtime, Host Entry, or workflows
-- [ ] README documents the five subagent tools, the two Profiles with their tools, models, env overrides, and Limits, the `--smoke` flag, and nothing about workflows
-- [ ] CONTRIBUTION's import example uses a surviving Module
-- [ ] ADR 0002 exists, states the trade-off (one consumer means a shared layer is indirection without reuse), and ADR 0001 is marked superseded by it
-- [ ] `package.json` version is 0.9.0
+- [x] ARCHITECTURE's diagram, layer descriptions, Module tables, and shared-primitive list match the tree with no Child-Agent Runtime, Host Entry, or workflows
+- [x] README documents the five subagent tools, the two Profiles with their tools, models, env overrides, and Limits, the `--smoke` flag, and nothing about workflows
+- [x] CONTRIBUTION's import example uses a surviving Module
+- [x] ADR 0002 exists, states the trade-off (one consumer means a shared layer is indirection without reuse), and ADR 0001 is marked superseded by it
+- [x] `package.json` version is 0.9.0
 - [ ] issues/0002 status is set to done with the merge commit
-- [ ] `bun run check` is green
+- [x] `bun run check` is green
