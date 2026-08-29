@@ -6,13 +6,13 @@
 
 **Blocked by:** 05 — `explorer` and `worker` spawn tools with Profile directories.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A child that keeps calling tools past the wall clock is terminated with a status and diagnostic naming the wall clock
-- [ ] A child that produces no events while idle past the stall timeout is terminated with a status and diagnostic naming the stall
-- [ ] A child whose active tool produces no output past the tool-stall timeout is terminated with a status and diagnostic naming the tool stall; streaming output resets that timer
-- [ ] Termination escalates SIGTERM to SIGKILL on the whole process tree
-- [ ] Profile declarations may override any of the three Limits; tool descriptions state the effective Limits
-- [ ] Limits are tested at the Extension seam with an injected clock and scripted child events, never real sleeps
-- [ ] The old single `timeoutMs` and `PI_*` timeout handling are gone
-- [ ] `bun run check` is green
+- [x] A child that keeps calling tools past the wall clock is terminated with a status and diagnostic naming the wall clock
+- [x] A child that produces no events while idle past the stall timeout is terminated with a status and diagnostic naming the stall
+- [x] A child whose active tool produces no output past the tool-stall timeout is terminated with a status and diagnostic naming the tool stall; streaming output resets that timer
+- [x] Termination escalates SIGTERM to SIGKILL on the whole process tree
+- [x] Profile declarations may override any of the three Limits; tool descriptions state the effective Limits
+- [x] Limits are tested at the Extension seam with an injected clock and scripted child events, never real sleeps
+- [x] The old single `timeoutMs` and `PI_*` timeout handling are gone
+- [x] `bun run check` is green
