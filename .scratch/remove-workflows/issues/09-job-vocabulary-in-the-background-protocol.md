@@ -1,10 +1,10 @@
-# 09 — Job vocabulary in the Background Protocol
+# 09: Job vocabulary in the Background Protocol
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** The Background Protocol, bridge, view models, and UI helpers call a spawned child a Job everywhere. `SubagentRunV1` becomes `SubagentJobV1`, and "run" is no longer used for the instance in type names, field names, event names, or documentation. Bounds, instance authority, cancellation control matching, and the 64-Job pruning are unchanged.
 
-**Blocked by:** 06 — Remove the blocking `subagent` tool and the tool-details protocol.
+**Blocked by:** 06: Remove the blocking `subagent` tool and the tool-details protocol.
 
 **Status:** done
 

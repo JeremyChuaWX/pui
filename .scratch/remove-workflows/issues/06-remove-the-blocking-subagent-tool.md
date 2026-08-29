@@ -1,10 +1,10 @@
-# 06 — Remove the blocking `subagent` tool and the tool-details protocol
+# 06: Remove the blocking `subagent` tool and the tool-details protocol
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** The tool set is exactly `explorer`, `worker`, `subagent_check`, `subagent_wait`, `subagent_cancel`. The versioned `pi.subagent` tool-details snapshot protocol, the transcript live renderer for it, and the normalisation view model are deleted. The UI Entry exports only the Background Protocol parser, reducer, bridge, and the status helpers the sidebar and palette use. The sidebar and palette keep showing and cancelling Jobs.
 
-**Blocked by:** 05 — `explorer` and `worker` spawn tools with Profile directories.
+**Blocked by:** 05: `explorer` and `worker` spawn tools with Profile directories.
 
 **Status:** done
 

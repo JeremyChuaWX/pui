@@ -1,10 +1,10 @@
-# 01 — Delete the workflows Module and everything that only served it
+# 01: Delete the workflows Module and everything that only served it
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** pui builds, tests, and runs with no trace of workflows. The `workflow` subcommand and `--workflow-smoke` flag are gone from the CLI and its help text. `/workflow` and `/workflows` no longer exist. The workflow page, the Workflows sidebar section, the workflow palette entry and its run/phase/agent submenu tree, the workflow transcript renderer, and the workflow fields on display items, snapshots, and prompt actions are all removed. The Register File no longer lists `pui-workflow`. The package has no `./workflow` export (and no `exports` map at all). The confirm dialog cap is an honest bound on untrusted extension content. Local workflow state is deleted.
 
-**Blocked by:** None — can start immediately.
+**Blocked by:** None, can start immediately.
 
 **Status:** done
 

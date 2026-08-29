@@ -8,7 +8,7 @@ created: 2026-08-29
 
 # Remove workflows and fold the child-agent runtime into a leaner subagents Module
 
-## Problem Statement
+## Problem statement
 
 The workflows feature never earned its place. It is 9,000 lines (larger than the other three
 Modules combined and larger than the whole UI), it carries its own worker runtime, durable
@@ -35,7 +35,7 @@ Limits, the process-wide semaphore), exposes `explorer` and `worker` as spawn to
 `followUp` mechanism, and keeps publishing the Background Protocol so the sidebar and palette
 keep showing Jobs. Shared code shrinks to what has two or more consumers.
 
-## User Stories
+## User stories
 
 1. As a pui user, I want the `workflow` subcommand, `/workflow`, `/workflows`, the workflows sidebar section, and the workflow page gone, so that the client only offers features I use.
 2. As a pui user, I want no leftover workflow state on disk (`.pui/` in the repo, `workflow-runs`, `workflow-worktrees`, and `workflow-approvals.json` under my Pi agent directory), so that the removal is complete.
@@ -67,7 +67,7 @@ keep showing Jobs. Shared code shrinks to what has two or more consumers.
 28. As a reviewer, I want the whole change in one PR on one branch, so that the deletion and the reshape are reviewed as the single decision they are.
 29. As a pui user, I want `web_crawl`, `web_search`, `fd`, and `rg` unchanged, so that the other Modules are untouched by this work.
 
-## Implementation Decisions
+## Implementation decisions
 
 - Delete the workflows Module in full, including its worker runtime, durable storage, worktrees,
   approvals, RPC layer, authoring API, and guidance document. Delete the headless workflow entry
@@ -127,7 +127,7 @@ keep showing Jobs. Shared code shrinks to what has two or more consumers.
   contribution doc are rewritten to match. Issue 0001 and the scratch notes are left as history.
 - Version 0.9.0. One branch, one PR, deletion commits first, then the reshape.
 
-## Testing Decisions
+## Testing decisions
 
 - A good test drives a seam with inputs and asserts on observable outputs (registered tools,
   emitted events, sent messages, snapshots, process exit codes). It does not assert on file
@@ -156,7 +156,7 @@ keep showing Jobs. Shared code shrinks to what has two or more consumers.
 - UI view tests for the workflow page and workflow view are deleted; subagent sidebar helpers
   keep their existing tests, updated for the `Job` rename.
 
-## Out of Scope
+## Out of scope
 
 - Any change to the web or file-search Modules; `web_crawl` stays.
 - A `/subagents` dashboard command or a footer status line.
@@ -167,7 +167,7 @@ keep showing Jobs. Shared code shrinks to what has two or more consumers.
 - A replacement scripting or authoring API for what workflows did.
 - Converting the boundary checker into a general dead-code or cycle detector.
 
-## Further Notes
+## Further notes
 
 - The local extension's `child-agent.ts`, `profiles/`, `manager.ts`, `jobs.ts`, `json-events.ts`,
   `process.ts`, and `semaphore.ts` are the reference implementation for the reshape. pui keeps

@@ -1,10 +1,10 @@
-# 10 — Docs, ADR 0002, version 0.9.0
+# 10: Docs, ADR 0002, version 0.9.0
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** Every document describes the codebase as it now is. ARCHITECTURE, README, and CONTRIBUTION are rewritten for three Modules, the Interfaces Directory as `pi` plus `ui`, and a subagents Module that owns Profiles and the child runner. ADR 0002 records that subagents owns the child-agent runtime and marks ADR 0001 as superseded. The package version is 0.9.0.
 
-**Blocked by:** 02 — Headless `--smoke` entry; 03 — Retire the Host Entry; 07 — Three-part Limits watchdog; 08 — Deliver results through Pi's `followUp`; 09 — Job vocabulary in the Background Protocol.
+**Blocked by:** 02: Headless `--smoke` entry; 03: Retire the Host Entry; 07: Three-part Limits watchdog; 08: Deliver results through Pi's `followUp`; 09: Job vocabulary in the Background Protocol.
 
 **Status:** done
 

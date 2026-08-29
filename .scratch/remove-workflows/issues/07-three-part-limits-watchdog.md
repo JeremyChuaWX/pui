@@ -1,10 +1,10 @@
-# 07 — Three-part Limits watchdog
+# 07: Three-part Limits watchdog
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** Every Job runs under three Limits: a 60 minute wall clock, a 10 minute stall timeout while no child tool is active, and a 15 minute tool-stall timeout while one is. Streaming tool output resets the tool-stall timer. Each Limit ends the Job with its own terminal status and diagnostic, escalating SIGTERM to SIGKILL. Defaults live with the Profile type and any Profile may override them. The child runner is ported from the local pi extension rather than patched.
 
-**Blocked by:** 05 — `explorer` and `worker` spawn tools with Profile directories.
+**Blocked by:** 05: `explorer` and `worker` spawn tools with Profile directories.
 
 **Status:** done
 

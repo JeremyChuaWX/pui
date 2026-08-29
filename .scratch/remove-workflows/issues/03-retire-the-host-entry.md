@@ -1,10 +1,10 @@
-# 03 — Retire the Host Entry
+# 03: Retire the Host Entry
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** The Interfaces Directory is `pi` (required) plus `ui` (where the UI needs it). No Module has a `host` entry, the boundary checker has no App→Module edge, and the App layer imports only Pi Core and the UI start function.
 
-**Blocked by:** 01 — Delete the workflows Module and everything that only served it.
+**Blocked by:** 01: Delete the workflows Module and everything that only served it.
 
 **Status:** done
 

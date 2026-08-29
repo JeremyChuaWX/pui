@@ -1,10 +1,10 @@
-# 04 — Fold the Child-Agent Runtime and single-consumer shared files into subagents
+# 04: Fold the Child-Agent Runtime and single-consumer shared files into subagents
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** A mechanical move with no behaviour change. The subagents Module owns the child-agent runner, Profile definitions and prompt assets (including the Ponytail license), the semaphore, instance-scoped runs, the background channel, and the JSONL event parser. The shared library keeps only retained output, bounded process, and validation. This is the prefactor for tickets 05 through 09.
 
-**Blocked by:** 01 — Delete the workflows Module and everything that only served it.
+**Blocked by:** 01: Delete the workflows Module and everything that only served it.
 
 **Status:** done
 

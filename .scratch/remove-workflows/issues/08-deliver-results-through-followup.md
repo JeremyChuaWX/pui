@@ -1,10 +1,10 @@
-# 08 — Deliver results through Pi's `followUp`
+# 08: Deliver results through Pi's `followUp`
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** When a Job finishes and no `subagent_wait` consumed it, the Extension sends one `subagent-result` message with `deliverAs: "followUp"` and `triggerTurn: true`. Pi starts a turn if the agent is idle and queues the message behind the current turn if busy. The hand-rolled deferred-result map and the `agent_settled` hook are removed. Truncated results keep the path to the retained full output.
 
-**Blocked by:** 04 — Fold the Child-Agent Runtime and single-consumer shared files into subagents.
+**Blocked by:** 04: Fold the Child-Agent Runtime and single-consumer shared files into subagents.
 
 **Status:** done
 

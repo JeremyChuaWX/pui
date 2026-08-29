@@ -1,10 +1,10 @@
-# 02 — Headless `--smoke` entry proves the built binary registers bundled tools and skills
+# 02: Headless `--smoke` entry proves the built binary registers bundled tools and skills
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** `pui --smoke` boots the Pi runtime headlessly with the bundled Extensions and skills, prints a JSON object listing the registered bundled tool names and skill names, and exits 0. The smoke build runs it against the compiled binary and fails if any bundled tool or the `unslop` skill is missing. This restores the packaging coverage the workflow smoke used to provide.
 
-**Blocked by:** 01 — Delete the workflows Module and everything that only served it.
+**Blocked by:** 01: Delete the workflows Module and everything that only served it.
 
 **Status:** done
 

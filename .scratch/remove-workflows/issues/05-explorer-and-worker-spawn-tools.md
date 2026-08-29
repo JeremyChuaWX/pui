@@ -1,10 +1,10 @@
-# 05 — `explorer` and `worker` spawn tools with Profile directories
+# 05: `explorer` and `worker` spawn tools with Profile directories
 
 **Parent:** issues/0002-remove-workflows.md
 
 **What to build:** The Pi model spawns a Job by calling `explorer` or `worker`; each returns a Job id immediately and queues behind the process-wide semaphore. `subagent_spawn`, its `agent` argument, the `generic` role, and `subagent_list` are gone. Each Profile is a directory holding its declaration and `prompt.md`, a shared profile type carries default Limits and the child argument list, and one index lists what gets registered. Tool descriptions tell the model each Profile's tools, default model, and Limits.
 
-**Blocked by:** 04 — Fold the Child-Agent Runtime and single-consumer shared files into subagents.
+**Blocked by:** 04: Fold the Child-Agent Runtime and single-consumer shared files into subagents.
 
 **Status:** done
 
