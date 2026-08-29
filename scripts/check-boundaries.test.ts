@@ -165,11 +165,11 @@ describe("import spelling", () => {
         const edges: ImportEdge[] = [
             {
                 from: "modules/subagents/test-support/fixture.ts",
-                to: "modules/subagents/run-state.ts",
-                specifier: "../run-state.js",
+                to: "modules/subagents/job-state.ts",
+                specifier: "../job-state.js",
             },
             {
-                from: "modules/subagents/run-state.test.ts",
+                from: "modules/subagents/job-state.test.ts",
                 to: "modules/subagents/test-support/fixture.ts",
                 specifier: "./test-support/fixture.js",
             },

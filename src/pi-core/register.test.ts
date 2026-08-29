@@ -345,7 +345,7 @@ export default function (pi: any) {
 
             const sourceRoot = path.resolve(import.meta.dir, "..");
             for (const relativePath of [
-                path.join("modules", "subagents", "run-state.ts"),
+                path.join("modules", "subagents", "job-state.ts"),
                 path.join("modules", "subagents", "runner.ts"),
                 path.join("modules", "subagents", "profiles", "worker", "prompt.md"),
                 path.join("modules", "subagents", "profiles", "worker", "prompt.LICENSE"),

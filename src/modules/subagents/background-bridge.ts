@@ -7,21 +7,21 @@ import {
     type BackgroundSubagentEventV1,
     parseBackgroundSubagentEvent as parseWireEvent,
 } from "./background-protocol.js";
-import type { InstanceScopedRuns } from "./instance-scoped-runs.js";
-import { reduceInstanceScopedRuns } from "./instance-scoped-runs.js";
+import type { InstanceScopedJobs } from "./instance-scoped-jobs.js";
+import { reduceInstanceScopedJobs } from "./instance-scoped-jobs.js";
 import {
     isTerminalSubagentStatus,
     type SubagentActiveToolV1,
     type SubagentActivityV1,
-    type SubagentRunV1,
-} from "./run-state.js";
+    type SubagentJobV1,
+} from "./job-state.js";
 
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;
 const MAX_JOBS = 64;
 
 /** A validated, string-bounded copy of one Job, safe for rendering. */
-export interface BackgroundSubagentViewModel extends SubagentRunV1 {
+export interface BackgroundSubagentViewModel extends SubagentJobV1 {
     title: string;
     prompt?: string;
 }
@@ -49,23 +49,23 @@ function boundedActivity(activity: SubagentActivityV1): SubagentActivityV1 {
     };
 }
 
-function boundedRun(run: SubagentRunV1): SubagentRunV1 {
+function boundedJob(job: SubagentJobV1): SubagentJobV1 {
     return {
-        id: boundedString(run.id, 256),
-        agent: boundedString(run.agent, 128),
-        model: boundedString(run.model, 256),
-        cwd: boundedString(run.cwd, 4_000),
-        status: run.status,
-        ...(run.phase === undefined ? {} : { phase: run.phase }),
-        ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
-        updatedAt: run.updatedAt,
-        ...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
-        activeTools: run.activeTools.map(boundedTool),
-        recentActivity: run.recentActivity.map(boundedActivity),
-        usage: { ...run.usage },
-        ...(run.outputPreview === undefined ? {} : { outputPreview: boundedString(run.outputPreview, 16_000) }),
-        ...(run.error === undefined ? {} : { error: boundedString(run.error, 16_000) }),
-        ...(run.fullOutputPath === undefined ? {} : { fullOutputPath: boundedString(run.fullOutputPath, 4_000) }),
+        id: boundedString(job.id, 256),
+        agent: boundedString(job.agent, 128),
+        model: boundedString(job.model, 256),
+        cwd: boundedString(job.cwd, 4_000),
+        status: job.status,
+        ...(job.phase === undefined ? {} : { phase: job.phase }),
+        ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
+        updatedAt: job.updatedAt,
+        ...(job.endedAt === undefined ? {} : { endedAt: job.endedAt }),
+        activeTools: job.activeTools.map(boundedTool),
+        recentActivity: job.recentActivity.map(boundedActivity),
+        usage: { ...job.usage },
+        ...(job.outputPreview === undefined ? {} : { outputPreview: boundedString(job.outputPreview, 16_000) }),
+        ...(job.error === undefined ? {} : { error: boundedString(job.error, 16_000) }),
+        ...(job.fullOutputPath === undefined ? {} : { fullOutputPath: boundedString(job.fullOutputPath, 4_000) }),
     };
 }
 
@@ -81,17 +81,17 @@ export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagent
         sessionId: event.sessionId,
         instanceId: event.instanceId,
         job: {
-            ...boundedRun(job.run),
+            ...boundedJob(job.state),
             title: boundedString(job.title, MAX_TITLE),
             ...(job.prompt === undefined ? {} : { prompt: boundedString(job.prompt, MAX_PROMPT) }),
         },
     };
 }
 
-export type BackgroundSubagentState = InstanceScopedRuns<BackgroundSubagentViewModel>;
+export type BackgroundSubagentState = InstanceScopedJobs<BackgroundSubagentViewModel>;
 
 export class BackgroundSubagentBridge {
-    private state: BackgroundSubagentState = { runs: new Map() };
+    private state: BackgroundSubagentState = { jobs: new Map() };
     private sessionId = "";
     private unsubscribe?: () => void;
 
@@ -99,7 +99,7 @@ export class BackgroundSubagentBridge {
 
     bind(sessionId: string): void {
         this.unsubscribe?.();
-        this.state = { runs: new Map() };
+        this.state = { jobs: new Map() };
         this.sessionId = sessionId;
         this.unsubscribe = this.options.eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
             const event = parseBackgroundSubagentEvent(payload);
@@ -112,11 +112,11 @@ export class BackgroundSubagentBridge {
     }
 
     jobs(): BackgroundSubagentViewModel[] {
-        return [...this.state.runs.values()];
+        return [...this.state.jobs.values()];
     }
 
     cancel(id: string): boolean {
-        const job = this.state.runs.get(id);
+        const job = this.state.jobs.get(id);
         if (!job || !this.state.instanceId || isTerminalSubagentStatus(job.status)) return false;
         this.options.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
             schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
@@ -132,7 +132,7 @@ export class BackgroundSubagentBridge {
     dispose(): void {
         this.unsubscribe?.();
         this.unsubscribe = undefined;
-        this.state = { runs: new Map() };
+        this.state = { jobs: new Map() };
     }
 }
 
@@ -141,11 +141,11 @@ export function reduceBackgroundSubagentEvent(
     event: BackgroundSubagentEvent,
     sessionId: string,
 ): BackgroundSubagentState {
-    return reduceInstanceScopedRuns(
+    return reduceInstanceScopedJobs(
         state,
         event.type === "upsert" || event.type === "remove"
-            ? { type: event.type, instanceId: event.instanceId, run: event.job }
+            ? { type: event.type, instanceId: event.instanceId, job: event.job }
             : { type: event.type, instanceId: event.instanceId },
-        { routeMatches: event.sessionId === sessionId, maxRuns: MAX_JOBS, id: (job) => job.id },
+        { routeMatches: event.sessionId === sessionId, maxJobs: MAX_JOBS, id: (job) => job.id },
     );
 }

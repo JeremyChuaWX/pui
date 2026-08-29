@@ -11,7 +11,7 @@ import {
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "./interfaces/pi.ts";
-import { createTerminalSubagentRun } from "./run-state.ts";
+import { createTerminalSubagentJob } from "./job-state.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const usage = {
@@ -154,11 +154,11 @@ test("background delivery persists once on resume and wait consumption suppresse
                             invocation: (args) => ({ command: "fake-pi", args }),
                             run: async (options) => {
                                 await backgroundMaySettle;
-                                const details = createTerminalSubagentRun(options.run, {
+                                const details = createTerminalSubagentJob(options.job, {
                                     status: "succeeded",
                                     outputPreview: "background output",
                                 });
-                                return { run: details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
+                                return { job: details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
                             },
                         });
                     },

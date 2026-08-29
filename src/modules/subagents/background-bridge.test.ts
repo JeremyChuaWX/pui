@@ -85,19 +85,19 @@ describe("background subagent host protocol", () => {
     });
 
     test("reduces ready, upsert, remove, and reset", () => {
-        let state: BackgroundSubagentState = { runs: new Map() };
+        let state: BackgroundSubagentState = { jobs: new Map() };
         state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
         state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
-        expect(state.runs.get("job-a")?.title).toBe("Inspect target");
+        expect(state.jobs.get("job-a")?.title).toBe("Inspect target");
         state = reduceBackgroundSubagentEvent(state, parse(event("remove")), "session-a");
-        expect(state.runs.size).toBe(0);
+        expect(state.jobs.size).toBe(0);
         state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
         state = reduceBackgroundSubagentEvent(state, parse(event("reset")), "session-a");
-        expect(state).toEqual({ instanceId: "instance-a", acceptingInstance: true, runs: new Map() });
+        expect(state).toEqual({ instanceId: "instance-a", acceptingInstance: true, jobs: new Map() });
     });
 
     test("ignores stale sessions and instances", () => {
-        const state = reduceBackgroundSubagentEvent({ runs: new Map() }, parse(event("ready")), "session-a");
+        const state = reduceBackgroundSubagentEvent({ jobs: new Map() }, parse(event("ready")), "session-a");
         const current = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
         expect(reduceBackgroundSubagentEvent(current, parse(event("upsert", { sessionId: "old" })), "session-a")).toBe(
             current,
@@ -117,7 +117,7 @@ describe("background subagent host protocol", () => {
     });
 
     test("bounds the host to 64 complete job snapshots", () => {
-        let state: BackgroundSubagentState = { runs: new Map() };
+        let state: BackgroundSubagentState = { jobs: new Map() };
         state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
         for (let index = 0; index < 65; index++) {
             const payload = event("upsert");
@@ -126,6 +126,6 @@ describe("background subagent host protocol", () => {
             job.run.id = job.id;
             state = reduceBackgroundSubagentEvent(state, parse(payload), "session-a");
         }
-        expect(state.runs.size).toBe(64);
+        expect(state.jobs.size).toBe(64);
     });
 });

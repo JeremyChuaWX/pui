@@ -10,4 +10,4 @@ export {
     parseBackgroundSubagentEvent,
     reduceBackgroundSubagentEvent,
 } from "../background-bridge.js";
-export { isTerminalSubagentStatus, type SubagentStatus, type SubagentUsageV1 as SubagentUsage } from "../run-state.js";
+export { isTerminalSubagentStatus, type SubagentStatus, type SubagentUsageV1 as SubagentUsage } from "../job-state.js";

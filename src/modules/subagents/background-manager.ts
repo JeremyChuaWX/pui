@@ -5,17 +5,17 @@ import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared
 import { errorMessage } from "#shared/lib/validate.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
 import { getPiInvocation, type SpawnChildAgent } from "./child-agent.js";
-import { childArgs, profileLimits, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
 import {
     appendSubagentActivity,
-    createInitialSubagentRun,
-    createTerminalSubagentRun,
+    createInitialSubagentJob,
+    createTerminalSubagentJob,
     isTerminalSubagentStatus,
-    type SubagentRunV1,
+    type SubagentJobV1,
     type SubagentStatus,
-    updateSubagentRun,
-} from "./run-state.js";
-import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+    updateSubagentJob,
+} from "./job-state.js";
+import { childArgs, profileLimits, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
+import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "./runner.js";
 import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
 import { resolveWorkingDirectory } from "./working-directory.js";
 
@@ -45,7 +45,7 @@ export interface SpawnInput {
 }
 interface BackgroundManagerOptions {
     semaphore: AbortableSemaphore;
-    run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
+    run?: (options: RunSubagentOptions) => Promise<RunSubagentResult>;
     invocation?: typeof getPiInvocation;
     /** Spawns the child process; tests inject a scripted child. */
     spawn?: SpawnChildAgent;
@@ -89,15 +89,15 @@ function titleFor(input: SpawnInput): string {
 function copyJob(job: Job): BackgroundSubagentJobV1 {
     return structuredClone(job.snapshot);
 }
-/** Append a bounded diagnostic activity and settle the run into a terminal failure. */
+/** Append a bounded diagnostic activity and settle the Job into a terminal failure. */
 function synthesizeFailure(
-    run: SubagentRunV1,
+    state: SubagentJobV1,
     status: Extract<SubagentStatus, "failed" | "cancelled">,
     message: string,
     now: number,
-): SubagentRunV1 {
+): SubagentJobV1 {
     const annotated = appendSubagentActivity(
-        run,
+        state,
         {
             timestamp: now,
             kind: "diagnostic",
@@ -106,7 +106,7 @@ function synthesizeFailure(
         },
         now,
     );
-    return createTerminalSubagentRun(
+    return createTerminalSubagentJob(
         annotated,
         { status, error: truncateUtf8(message, ERROR_PREVIEW_BYTES).content },
         now,
@@ -157,14 +157,14 @@ export class BackgroundSubagentManager {
         const model = resolveProfileModel(input.profile, input.model, this.options.environment);
         const id = randomUUID();
         const now = this.options.clock.now();
-        const run = createInitialSubagentRun({ id, agent: input.profile.name, model, cwd, now });
+        const state = createInitialSubagentJob({ id, agent: input.profile.name, model, cwd, now });
         const controller = new AbortController();
         const job: Job = {
             snapshot: {
                 id,
                 title: titleFor(input),
                 prompt: truncateUtf8(input.prompt, PROMPT_BYTES).content,
-                run,
+                state,
             },
             controller,
             settlement: Promise.resolve(),
@@ -289,14 +289,14 @@ export class BackgroundSubagentManager {
             // Host delivery failures must not reject or duplicate settled jobs.
         }
     }
-    private publish(job: Job, run: SubagentRunV1): void {
-        job.snapshot = { ...job.snapshot, run };
+    private publish(job: Job, state: SubagentJobV1): void {
+        job.snapshot = { ...job.snapshot, state };
         this.emit(job);
     }
     /**
      * Run one Job from queued to terminal: queue activity, semaphore acquisition, child
      * invocation, runner execution, terminal synthesis for any failure, output spill, and
-     * result delivery. Never rejects; failures settle into the run state.
+     * result delivery. Never rejects; failures settle into the Job state.
      */
     private async execute(
         job: Job,
@@ -308,16 +308,16 @@ export class BackgroundSubagentManager {
         const { semaphore, run: runChild, invocation, clock, spawn } = this.options;
         const now = () => clock.now();
         const signal = job.controller.signal;
-        let run = job.snapshot.run;
+        let state = job.snapshot.state;
         let output = "";
         let release: SemaphoreRelease | undefined;
 
-        run = appendSubagentActivity(
-            run,
+        state = appendSubagentActivity(
+            state,
             { timestamp: now(), kind: "diagnostic", title: "Queued for a child Pi process" },
             now(),
         );
-        this.publish(job, run);
+        this.publish(job, state);
         try {
             try {
                 release = await semaphore.acquire(signal);
@@ -327,17 +327,17 @@ export class BackgroundSubagentManager {
             if (signal.aborted) throw new Error("Subagent was cancelled before it started.");
 
             const startedAt = now();
-            run = updateSubagentRun(run, { status: "starting", phase: "spawning", startedAt }, startedAt);
-            run = appendSubagentActivity(
-                run,
+            state = updateSubagentJob(state, { status: "starting", phase: "spawning", startedAt }, startedAt);
+            state = appendSubagentActivity(
+                state,
                 { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
                 startedAt,
             );
-            this.publish(job, run);
+            this.publish(job, state);
 
             const child = invocation(childArgs(profile, model, prompt));
             const execution = await runChild({
-                run,
+                job: state,
                 command: child.command,
                 args: child.args,
                 cwd,
@@ -346,24 +346,24 @@ export class BackgroundSubagentManager {
                 clock,
                 ...(spawn ? { spawn } : {}),
                 onSnapshot: (next) => {
-                    run = next;
+                    state = next;
                     this.publish(job, next);
                 },
             });
-            run = execution.run;
+            state = execution.job;
             output = execution.output;
-            if (!isTerminalSubagentStatus(run.status)) throw new Error(`Subagent ${run.status}.`);
+            if (!isTerminalSubagentStatus(state.status)) throw new Error(`Subagent ${state.status}.`);
         } catch (error) {
-            if (!isTerminalSubagentStatus(run.status)) {
-                run = synthesizeFailure(run, signal.aborted ? "cancelled" : "failed", errorMessage(error), now());
-                this.publish(job, run);
+            if (!isTerminalSubagentStatus(state.status)) {
+                state = synthesizeFailure(state, signal.aborted ? "cancelled" : "failed", errorMessage(error), now());
+                this.publish(job, state);
             }
         } finally {
             release?.();
         }
-        this.publish(job, run);
+        this.publish(job, state);
 
-        const delivered = output || run.error || "(no output)";
+        const delivered = output || state.error || "(no output)";
         const truncation = truncateHead(delivered, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DELIVERY_MAX_LINES });
         const needsSpill = truncation.truncated || truncateUtf8(delivered, AUTO_RESULT_BYTES).truncated;
         let savedPath: string | undefined;
@@ -374,16 +374,16 @@ export class BackgroundSubagentManager {
                 // Retention is best effort; the terminal snapshot must still settle.
             }
         }
-        const fullOutputPath = savedPath ?? run.fullOutputPath;
-        if (fullOutputPath && fullOutputPath !== run.fullOutputPath) {
-            run = updateSubagentRun(run, { fullOutputPath }, now());
-            this.publish(job, run);
+        const fullOutputPath = savedPath ?? state.fullOutputPath;
+        if (fullOutputPath && fullOutputPath !== state.fullOutputPath) {
+            state = updateSubagentJob(state, { fullOutputPath }, now());
+            this.publish(job, state);
         }
         job.output = output;
         job.terminal = Object.freeze({
             id: job.snapshot.id,
             title: job.snapshot.title,
-            status: run.status,
+            status: state.status,
             text: truncation.content,
             ...(fullOutputPath ? { fullOutputPath } : {}),
         });

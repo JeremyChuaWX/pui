@@ -1,33 +1,33 @@
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { truncateUtf8 } from "#shared/lib/retained-output.js";
 import { type ChildAgentEvent, type ChildAgentState, runChildAgent, type SpawnChildAgent } from "./child-agent.js";
-import type { JobLimits } from "./profiles/profile.js";
 import {
     appendSubagentActivity,
-    createTerminalSubagentRun,
-    isSubagentRunV1,
-    type SubagentRunV1,
-    updateSubagentRun,
-} from "./run-state.js";
+    createTerminalSubagentJob,
+    isSubagentJobV1,
+    type SubagentJobV1,
+    updateSubagentJob,
+} from "./job-state.js";
+import type { JobLimits } from "./profiles/profile.js";
 
 const ACTIVITY_TITLE_BYTES = 512;
 
 export interface RunSubagentOptions {
-    run: SubagentRunV1;
+    job: SubagentJobV1;
     command: string;
     args: string[];
     cwd: string;
     limits: JobLimits;
     signal?: AbortSignal;
-    onSnapshot?: (run: SubagentRunV1) => void;
+    onSnapshot?: (job: SubagentJobV1) => void;
     throttleMs?: number;
     killGraceMs?: number;
     clock?: Clock;
     spawn?: SpawnChildAgent;
 }
 
-export interface SubagentRunResult {
-    run: SubagentRunV1;
+export interface RunSubagentResult {
+    job: SubagentJobV1;
     output: string;
     stderr: string;
     exitCode: number | null;
@@ -35,19 +35,19 @@ export interface SubagentRunResult {
 }
 
 /**
- * Run one child Pi process and always return a structured terminal run: the adapter folding the
- * child-agent runtime's event stream into `SubagentRunV1`. The caller decides what a failed
+ * Run one child Pi process and always return a structured terminal Job state: the adapter folding the
+ * child-agent runtime's event stream into `SubagentJobV1`. The caller decides what a failed
  * terminal status means for the Job.
  */
-export async function runSubagent(options: RunSubagentOptions): Promise<SubagentRunResult> {
-    if (!isSubagentRunV1(options.run)) throw new Error("runSubagent requires a valid run state");
+export async function runSubagent(options: RunSubagentOptions): Promise<RunSubagentResult> {
+    if (!isSubagentJobV1(options.job)) throw new Error("runSubagent requires a valid Job state");
 
     const now = () => (options.clock ?? SYSTEM_CLOCK).now();
-    let run = structuredClone(options.run);
+    let job = structuredClone(options.job);
     const publish = () => {
         if (!options.onSnapshot) return;
         try {
-            options.onSnapshot(structuredClone(run));
+            options.onSnapshot(structuredClone(job));
         } catch {
             // Renderer progress must never be able to strand the child process.
         }
@@ -55,19 +55,19 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     const fold = (events: ChildAgentEvent[], state: ChildAgentState) => {
         for (const event of events) {
             if (event.kind === "spawned") {
-                run = updateSubagentRun(
-                    run,
+                job = updateSubagentJob(
+                    job,
                     {
                         status: "running",
                         phase: "thinking",
-                        startedAt: run.startedAt ?? event.timestamp,
+                        startedAt: job.startedAt ?? event.timestamp,
                         activeTools: [],
                     },
                     event.timestamp,
                 );
             } else {
-                run = appendSubagentActivity(
-                    run,
+                job = appendSubagentActivity(
+                    job,
                     {
                         timestamp: event.timestamp,
                         kind: event.kind,
@@ -78,8 +78,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
                 );
             }
         }
-        run = updateSubagentRun(
-            run,
+        job = updateSubagentJob(
+            job,
             {
                 phase: state.phase,
                 activeTools: state.activeTools,
@@ -97,8 +97,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         args: options.args,
         cwd: options.cwd,
         limits: options.limits,
-        model: run.model,
-        usage: run.usage,
+        model: job.model,
+        usage: job.usage,
         signal: options.signal,
         onFlush: fold,
         throttleMs: options.throttleMs,
@@ -109,8 +109,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
     const succeeded = result.status === "succeeded";
     const endedAt = now();
-    run = appendSubagentActivity(
-        run,
+    job = appendSubagentActivity(
+        job,
         {
             timestamp: endedAt,
             kind: succeeded ? "assistant" : "diagnostic",
@@ -122,8 +122,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         },
         endedAt,
     );
-    run = createTerminalSubagentRun(
-        run,
+    job = createTerminalSubagentJob(
+        job,
         {
             status: result.status,
             ...(result.error ? { error: result.error } : {}),
@@ -134,5 +134,5 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     );
     publish();
 
-    return { run, output: result.output, stderr: result.stderr, exitCode: result.exitCode, signal: result.signal };
+    return { job, output: result.output, stderr: result.stderr, exitCode: result.exitCode, signal: result.signal };
 }

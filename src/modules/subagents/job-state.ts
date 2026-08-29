@@ -47,8 +47,8 @@ export interface SubagentUsageV1 {
     turns: number;
 }
 
-/** The state of one child run. A Job carries one of these on the Background Protocol. */
-export interface SubagentRunV1 {
+/** The state of one Job. A Job carries one of these on the Background Protocol. */
+export interface SubagentJobV1 {
     id: string;
     agent: string;
     model: string;
@@ -66,7 +66,7 @@ export interface SubagentRunV1 {
     fullOutputPath?: string;
 }
 
-interface CreateSubagentRunInput {
+interface CreateSubagentJobInput {
     id: string;
     agent: string;
     model: string;
@@ -74,8 +74,8 @@ interface CreateSubagentRunInput {
     now?: number;
 }
 
-type SubagentRunPatch = Partial<
-    Omit<SubagentRunV1, "id" | "updatedAt" | "activeTools" | "recentActivity" | "usage">
+type SubagentJobPatch = Partial<
+    Omit<SubagentJobV1, "id" | "updatedAt" | "activeTools" | "recentActivity" | "usage">
 > & {
     activeTools?: SubagentActiveToolV1[];
     recentActivity?: SubagentActivityV1[];
@@ -128,7 +128,7 @@ export function isTerminalSubagentStatus(status: SubagentStatus): status is Suba
     return TERMINAL_STATUSES.has(status);
 }
 
-export function createInitialSubagentRun(input: CreateSubagentRunInput): SubagentRunV1 {
+export function createInitialSubagentJob(input: CreateSubagentJobInput): SubagentJobV1 {
     const now = input.now ?? Date.now();
     return {
         id: input.id,
@@ -144,10 +144,10 @@ export function createInitialSubagentRun(input: CreateSubagentRunInput): Subagen
     };
 }
 
-export function updateSubagentRun(previous: SubagentRunV1, patch: SubagentRunPatch, now = Date.now()): SubagentRunV1 {
+export function updateSubagentJob(previous: SubagentJobV1, patch: SubagentJobPatch, now = Date.now()): SubagentJobV1 {
     const status = patch.status ?? previous.status;
     const terminal = isTerminalSubagentStatus(status);
-    const run: SubagentRunV1 = {
+    const job: SubagentJobV1 = {
         ...previous,
         ...patch,
         id: previous.id,
@@ -159,21 +159,21 @@ export function updateSubagentRun(previous: SubagentRunV1, patch: SubagentRunPat
     };
 
     if (terminal) {
-        run.phase = "exiting";
-        run.endedAt = patch.endedAt ?? previous.endedAt ?? now;
+        job.phase = "exiting";
+        job.endedAt = patch.endedAt ?? previous.endedAt ?? now;
     } else {
-        delete run.endedAt;
+        delete job.endedAt;
     }
 
-    return run;
+    return job;
 }
 
-export function createTerminalSubagentRun(
-    previous: SubagentRunV1,
+export function createTerminalSubagentJob(
+    previous: SubagentJobV1,
     patch: SubagentTerminalPatch,
     now = Date.now(),
-): SubagentRunV1 {
-    return updateSubagentRun(
+): SubagentJobV1 {
+    return updateSubagentJob(
         previous,
         {
             ...patch,
@@ -186,14 +186,14 @@ export function createTerminalSubagentRun(
 }
 
 export function appendSubagentActivity(
-    previous: SubagentRunV1,
+    previous: SubagentJobV1,
     activity: Omit<SubagentActivityV1, "sequence"> & { sequence?: number },
     now = activity.timestamp,
-): SubagentRunV1 {
+): SubagentJobV1 {
     const last = previous.recentActivity.at(-1)?.sequence ?? 0;
     const sequence = Math.max(last + 1, activity.sequence ?? 0);
     const next: SubagentActivityV1 = { ...activity, sequence };
-    return updateSubagentRun(
+    return updateSubagentJob(
         previous,
         { recentActivity: [...previous.recentActivity, next].slice(-MAX_RECENT_ACTIVITY) },
         now,
@@ -204,35 +204,35 @@ function isFiniteNonNegative(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-/** Structural validator for an untrusted run payload, used by the Background Protocol parser. */
-export function isSubagentRunV1(run: unknown): run is SubagentRunV1 {
-    if (!isRecord(run)) return false;
+/** Structural validator for an untrusted Job state payload, used by the Background Protocol parser. */
+export function isSubagentJobV1(job: unknown): job is SubagentJobV1 {
+    if (!isRecord(job)) return false;
     if (
-        typeof run.id !== "string" ||
-        typeof run.agent !== "string" ||
-        typeof run.model !== "string" ||
-        typeof run.cwd !== "string" ||
-        typeof run.status !== "string" ||
-        !STATUSES.has(run.status as SubagentStatus) ||
-        !isFiniteNonNegative(run.updatedAt)
+        typeof job.id !== "string" ||
+        typeof job.agent !== "string" ||
+        typeof job.model !== "string" ||
+        typeof job.cwd !== "string" ||
+        typeof job.status !== "string" ||
+        !STATUSES.has(job.status as SubagentStatus) ||
+        !isFiniteNonNegative(job.updatedAt)
     ) {
         return false;
     }
-    if (run.phase !== undefined && (typeof run.phase !== "string" || !PHASES.has(run.phase as SubagentPhase)))
+    if (job.phase !== undefined && (typeof job.phase !== "string" || !PHASES.has(job.phase as SubagentPhase)))
         return false;
-    if (run.startedAt !== undefined && !isFiniteNonNegative(run.startedAt)) return false;
-    if (run.endedAt !== undefined && !isFiniteNonNegative(run.endedAt)) return false;
-    if (isTerminalSubagentStatus(run.status as SubagentStatus) && run.endedAt === undefined) return false;
+    if (job.startedAt !== undefined && !isFiniteNonNegative(job.startedAt)) return false;
+    if (job.endedAt !== undefined && !isFiniteNonNegative(job.endedAt)) return false;
+    if (isTerminalSubagentStatus(job.status as SubagentStatus) && job.endedAt === undefined) return false;
     if (
-        !Array.isArray(run.activeTools) ||
-        run.activeTools.length > MAX_SUBAGENT_ACTIVE_TOOLS ||
-        !Array.isArray(run.recentActivity) ||
-        run.recentActivity.length > MAX_RECENT_ACTIVITY
+        !Array.isArray(job.activeTools) ||
+        job.activeTools.length > MAX_SUBAGENT_ACTIVE_TOOLS ||
+        !Array.isArray(job.recentActivity) ||
+        job.recentActivity.length > MAX_RECENT_ACTIVITY
     ) {
         return false;
     }
-    if (isTerminalSubagentStatus(run.status as SubagentStatus) && run.activeTools.length > 0) return false;
-    for (const tool of run.activeTools) {
+    if (isTerminalSubagentStatus(job.status as SubagentStatus) && job.activeTools.length > 0) return false;
+    for (const tool of job.activeTools) {
         if (
             !isRecord(tool) ||
             typeof tool.id !== "string" ||
@@ -244,7 +244,7 @@ export function isSubagentRunV1(run: unknown): run is SubagentRunV1 {
         }
     }
     let previousSequence = -1;
-    for (const activity of run.recentActivity) {
+    for (const activity of job.recentActivity) {
         if (
             !isRecord(activity) ||
             !Number.isInteger(activity.sequence) ||
@@ -259,12 +259,12 @@ export function isSubagentRunV1(run: unknown): run is SubagentRunV1 {
         }
         previousSequence = activity.sequence as number;
     }
-    if (!isRecord(run.usage)) return false;
+    if (!isRecord(job.usage)) return false;
     for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens", "cost", "turns"] as const) {
-        if (!isFiniteNonNegative(run.usage[field])) return false;
+        if (!isFiniteNonNegative(job.usage[field])) return false;
     }
     for (const field of ["outputPreview", "error", "fullOutputPath"] as const) {
-        if (run[field] !== undefined && typeof run[field] !== "string") return false;
+        if (job[field] !== undefined && typeof job[field] !== "string") return false;
     }
     return true;
 }

@@ -11,11 +11,12 @@ import {
     BACKGROUND_SUBAGENT_SCHEMA,
     BACKGROUND_SUBAGENT_VERSION,
     type BackgroundSubagentJobV1,
+    encodeBackgroundSubagentJob,
     parseBackgroundSubagentControl,
 } from "../background-protocol.js";
 import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE, type SpawnChildAgent } from "../child-agent.js";
 import { describeProfile, PROFILES, type SubagentProfile } from "../profiles/index.js";
-import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
+import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "../runner.js";
 import type { AbortableSemaphore } from "../semaphore.js";
 
 const SpawnParams = Type.Object({
@@ -32,7 +33,7 @@ const BackgroundCheckParams = Type.Object({ id: Type.String() });
 
 export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
-    run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
+    run?: (options: RunSubagentOptions) => Promise<RunSubagentResult>;
     invocation?: typeof getPiInvocation;
     /** Spawns each child process; tests inject a scripted child. */
     spawn?: SpawnChildAgent;
@@ -88,7 +89,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         },
     });
     const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") =>
-        channel.emit(type, { job }, route());
+        channel.emit(type, { job: encodeBackgroundSubagentJob(job) }, route());
     // followUp queues behind the current turn and triggerTurn starts one when the agent is idle,
     // so neither the manager nor this Extension tracks whether the agent is busy.
     const deliver = (result: BackgroundTerminalResult) => {
@@ -190,7 +191,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 content: [
                     {
                         type: "text",
-                        text: `[${job.id}] ${job.title} — ${job.run.status}\n${job.run.outputPreview ?? job.run.error ?? "No output yet."}`,
+                        text: `[${job.id}] ${job.title} — ${job.state.status}\n${job.state.outputPreview ?? job.state.error ?? "No output yet."}`,
                     },
                 ],
                 details: job,
@@ -205,7 +206,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         async execute(_id, params) {
             const jobs = await background.cancel(params.ids);
             return {
-                content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.run.status}`).join("\n") }],
+                content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.state.status}`).join("\n") }],
                 details: { jobs },
             };
         },

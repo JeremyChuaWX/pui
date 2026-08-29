@@ -18,7 +18,7 @@ function usage() {
     };
 }
 
-function run(id: string, status: "queued" | "running" | "succeeded" | "failed") {
+function jobState(id: string, status: "queued" | "running" | "succeeded" | "failed") {
     const terminal = status === "succeeded" || status === "failed";
     return {
         id,
@@ -161,7 +161,9 @@ describe("PuiController background event bridge", () => {
             sessionId: "fixture-session",
             instanceId: "live-instance",
             type,
-            ...(type === "upsert" ? { job: { id: "job", title: "Background", run: run("job", status as any) } } : {}),
+            ...(type === "upsert"
+                ? { job: { id: "job", title: "Background", run: jobState("job", status as any) } }
+                : {}),
         });
         bus.emit("pui.subagent.background", envelope("ready"));
         bus.emit("pui.subagent.background", envelope("upsert", "queued"));

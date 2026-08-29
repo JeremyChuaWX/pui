@@ -107,6 +107,9 @@ describe("controller background runtime lifecycle", () => {
                     undefined,
                 );
                 const jobId = (result.details as any).id as string;
+                // Tool details carry the Job state as `state`; version 1 of the envelope serialises it as `run`.
+                const { state: jobState, ...jobFields } = result.details as any;
+                const wireJob = { ...jobFields, run: jobState };
                 const pidPath = harness.pidPaths.at(-1);
                 if (!pidPath) throw new Error("Missing recorded descendant pid path");
                 await waitUntil(() => fs.existsSync(pidPath), "descendant pid file");
@@ -126,7 +129,7 @@ describe("controller background runtime lifecycle", () => {
                 bus.emit("pui.subagent.background", {
                     ...ready,
                     type: "upsert",
-                    job: result.details,
+                    job: wireJob,
                 });
                 controller.refresh();
                 expect(controller.snapshot().backgroundSubagents).toEqual([]);
@@ -137,7 +140,7 @@ describe("controller background runtime lifecycle", () => {
                 const replacementEnvelope = {
                     ...newReady,
                     type: "upsert",
-                    job: result.details,
+                    job: wireJob,
                 };
                 bus.emit("pui.subagent.background", replacementEnvelope);
                 controller.refresh();

@@ -9,7 +9,7 @@ import { createExtensionApiHarness } from "#test-support/extension-api.ts";
 import { createFakeClock, settleEventLoop } from "#test-support/fake-clock.ts";
 import { waitFor } from "#test-support/wait.ts";
 import type { SpawnChildAgent } from "../child-agent.ts";
-import { createTerminalSubagentRun, updateSubagentRun } from "../run-state.ts";
+import { createTerminalSubagentJob, updateSubagentJob } from "../job-state.ts";
 import { AbortableSemaphore } from "../semaphore.ts";
 import { registerSubagentExtension } from "./pi.ts";
 
@@ -18,15 +18,15 @@ const MINUTE = 60_000;
 
 function successRun(output = "delegated answer") {
     return async (options: any) => {
-        let details = updateSubagentRun(options.run, {
+        let details = updateSubagentJob(options.job, {
             status: "running",
             phase: "thinking",
-            startedAt: options.run.startedAt ?? Date.now(),
+            startedAt: options.job.startedAt ?? Date.now(),
         });
         options.onSnapshot?.(details);
-        details = createTerminalSubagentRun(details, { status: "succeeded", outputPreview: output });
+        details = createTerminalSubagentJob(details, { status: "succeeded", outputPreview: output });
         options.onSnapshot?.(details);
-        return { run: details, output, stderr: "", exitCode: 0, signal: null };
+        return { job: details, output, stderr: "", exitCode: 0, signal: null };
     };
 }
 
@@ -92,9 +92,9 @@ describe("subagent extension integration", () => {
         const { spawned, waited, run } = await fixture.spawnAndWait("explorer", { prompt: "Inspect the target" });
 
         expect(spawned.details.id).toMatch(/^[0-9a-f-]{36}$/);
-        expect(spawned.details.run.status).toBe("queued");
-        expect(spawned.details.run.agent).toBe("explorer");
-        expect(spawned.details.run.model).toBe("openrouter/z-ai/glm-5.3-flash:low");
+        expect(spawned.details.state.status).toBe("queued");
+        expect(spawned.details.state.agent).toBe("explorer");
+        expect(spawned.details.state.model).toBe("openrouter/z-ai/glm-5.3-flash:low");
         expect(spawned.content[0].text).toContain(spawned.details.id);
         expect(waited.details.results[0].status).toBe("succeeded");
 
@@ -126,8 +126,8 @@ describe("subagent extension integration", () => {
         const fixture = spawnHost();
         const { spawned, run } = await fixture.spawnAndWait("worker", { prompt: "Implement the target" });
 
-        expect(spawned.details.run.agent).toBe("worker");
-        expect(spawned.details.run.model).toBe("openrouter/z-ai/glm-5.3-flash:high");
+        expect(spawned.details.state.agent).toBe("worker");
+        expect(spawned.details.state.model).toBe("openrouter/z-ai/glm-5.3-flash:high");
         expect(argumentAfter(run.args, "--tools")).toBe("read,bash,edit,write,grep,find,ls");
         expect(argumentAfter(run.args, "--model")).toBe("openrouter/z-ai/glm-5.3-flash:high");
         const guidance = argumentAfter(run.args, "--append-system-prompt") ?? "";
@@ -158,7 +158,7 @@ describe("subagent extension integration", () => {
         expect(argumentAfter(explorerExplicit.run.args, "--model")).toBe("fixture/explorer-explicit");
         expect(argumentAfter(workerEnv.run.args, "--model")).toBe("fixture/worker-env");
         expect(argumentAfter(workerExplicit.run.args, "--model")).toBe("fixture/worker-explicit");
-        expect(workerExplicit.spawned.details.run.model).toBe("fixture/worker-explicit");
+        expect(workerExplicit.spawned.details.state.model).toBe("fixture/worker-explicit");
 
         const blank = spawnHost({ PI_WORKER_MODEL: "   " });
         const fallback = await blank.spawnAndWait("worker", { model: "" });
@@ -191,17 +191,17 @@ describe("subagent extension integration", () => {
 
         const fromRelative = await fixture.spawnAndWait("explorer", { cwd: `@../${path.basename(extensionCwd)}` });
         expect(fromRelative.run.cwd).toBe(extensionCwd);
-        expect(fromRelative.spawned.details.run.cwd).toBe(extensionCwd);
+        expect(fromRelative.spawned.details.state.cwd).toBe(extensionCwd);
 
         const fromParent = await fixture.host
             .tool("explorer")
             .execute("parent-relative", { prompt: "x", cwd: relative }, undefined, undefined, { cwd: process.cwd() });
-        expect(fromParent.details.run.cwd).toBe(extensionCwd);
+        expect(fromParent.details.state.cwd).toBe(extensionCwd);
 
         const fromHome = await fixture.host
             .tool("worker")
             .execute("home", { prompt: "x", cwd: "~" }, undefined, undefined, { cwd: extensionCwd });
-        expect(fromHome.details.run.cwd).toBe(fs.realpathSync(os.homedir()));
+        expect(fromHome.details.state.cwd).toBe(fs.realpathSync(os.homedir()));
     });
 });
 
@@ -338,12 +338,12 @@ function limitsHost(options: { ignoresSigterm?: boolean } = {}) {
             await settleEventLoop();
             return { id: spawned.details.id as string, child: children[0]! };
         },
-        /** The Job's current run state as `subagent_check` reports it. */
+        /** The Job's current Job state as `subagent_check` reports it. */
         status(id: string) {
             return host
                 .tool("subagent_check")
                 .execute("check", { id })
-                .then((result: any) => result.details.run);
+                .then((result: any) => result.details.state);
         },
         /** The terminal status and error the host delivered for the Job. */
         async result(id: string) {

@@ -78,7 +78,7 @@ The controller delegates to focused collaborators rather than owning every conce
 |---|---|---|
 | `src/modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
 | `src/modules/file-search/interfaces/ui.ts` | `fdCompletionCommand` | system `fd`/`fdfind` resolution for `@` file completion |
-| `src/modules/subagents/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps behind the bridge |
+| `src/modules/subagents/instance-scoped-jobs.ts` | `InstanceScopedJobs<T>` reducer | routed producer authority, copy-on-write Job maps, reset/replacement gating, and caps behind the bridge |
 | `src/ui/state/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
 The controller's command descriptor list is the single source for slash-command autocomplete,
@@ -155,9 +155,9 @@ Inside their private files, the Modules are deep:
 - `src/modules/file-search/` — `process.ts` is the deep module: `runFileSearch` hides shell-free
   spawning, process-group kill, timeouts, and bounded output capture with temp-file spill (capture
   creation is an injectable seam). `args.ts` builds argv, `binaries.ts` resolves system binaries.
-- `src/modules/subagents/` — `run-state.ts` owns the run state a Job carries (types, transitions,
+- `src/modules/subagents/` — `job-state.ts` owns the Job state (types, transitions,
   validator); `runner.ts` is a thin adapter that folds Child-Agent Runtime events into
-  `SubagentRunV1` snapshots; `background-manager.ts` owns the whole Job pipeline (queueing,
+  `SubagentJobV1` snapshots; `background-manager.ts` owns the whole Job pipeline (queueing,
   semaphore, spawn, terminal synthesis, output spill) and delivery semantics;
   `background-protocol.ts` owns the background bus envelopes; `background-bridge.ts` bounds
   protocol payloads into host view models behind the UI Entry.
@@ -226,7 +226,7 @@ parsed state through the Module's UI Entry instead of maintaining mirrors:
   bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
   published through `interfaces/ui.ts`.
   The bridge delegates instance authority, routed copy-on-write updates, reset/replacement gating,
-  and run caps to `src/modules/subagents/instance-scoped-runs.ts`.
+  and Job caps to `src/modules/subagents/instance-scoped-jobs.ts`.
 
 The UI still treats extension payloads as untrusted input: parsers validate shape and routing, and
 the view models bound every string.
