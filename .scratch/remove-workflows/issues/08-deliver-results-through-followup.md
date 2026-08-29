@@ -6,12 +6,12 @@
 
 **Blocked by:** 04 — Fold the Child-Agent Runtime and single-consumer shared files into subagents.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] A finished, unconsumed Job produces exactly one `subagent-result` message using `followUp` delivery with `triggerTurn`
-- [ ] A Job consumed by `subagent_wait` produces no follow-up message
-- [ ] The deferred-result map, the idle check, and the `agent_settled` handler are removed from the manager and Extension
-- [ ] Shutdown, reload, fork, and session switch send no late result messages
-- [ ] Truncated results include the retained full-output path; retained files are removed at shutdown as before
-- [ ] Extension-seam tests assert on the sent messages rather than on internal state
-- [ ] `bun run check` is green
+- [x] A finished, unconsumed Job produces exactly one `subagent-result` message using `followUp` delivery with `triggerTurn`
+- [x] A Job consumed by `subagent_wait` produces no follow-up message
+- [x] The deferred-result map, the idle check, and the `agent_settled` handler are removed from the manager and Extension
+- [x] Shutdown, reload, fork, and session switch send no late result messages
+- [x] Truncated results include the retained full-output path; retained files are removed at shutdown as before
+- [x] Extension-seam tests assert on the sent messages rather than on internal state
+- [x] `bun run check` is green
