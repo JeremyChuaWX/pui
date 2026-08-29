@@ -33,6 +33,8 @@ pui "review this repository"
 
 Run `pui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
 
+`pui --smoke` boots Pi headlessly against a throwaway agent directory with only the bundled Extensions and skills, prints the registered tool and skill names as one JSON line, and exits. It never reads your Pi configuration. The exit code is non-zero if any bundled Extension failed to load or a bundled skill produced a diagnostic. The build gate runs it against the compiled binary.
+
 For development, run the source directly from the project:
 
 ```sh
@@ -50,14 +52,15 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
-- Responsive OpenCode-style session sidebar with active background Jobs
-- Model, session, and `/subagents` background-job pickers plus a command palette
+- Responsive OpenCode-style session sidebar listing active background Jobs
+- Model and session pickers, a `/subagents` Job picker, and a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
 - Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
+- Bundled `explorer` and `worker` subagents with `subagent_check`, `subagent_wait`, and `subagent_cancel`
 - Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
 - Bundled `unslop` skill for removing AI writing patterns
 - `!command` and `!!command` shell execution
@@ -72,15 +75,54 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its Background Protocol to list and cancel Jobs.
+Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns the two Profiles, the child Pi processes, the process-wide concurrency limit, cancellation, the three Limits, output bounds, and the Background Protocol that the sidebar and palette read. Nothing here loads into the regular `pi` command.
 
-The `worker` tool spawns a write-capable child with [Ponytail](https://ponytail.dev/) minimal-coding guidance; the `explorer` tool spawns a read-only child for reconnaissance. Each returns a Job id at once. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
+### Tools
 
-Background jobs stay visible in the sidebar with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages.
+The Extension registers five tools and no others.
 
-This Extension is built into pui. It is not a standalone `pi` extension, and the regular `pi` command does not load it.
+| Tool | What it does |
+| --- | --- |
+| `explorer` | Spawns a read-only child under the `explorer` Profile and returns its Job id at once |
+| `worker` | Spawns a write-capable child under the `worker` Profile and returns its Job id at once |
+| `subagent_check` | Returns one Job's status and output preview without waiting and without consuming its result |
+| `subagent_wait` | Blocks on one or more Jobs and returns their results; aborting the wait does not cancel the Jobs |
+| `subagent_cancel` | Cancels queued or running Jobs and returns once each reaches a terminal state |
 
-See the [extension guide](src/modules/subagents/README.md) for configuration and troubleshooting.
+`explorer` and `worker` take the same arguments: `prompt`, `cwd`, an optional `model` override, and an optional `name` shown in Job listings. Relative `cwd` values resolve from the parent session's working directory.
+
+### Profiles
+
+| Profile | Child tools | Prompt | Default model | Env override |
+| --- | --- | --- | --- | --- |
+| `explorer` | `read`, `grep`, `find`, `ls` | Replaces Pi's coding prompt with a read-only exploration prompt | `openrouter/z-ai/glm-5.3-flash:low` | `PI_EXPLORER_MODEL` |
+| `worker` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Appends [Ponytail](https://ponytail.dev/) minimal-coding guidance to Pi's coding prompt | `openrouter/z-ai/glm-5.3-flash:high` | `PI_WORKER_MODEL` |
+
+Model selection is the call's `model` argument first, then the Profile's environment variable, then its default. Both children run with `--no-session`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, so a child cannot load this Extension recursively. Each tool's description tells the model the Profile's tools, model, and Limits.
+
+`PI_SUBAGENT_MAX_CONCURRENCY` caps running children process-wide. The default is 4 and the valid range is 1 to 64; extra Jobs queue in FIFO order and can be cancelled before they spawn.
+
+### Limits
+
+Every Job runs under three Limits. Any child event resets the two stall timers, including streaming tool output, so a long `bash` command that keeps printing stays alive.
+
+| Limit | Default | Fires when | Terminal status |
+| --- | --- | --- | --- |
+| Wall clock | 60 minutes | the Job has run this long, active or not | `timed_out` |
+| Stall | 10 minutes | no child event arrives while no tool is active | `stalled` |
+| Tool stall | 15 minutes | no child event arrives while a tool is active | `tool_stalled` |
+
+When a Limit fires, the child's whole process group gets SIGTERM, then SIGKILL two seconds later, and the Job's error names the Limit and its value. Limits are set per Profile in code; there is no environment variable for them.
+
+### Results
+
+When a Job finishes and no `subagent_wait` is holding it, the Extension sends one `subagent-result` message through Pi's `followUp` delivery with `triggerTurn` set. If the agent is idle the message starts a turn; if a turn is running the message queues behind it. A Job consumed by `subagent_wait` sends no follow-up. When the text is truncated, the message ends with `Full output: <path>` pointing at a private `0600` file that lives until session shutdown.
+
+In the transcript, a delivered result renders as a "Background subagent result" card. The sidebar lists every non-terminal Job with its status icon, title, model, status label, elapsed time, and usage. `/subagents`, also reachable from the command palette, opens a picker of recent Jobs; selecting an active one cancels it. Reload, session switch, fork, and quit abort every queued and running Job. Jobs are not restored across sessions.
+
+Worker Jobs are write-capable and not sandboxed. They can edit files and run arbitrary shell commands, inherit the parent environment, and are not confined to `cwd`. Use `worker` only in trusted repositories. The explorer's read-only allowlist is a Pi tool restriction, not an operating-system sandbox.
+
+See the [subagents Module guide](src/modules/subagents/README.md) for the Job state, the Background Protocol, and troubleshooting.
 
 ## File-search tools
 
@@ -105,32 +147,36 @@ ownership, dependency-injection conventions, and the testing strategy. The sourc
 five top-level layers (`app/`, `ui/`, `pi-core/`, `modules/`, `shared/`) with one-way dependency
 edges enforced by a boundary check in `bun run check`. The short version:
 
-- `src/app/index.tsx` owns CLI dispatch and invokes the UI's single start function, `src/ui/start.tsx`,
-  which owns OpenTUI renderer startup and shutdown.
+- `src/app/index.tsx` owns CLI dispatch. It starts the TUI through the UI's single start function,
+  `src/ui/start.tsx`, or runs the headless `--smoke` entry in `src/app/smoke.ts`. The App never
+  imports a Module.
 - `src/ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
   production defaults: the subagents Module's UI Entry (`BackgroundSubagentBridge`) and
-  `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
-  drives slash-command autocomplete and dispatch.
+  `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command
+  table drives slash-command autocomplete, dispatch, and the palette.
 - `src/ui/components/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in
-  `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns
-  all keyboard predicates, plus dialog/transcript/prompt/sidebar components).
+  `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts`
+  owns all keyboard predicates, plus dialog, transcript, prompt, and sidebar components).
 - `src/ui/state/format.ts` projects Pi messages and live tool executions into display variants and
-  preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces tool
-  lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
-  display.
-- `src/modules/file-search/`, `src/modules/web/`, and `src/modules/subagents/` are the three Modules
-  behind their Interfaces Directories, registered via Pi Core's Register File
-  `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed state
-  through the Module's UI Entry instead of maintaining mirrors.
-- `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/lib/` (the
-  generic library: validation, bounded processes, and retained output). The child-agent runner
-  and its Profiles live in `src/modules/subagents/`.
-- `src/pi-core/skills/` holds application-owned skills, registered via `src/pi-core/bundled-skills.ts`.
+  preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces
+  tool lifecycle events; the subagents Module's UI Entry validates and bounds the Background
+  Protocol for display.
+- `src/modules/file-search/`, `src/modules/web/`, and `src/modules/subagents/` are the three
+  Modules behind their Interfaces Directories (`interfaces/pi.ts`, plus `interfaces/ui.ts` where
+  the UI needs it), registered by Pi Core's Register File `src/pi-core/register.ts`. Each Module
+  owns its wire protocol; consumers reach parsed state through the Module's UI Entry instead of
+  maintaining mirrors. The subagents Module owns its Profiles and the child runner outright (ADR
+  0002).
+- `src/shared/lib/` holds the Shared Primitives importable from every layer: validation, bounded
+  processes, retained output, and the injectable clock. Only code with two or more consumers lives
+  there.
+- `src/pi-core/skills/` holds application-owned skills, registered via
+  `src/pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.
 
-The bundled application-owned resources augment normal Pi discovery: global and trusted project extensions, tools, and skills still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+The bundled application-owned resources augment normal Pi discovery: global and trusted project extensions, tools, and skills still load from Pi's regular configuration. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.
