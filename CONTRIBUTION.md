@@ -5,13 +5,13 @@
   test suite, a binary build, and a compiled-binary smoke test)
 - use the domain vocabulary defined in the glossary in `CONTEXT.md` (Module, Extension, Pi Core,
   App, Controller, Register File, Shared Primitive, Child-Agent Runtime, Agent Role, Interfaces
-  Directory, Host Entry, UI Entry) in code, comments, and docs
+  Directory, UI Entry) in code, comments, and docs
 - follow the layer rules in `docs/ARCHITECTURE.md`: five top-level layers under `src/` (`app/`,
   `ui/`, `pi-core/`, `modules/`, `shared/`) with one-way dependency edges, enforced by
   `scripts/check-boundaries.ts` inside the check gate
 - a feature lives in one Module under `src/modules/<name>/`; from outside a Module, import only its
-  Interfaces Directory (`interfaces/pi.ts`, `interfaces/host.ts`, `interfaces/ui.ts`,
-  `interfaces/api.ts`). Modules never import each other; cross-cutting code goes in `src/shared/`
+  Interfaces Directory (`interfaces/pi.ts`, required, and `interfaces/ui.ts` where the UI needs
+  it). Modules never import each other; cross-cutting code goes in `src/shared/`
 - spell imports relative within a layer or Module and with the `#<layer>/` alias across
   (`#shared/lib/validate.js`, `#modules/subagents/interfaces/ui.js`); the boundary check rejects
   both a relative cross-layer import and an alias used inside one layer

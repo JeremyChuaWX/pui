@@ -8,7 +8,7 @@ narrow interface, collaborators injected through an options bag with production 
 written at that interface.
 
 The vocabulary used here (Module, Extension, Pi Core, App, Controller, Register File, Shared
-Primitive, Child-Agent Runtime, Agent Role, Interfaces Directory, Host Entry, UI Entry) is defined
+Primitive, Child-Agent Runtime, Agent Role, Interfaces Directory, UI Entry) is defined
 in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
 
 ## The five layers
@@ -17,7 +17,7 @@ in the glossary in `CONTEXT.md`. Docs and code comments keep to it.
 src/app/       entry points + pui process management
   ├──▶ src/ui/start.tsx                    the UI's single start function
   └──▶ src/pi-core/                        the --smoke entry boots bundled Extensions and skills
-       (the rules also permit Host Entries, currently unused)
+       (the App never imports a Module)
 
 src/ui/        ui/state (the Controller) + ui/components (OpenTUI/Solid views)
   ├──▶ src/pi-core/                        extension factories + bundled skills
@@ -140,16 +140,15 @@ exactly one layer:
 | Entry | Consumer | Role |
 |---|---|---|
 | `interfaces/pi.ts` | Pi Core's Register File | the Extension. Required; its default export is Pi's extension-module shape. Built into pui, not a standalone `pi` extension |
-| `interfaces/host.ts` | the App | the Host Entry: reserved for host-process needs; no Module currently exports one with content |
 | `interfaces/ui.ts` | the UI | the UI Entry: view models, protocol parsers, and bridges — the only way UI code reaches the Module |
 
 What each Module publishes:
 
-| Module | `pi` | `host` | `ui` |
-|---|---|---|---|
-| `file-search` | `fd`/`rg` tools | — | the `@`-completion command |
-| `web` | `web_search`/`web_crawl` | — | — |
-| `subagents` | `subagent` + background tools | reserved (documented empty stub) | bounded subagent view models + `BackgroundSubagentBridge` |
+| Module | `pi` | `ui` |
+|---|---|---|
+| `file-search` | `fd`/`rg` tools | the `@`-completion command |
+| `web` | `web_search`/`web_crawl` | — |
+| `subagents` | `subagent` + background tools | bounded subagent view models + `BackgroundSubagentBridge` |
 
 Inside their private files, the Modules are deep:
 
@@ -200,8 +199,8 @@ layer rules. Its core is a pure function, `checkBoundaries(edges) -> violations`
 regex-based scanner that resolves every relative and `#` import under `src/`; edge paths are
 `src`-relative, so a file's layer is its first path segment. The rules:
 
-- `app` may import `src/ui/start` (only that file of the UI), `pi-core`, a Module's `interfaces/host`,
-  and `shared`.
+- `app` may import `src/ui/start` (only that file of the UI), `pi-core`, and `shared`. It never
+  imports a Module.
 - `ui` may import `pi-core`, a Module's `interfaces/ui`, and `shared`.
 - `pi-core` may import a Module's `interfaces/pi` and `shared`.
 - A Module may import itself and `shared` — never another Module, not even through its Interfaces

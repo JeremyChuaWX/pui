@@ -51,9 +51,25 @@ describe("forbidden edges", () => {
         expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> app/index.tsx"]);
     });
 
-    test("Pi Core -> Host Entry is a violation", () => {
-        const edges: ImportEdge[] = [{ from: "pi-core/register.ts", to: "modules/subagents/interfaces/host.ts" }];
-        expect(violationsFor(edges)).toEqual(["pi-core/register.ts -> modules/subagents/interfaces/host.ts"]);
+    test("App -> any Module entry is a violation; host is not a recognised entry", () => {
+        const edges: ImportEdge[] = [
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/host.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/pi.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/ui.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/view-model.ts" },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "app/index.tsx -> modules/subagents/interfaces/host.ts",
+            "app/index.tsx -> modules/subagents/interfaces/pi.ts",
+            "app/index.tsx -> modules/subagents/interfaces/ui.ts",
+            "app/index.tsx -> modules/subagents/view-model.ts",
+        ]);
+        expect(checkBoundaries(edges)[0]?.rule).toBe("app must not import Modules");
+    });
+
+    test("Pi Core -> a Module entry other than pi is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "pi-core/register.ts", to: "modules/subagents/interfaces/ui.ts" }];
+        expect(violationsFor(edges)).toEqual(["pi-core/register.ts -> modules/subagents/interfaces/ui.ts"]);
     });
 
     test("UI -> Module Extension (interfaces/pi) is a violation", () => {
