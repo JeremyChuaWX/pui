@@ -6,10 +6,10 @@
 
 **Blocked by:** 06 — Remove the blocking `subagent` tool and the tool-details protocol.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] No exported subagents type, field, or event uses "run" for a Job; `SubagentJobV1` is the Job type in the Background Protocol
-- [ ] The instance-scoped helper and bridge use Job naming
-- [ ] Protocol, bridge, and UI helper tests pass with the new names; envelope schema and version are unchanged
-- [ ] The subagents README uses Profile, Job, Limits, and Background Protocol as defined in CONTEXT.md
-- [ ] `bun run check` is green
+- [x] No exported subagents type, field, or event uses "run" for a Job; `SubagentJobV1` is the Job type in the Background Protocol
+- [x] The instance-scoped helper and bridge use Job naming
+- [x] Protocol, bridge, and UI helper tests pass with the new names; envelope schema and version are unchanged
+- [x] The subagents README uses Profile, Job, Limits, and Background Protocol as defined in CONTEXT.md
+- [x] `bun run check` is green
