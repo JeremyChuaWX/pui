@@ -154,10 +154,11 @@ test("background delivery persists once on resume and wait consumption suppresse
                             invocation: (args) => ({ command: "fake-pi", args }),
                             run: async (options) => {
                                 await backgroundMaySettle;
-                                const details = createTerminalSubagentJob(options.job, {
-                                    status: "succeeded",
-                                    outputPreview: "background output",
-                                });
+                                const details = createTerminalSubagentJob(
+                                    options.job,
+                                    { status: "succeeded", outputPreview: "background output" },
+                                    options.clock?.now() ?? Date.now(),
+                                );
                                 return { job: details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
                             },
                         });

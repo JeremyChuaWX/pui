@@ -125,6 +125,10 @@ function boundedResult(result: BackgroundTerminalResult, bytes: number): Backgro
     return { ...result, text };
 }
 
+function assertNotAborted(signal: AbortSignal | undefined): void {
+    if (signal?.aborted) throw new Error("Background subagent spawn was cancelled.");
+}
+
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
@@ -146,10 +150,10 @@ export class BackgroundSubagentManager {
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {
         if (this.shuttingDown) throw new Error("Background subagent manager is shutting down.");
-        if (creationSignal?.aborted) throw new Error("Background subagent spawn was cancelled.");
+        assertNotAborted(creationSignal);
         if (!input.prompt.trim()) throw new Error("Subagent prompt must not be empty.");
         const cwd = await resolveWorkingDirectory(input.cwd, parentCwd);
-        if (creationSignal?.aborted) throw new Error("Background subagent spawn was cancelled.");
+        assertNotAborted(creationSignal);
         this.prune(MAX_JOBS - 1);
         if (this.jobs.size >= MAX_JOBS) {
             throw new Error(`Cannot track more than ${MAX_JOBS} active background subagents.`);
@@ -286,7 +290,7 @@ export class BackgroundSubagentManager {
         try {
             this.options.deliver(boundedResult(job.terminal, AUTO_RESULT_BYTES));
         } catch {
-            // Host delivery failures must not reject or duplicate settled jobs.
+            // Delivery failures in the Extension must not reject or duplicate settled jobs.
         }
     }
     private publish(job: Job, state: SubagentJobV1): void {
@@ -387,7 +391,7 @@ export class BackgroundSubagentManager {
             text: truncation.content,
             ...(fullOutputPath ? { fullOutputPath } : {}),
         });
-        // An active wait owns the result; otherwise it goes to the host at once.
+        // An active wait owns the result; otherwise it goes to the Extension at once.
         if ((this.waitInterest.get(job.snapshot.id) ?? 0) === 0) this.consumeAndDeliver(job);
         this.prune();
     }

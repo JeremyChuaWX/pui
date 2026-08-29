@@ -136,7 +136,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         const content = results
             .map(
                 (item) =>
-                    `[${item.id}] ${item.title} — ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
+                    `[${item.id}] ${item.title}: ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
             )
             .join("\n\n");
         const truncation = truncateHead(content, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
@@ -191,7 +191,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
                 content: [
                     {
                         type: "text",
-                        text: `[${job.id}] ${job.title} — ${job.state.status}\n${job.state.outputPreview ?? job.state.error ?? "No output yet."}`,
+                        text: `[${job.id}] ${job.title}: ${job.state.status}\n${job.state.outputPreview ?? job.state.error ?? "No output yet."}`,
                     },
                 ],
                 details: job,

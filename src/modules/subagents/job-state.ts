@@ -71,7 +71,7 @@ interface CreateSubagentJobInput {
     agent: string;
     model: string;
     cwd: string;
-    now?: number;
+    now: number;
 }
 
 type SubagentJobPatch = Partial<
@@ -129,7 +129,7 @@ export function isTerminalSubagentStatus(status: SubagentStatus): status is Suba
 }
 
 export function createInitialSubagentJob(input: CreateSubagentJobInput): SubagentJobV1 {
-    const now = input.now ?? Date.now();
+    const now = input.now;
     return {
         id: input.id,
         agent: input.agent,
@@ -144,7 +144,7 @@ export function createInitialSubagentJob(input: CreateSubagentJobInput): Subagen
     };
 }
 
-export function updateSubagentJob(previous: SubagentJobV1, patch: SubagentJobPatch, now = Date.now()): SubagentJobV1 {
+export function updateSubagentJob(previous: SubagentJobV1, patch: SubagentJobPatch, now: number): SubagentJobV1 {
     const status = patch.status ?? previous.status;
     const terminal = isTerminalSubagentStatus(status);
     const job: SubagentJobV1 = {
@@ -171,7 +171,7 @@ export function updateSubagentJob(previous: SubagentJobV1, patch: SubagentJobPat
 export function createTerminalSubagentJob(
     previous: SubagentJobV1,
     patch: SubagentTerminalPatch,
-    now = Date.now(),
+    now: number,
 ): SubagentJobV1 {
     return updateSubagentJob(
         previous,

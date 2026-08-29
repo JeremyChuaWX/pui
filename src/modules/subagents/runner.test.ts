@@ -24,7 +24,8 @@ function startingJob(id = "outer-id"): SubagentJobV1 {
         cwd,
         now: Date.now(),
     });
-    return updateSubagentJob(initial, { status: "starting", phase: "spawning", startedAt: Date.now() });
+    const now = Date.now();
+    return updateSubagentJob(initial, { status: "starting", phase: "spawning", startedAt: now }, now);
 }
 
 async function runFixture(scenario: string, options: Partial<Parameters<typeof runSubagent>[0]> = {}) {

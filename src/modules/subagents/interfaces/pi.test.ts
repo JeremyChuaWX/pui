@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 import { createExtensionApiHarness } from "#test-support/extension-api.ts";
 import { createFakeClock, settleEventLoop } from "#test-support/fake-clock.ts";
 import { waitFor } from "#test-support/wait.ts";
+import {
+    BACKGROUND_SUBAGENT_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
+    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+    BACKGROUND_SUBAGENT_SCHEMA,
+    BACKGROUND_SUBAGENT_VERSION,
+    type BackgroundSubagentEventV1,
+    parseBackgroundSubagentEvent,
+} from "../background-protocol.ts";
 import type { SpawnChildAgent } from "../child-agent.ts";
 import { createTerminalSubagentJob, updateSubagentJob } from "../job-state.ts";
 import { AbortableSemaphore } from "../semaphore.ts";
@@ -18,13 +27,14 @@ const MINUTE = 60_000;
 
 function successRun(output = "delegated answer") {
     return async (options: any) => {
-        let details = updateSubagentJob(options.job, {
-            status: "running",
-            phase: "thinking",
-            startedAt: options.job.startedAt ?? Date.now(),
-        });
+        const now = options.clock.now();
+        let details = updateSubagentJob(
+            options.job,
+            { status: "running", phase: "thinking", startedAt: options.job.startedAt ?? now },
+            now,
+        );
         options.onSnapshot?.(details);
-        details = createTerminalSubagentJob(details, { status: "succeeded", outputPreview: output });
+        details = createTerminalSubagentJob(details, { status: "succeeded", outputPreview: output }, now);
         options.onSnapshot?.(details);
         return { job: details, output, stderr: "", exitCode: 0, signal: null };
     };
@@ -455,5 +465,106 @@ describe("subagent extension Limits", () => {
         expect(child.signals[1]).toBe("SIGKILL");
         expect(child.closed).toBe(true);
         expect((await fixture.result(id)).status).toBe("stalled");
+    });
+});
+
+describe("subagent extension Background Protocol", () => {
+    const SESSION = "session-under-test";
+    async function boundHost() {
+        const fixture = limitsHost();
+        await fixture.host.handler("session_start")(
+            { type: "session_start" },
+            { sessionManager: { getSessionId: () => SESSION } },
+        );
+        /** Every payload emitted on the event channel, decoded by the Module's own parser. */
+        const events = () =>
+            fixture.host.emitted
+                .filter((entry) => entry.channel === BACKGROUND_SUBAGENT_CHANNEL)
+                .map((entry) => {
+                    const event = parseBackgroundSubagentEvent(entry.payload);
+                    if (!event) throw new Error(`Unparseable event: ${JSON.stringify(entry.payload)}`);
+                    return event;
+                });
+        const ready = events().at(-1);
+        expect(ready).toMatchObject({ type: "ready", sessionId: SESSION });
+        const instanceId = ready!.instanceId;
+        const cancel = (route: { sessionId?: string; instanceId?: string }, jobId: string) => {
+            fixture.host.events.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
+                schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
+                version: BACKGROUND_SUBAGENT_VERSION,
+                sessionId: SESSION,
+                instanceId,
+                type: "cancel",
+                jobId,
+                ...route,
+            });
+            return settleEventLoop();
+        };
+        return { ...fixture, events, instanceId, cancel };
+    }
+    const statusesOf = (events: BackgroundSubagentEventV1[], id: string) =>
+        events
+            .filter((event) => event.type === "upsert" && event.job?.id === id)
+            .map((event) => event.job!.state.status);
+
+    test("every Job transition is an upsert on the event channel, and session_shutdown emits a reset", async () => {
+        const fixture = await boundHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+        await child.emitEvent({
+            type: "message_end",
+            message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Final child report" }],
+                model: "fixture/model",
+                stopReason: "stop",
+                timestamp: fixture.clock.now,
+            },
+            timestamp: fixture.clock.now,
+        });
+        child.close(0, null);
+        await fixture.result(id);
+
+        const upserts = fixture.events().filter((event) => event.type === "upsert" && event.job?.id === id);
+        for (const event of upserts) {
+            expect(event).toMatchObject({
+                schema: BACKGROUND_SUBAGENT_SCHEMA,
+                version: BACKGROUND_SUBAGENT_VERSION,
+                sessionId: SESSION,
+                instanceId: fixture.instanceId,
+            });
+        }
+        const statuses = statusesOf(fixture.events(), id);
+        expect(statuses[0]).toBe("queued");
+        expect(statuses).toContain("running");
+        expect(statuses.at(-1)).toBe("succeeded");
+        expect(statuses.indexOf("running")).toBeLessThan(statuses.lastIndexOf("succeeded"));
+        expect(fixture.events().some((event) => event.type === "reset")).toBe(false);
+
+        await fixture.host.handler("session_shutdown")({ type: "session_shutdown" }, {});
+        expect(fixture.events().at(-1)).toMatchObject({
+            schema: BACKGROUND_SUBAGENT_SCHEMA,
+            version: BACKGROUND_SUBAGENT_VERSION,
+            type: "reset",
+            sessionId: SESSION,
+            instanceId: fixture.instanceId,
+        });
+    });
+
+    test("a cancel control message is ignored unless both its session id and instance id match", async () => {
+        const fixture = await boundHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+        expect(statusesOf(fixture.events(), id).at(-1)).toBe("running");
+
+        await fixture.cancel({ sessionId: "another-session" }, id);
+        await fixture.cancel({ instanceId: "another-instance" }, id);
+        expect(child.signals).toEqual([]);
+        expect(statusesOf(fixture.events(), id).at(-1)).toBe("running");
+
+        await fixture.cancel({}, id);
+        await fixture.result(id);
+        expect(child.signals[0]).toBe("SIGTERM");
+        expect(statusesOf(fixture.events(), id).at(-1)).toBe("cancelled");
     });
 });

@@ -9,6 +9,8 @@ import worker from "./profiles/worker/index.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
+/** The manager hands its Clock to the runner; the fake reads the same one instead of Date.now(). */
+const now = (options: { clock?: { now(): number } }) => options.clock?.now() ?? Date.now();
 function controlled(limit = 1) {
     const semaphore = new AbortableSemaphore(limit);
     const gates: Array<() => void> = [];
@@ -22,7 +24,7 @@ function controlled(limit = 1) {
         deliver: (result) => deliveries.push(result),
         run: async (options) => {
             starts.push(options.job.id);
-            let details = updateSubagentJob(options.job, { status: "running", phase: "thinking" });
+            let details = updateSubagentJob(options.job, { status: "running", phase: "thinking" }, now(options));
             options.onSnapshot?.(details);
             await new Promise<void>((resolve) => {
                 gates.push(resolve);
@@ -33,6 +35,7 @@ function controlled(limit = 1) {
                 options.signal?.aborted
                     ? { status: "cancelled", error: "cancelled" }
                     : { status: "succeeded", outputPreview: "done" },
+                now(options),
             );
             options.onSnapshot?.(details);
             return { job: details, output: "done", stderr: "", exitCode: 0, signal: null };
@@ -97,7 +100,7 @@ describe("BackgroundSubagentManager", () => {
             },
             run: async (options) => {
                 await new Promise<void>((resolve) => (finish = resolve));
-                const details = createTerminalSubagentJob(options.job, { status: "succeeded" });
+                const details = createTerminalSubagentJob(options.job, { status: "succeeded" }, now(options));
                 options.onSnapshot?.(details);
                 return { job: details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
@@ -170,7 +173,7 @@ describe("BackgroundSubagentManager", () => {
             deliver: (value) => deliveries.push(value),
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentJob(options.job, { status: "succeeded" });
+                const details = createTerminalSubagentJob(options.job, { status: "succeeded" }, now(options));
                 return { job: details, output, stderr: "", exitCode: 0, signal: null };
             },
         });
@@ -197,7 +200,7 @@ describe("BackgroundSubagentManager", () => {
             deliver: () => {},
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentJob(options.job, { status: "succeeded", model });
+                const details = createTerminalSubagentJob(options.job, { status: "succeeded", model }, now(options));
                 return { job: details, output: "done", stderr: "", exitCode: 0, signal: null };
             },
         });
@@ -224,10 +227,14 @@ describe("BackgroundSubagentManager", () => {
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
                 await new Promise<void>((resolve) => (finish = resolve));
-                const details = createTerminalSubagentJob(options.job, {
-                    status: "succeeded",
-                    fullOutputPath: externalPath,
-                });
+                const details = createTerminalSubagentJob(
+                    options.job,
+                    {
+                        status: "succeeded",
+                        fullOutputPath: externalPath,
+                    },
+                    now(options),
+                );
                 return { job: details, output: "x".repeat(20_000), stderr: "", exitCode: 0, signal: null };
             },
         });
@@ -252,7 +259,7 @@ describe("BackgroundSubagentManager", () => {
             },
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentJob(options.job, { status: "succeeded" });
+                const details = createTerminalSubagentJob(options.job, { status: "succeeded" }, now(options));
                 return { job: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
@@ -274,9 +281,13 @@ describe("BackgroundSubagentManager", () => {
             deliver: () => {},
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentJob(options.job, {
-                    status: options.signal?.aborted ? "cancelled" : "succeeded",
-                });
+                const details = createTerminalSubagentJob(
+                    options.job,
+                    {
+                        status: options.signal?.aborted ? "cancelled" : "succeeded",
+                    },
+                    now(options),
+                );
                 return { job: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
@@ -301,10 +312,14 @@ describe("BackgroundSubagentManager", () => {
                 await new Promise<void>((resolve) =>
                     options.signal?.addEventListener("abort", () => resolve(), { once: true }),
                 );
-                const details = createTerminalSubagentJob(options.job, {
-                    status: "cancelled",
-                    error: "cancelled",
-                });
+                const details = createTerminalSubagentJob(
+                    options.job,
+                    {
+                        status: "cancelled",
+                        error: "cancelled",
+                    },
+                    now(options),
+                );
                 return { job: details, output: "", stderr: "", exitCode: null, signal: "SIGTERM" };
             },
         });
@@ -342,9 +357,13 @@ describe("BackgroundSubagentManager", () => {
                     await new Promise<void>((resolve) =>
                         options.signal?.addEventListener("abort", () => resolve(), { once: true }),
                     );
-                const details = createTerminalSubagentJob(options.job, {
-                    status: options.signal?.aborted ? "cancelled" : "succeeded",
-                });
+                const details = createTerminalSubagentJob(
+                    options.job,
+                    {
+                        status: options.signal?.aborted ? "cancelled" : "succeeded",
+                    },
+                    now(options),
+                );
                 return {
                     job: details,
                     output: index === 0 ? "x".repeat(20_000) : "ok",
@@ -384,7 +403,7 @@ describe("BackgroundSubagentManager", () => {
             deliver: (value) => deliveries.push(value),
             invocation: (args) => ({ command: "fake", args }),
             run: async (options) => {
-                const details = createTerminalSubagentJob(options.job, { status: "succeeded" });
+                const details = createTerminalSubagentJob(options.job, { status: "succeeded" }, now(options));
                 return { job: details, output: "ok", stderr: "", exitCode: 0, signal: null };
             },
         });
