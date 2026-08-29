@@ -13,11 +13,11 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "#modules/subagents/interfaces/pi.js";
-import { AbortableSemaphore } from "#shared/lib/semaphore.js";
+import { AbortableSemaphore } from "#modules/subagents/semaphore.js";
 import { waitFor } from "#test-support/wait.js";
 import { PuiController } from "./controller.js";
 
-const fixtureChild = fileURLToPath(new URL("../../shared/agent-runtime/fixtures/fake-child.mjs", import.meta.url));
+const fixtureChild = fileURLToPath(new URL("../../modules/subagents/fixtures/fake-child.mjs", import.meta.url));
 
 const waitUntil = (predicate: () => boolean, description: string) =>
     waitFor(predicate, 10_000, `Timed out waiting for ${description}`);

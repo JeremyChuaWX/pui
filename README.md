@@ -125,9 +125,9 @@ edges enforced by a boundary check in `bun run check`. The short version:
   behind their Interfaces Directories, registered via Pi Core's Register File
   `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed state
   through the Module's UI Entry instead of maintaining mirrors.
-- `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/agent-runtime/` (the
-  Child-Agent Runtime for spawning child Pi processes, plus the Agent Roles) and `src/shared/lib/`
-  (the generic library: validation, bounded processes, retained output, semaphores, and friends).
+- `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/lib/` (the
+  generic library: validation, bounded processes, and retained output). The child-agent runner
+  and its presets live in `src/modules/subagents/`.
 - `src/pi-core/skills/` holds application-owned skills, registered via `src/pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.

@@ -10,7 +10,7 @@ import {
 } from "./protocol.ts";
 import { runSubagent } from "./runner.ts";
 
-const fixture = fileURLToPath(new URL("../../shared/agent-runtime/fixtures/fake-child.mjs", import.meta.url));
+const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
 
 function startingDetails(id = "outer-id"): SubagentDetailsV1 {

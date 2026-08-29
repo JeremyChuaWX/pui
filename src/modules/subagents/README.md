@@ -33,7 +33,7 @@ Select the read-only explorer explicitly:
 
 The omitted-agent mode adds no replacement or appended agent prompt and passes no model flag unless the call supplies `model`. Use it when the input task should be the only extra steering beyond Pi's normal coding context.
 
-The explicit worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`../../shared/agent-runtime/agents/worker-guidance.LICENSE`](../../shared/agent-runtime/agents/worker-guidance.LICENSE).
+The explicit worker reads repository guidance itself, completes the delegated task, edits files, runs focused validation, and returns a concise handoff. Its self-contained, vendored Ponytail guidance favors existing code, the standard library, native platform features, installed dependencies, and the smallest correct diff while preserving validation, error handling, security, and accessibility. The upstream license is preserved in [`agents/worker-guidance.LICENSE`](agents/worker-guidance.LICENSE).
 
 All modes disable child sessions, extensions, skills, prompt templates, and automatic context-file loading. The worker prompt tells the child to discover `AGENTS.md` and contribution documentation before editing; omitted-agent calls receive no equivalent bundled instruction. No project-local or user-defined subagent presets are loaded, and the child cannot recursively load this extension.
 
@@ -93,7 +93,7 @@ If final output exceeds the model-visible limit, the extension writes the comple
 
 - **`Unable to start child Pi`**: ensure `pi` is on `PATH`. When the parent is Pi's CLI, the extension safely reuses that CLI entrypoint; SDK hosts do not reuse their own `argv[1]`.
 - **Exited without a final assistant response**: inspect the bounded stderr/diagnostic in the failed tool result. Malformed JSONL lines are reported as diagnostics rather than crashing the parent.
-- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `../../shared/agent-runtime/presets.ts` after review.
+- **Timed out**: narrow the delegated prompt or change the relevant preset timeout in `presets.ts` after review.
 - **Calls remain queued**: inspect `PI_SUBAGENT_MAX_CONCURRENCY`; invalid values fall back to four.
 - **Full output path missing after truncation**: the result remains usable, but the private temporary file could not be created.
 

@@ -44,17 +44,12 @@ export const AGENTS: Record<ResolvedAgentName, AgentPreset> = {
     },
 };
 
-export const RESOLVED_AGENT_NAMES = ["generic", ...AGENT_NAMES] as const;
-
-/** The one role allowlist: a preset for a known role, undefined for anything else. */
-export function agentPreset(role: string): AgentPreset | undefined {
-    return Object.hasOwn(AGENTS, role) ? AGENTS[role as ResolvedAgentName] : undefined;
-}
-
-export const AGENT_SUMMARY = RESOLVED_AGENT_NAMES.map((name) => {
-    const agent = AGENTS[name];
-    return `${name} (${agent.description}; tools: ${agent.tools.join(", ")}; default model: ${agent.defaultModel ?? "child Pi default"})`;
-}).join("; ");
+export const AGENT_SUMMARY = (["generic", ...AGENT_NAMES] as const)
+    .map((name) => {
+        const agent = AGENTS[name];
+        return `${name} (${agent.description}; tools: ${agent.tools.join(", ")}; default model: ${agent.defaultModel ?? "child Pi default"})`;
+    })
+    .join("; ");
 
 export function resolveModel(
     agent: AgentPreset,

@@ -2,20 +2,9 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "#shared/agent-runtime/child-agent.js";
-import {
-    AGENT_NAMES,
-    AGENT_SUMMARY,
-    AGENTS,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-    workingDirectoryCandidate,
-} from "#shared/agent-runtime/presets.js";
-import { createBackgroundChannel } from "#shared/lib/background-channel.js";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
-import type { AbortableSemaphore } from "#shared/lib/semaphore.js";
 import { errorMessage } from "#shared/lib/validate.js";
+import { createBackgroundChannel } from "../background-channel.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "../background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
@@ -25,9 +14,20 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "../background-protocol.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../child-agent.js";
+import {
+    AGENT_NAMES,
+    AGENT_SUMMARY,
+    AGENTS,
+    type ResolvedAgentName,
+    resolveModel,
+    resolveWorkingDirectory,
+    workingDirectoryCandidate,
+} from "../presets.js";
 import { createInitialSubagentDetails, type SubagentDetailsV1, updateSubagentDetails } from "../protocol.js";
 import { runSubagentJob, synthesizeSubagentFailure } from "../run-job.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
+import type { AbortableSemaphore } from "../semaphore.js";
 
 const UNGUIDED_AGENT_NAME = "generic" as const;
 

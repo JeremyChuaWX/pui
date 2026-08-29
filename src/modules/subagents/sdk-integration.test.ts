@@ -10,9 +10,9 @@ import {
     SessionManager,
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { AbortableSemaphore } from "#shared/lib/semaphore.ts";
 import { registerSubagentExtension } from "./interfaces/pi.ts";
 import { createTerminalSubagentDetails } from "./protocol.ts";
+import { AbortableSemaphore } from "./semaphore.ts";
 
 const usage = {
     input: 1,

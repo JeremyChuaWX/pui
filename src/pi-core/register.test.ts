@@ -113,10 +113,8 @@ describe("bundled extensions", () => {
             await loader.reload();
             expect(loader.getExtensions().errors).toEqual([]);
             expect(loader.getExtensions().extensions).toHaveLength(1);
-            for (const relativePath of ["agent-runtime/presets.ts", "lib/semaphore.ts"]) {
-                expect(
-                    (await fs.promises.stat(path.resolve(import.meta.dir, "../shared", relativePath))).isFile(),
-                ).toBe(true);
+            for (const relativePath of ["modules/subagents/presets.ts", "modules/subagents/semaphore.ts"]) {
+                expect((await fs.promises.stat(path.resolve(import.meta.dir, "..", relativePath))).isFile()).toBe(true);
             }
         } finally {
             await fs.promises.rm(temp, { recursive: true, force: true });
@@ -356,9 +354,9 @@ export default function (pi: any) {
             for (const relativePath of [
                 path.join("modules", "subagents", "protocol.ts"),
                 path.join("modules", "subagents", "runner.ts"),
-                path.join("shared", "agent-runtime", "agents", "worker.md"),
-                path.join("shared", "agent-runtime", "agents", "worker-guidance.LICENSE"),
-                path.join("shared", "agent-runtime", "agents", "explore.md"),
+                path.join("modules", "subagents", "agents", "worker.md"),
+                path.join("modules", "subagents", "agents", "worker-guidance.LICENSE"),
+                path.join("modules", "subagents", "agents", "explore.md"),
             ]) {
                 expect((await fs.promises.stat(path.join(sourceRoot, relativePath))).isFile()).toBe(true);
             }

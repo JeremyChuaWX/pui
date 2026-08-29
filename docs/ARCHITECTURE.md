@@ -29,7 +29,7 @@ src/pi-core/   the Register File + bundled skills
 src/modules/   file-search   web   subagents
   └──▶ src/shared/ only — never another Module
 
-src/shared/    Shared Primitives: agent-runtime (the Child-Agent Runtime) + lib
+src/shared/    Shared Primitives: lib
   └──▶ src/shared/ only
 ```
 
@@ -78,7 +78,7 @@ The controller delegates to focused collaborators rather than owning every conce
 |---|---|---|
 | `src/modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | extension-owned event parsing, bounded host view models, and cancellation routing |
 | `src/modules/file-search/interfaces/ui.ts` | `fdCompletionCommand` | system `fd`/`fdfind` resolution for `@` file completion |
-| `src/shared/lib/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps behind the bridge |
+| `src/modules/subagents/instance-scoped-runs.ts` | `InstanceScopedRuns<T>` reducer | routed producer authority, copy-on-write run maps, reset/replacement gating, and caps behind the bridge |
 | `src/ui/state/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts/timeouts/FIFO resolution, and self-expiring notifications |
 
 The controller's command descriptor list is the single source for slash-command autocomplete,
@@ -168,29 +168,17 @@ Inside their private files, the Modules are deep:
 
 ### Shared Primitives — `src/shared/`
 
-Cross-cutting code importable by every layer, split in two so that reaching for a validator does
-not entangle a Module with agent-spawning machinery:
+Cross-cutting code importable by every layer. Only files with two or more consuming Modules live
+here; the child-agent runner, its presets and prompt assets, the semaphore, the background channel,
+the instance-scoped run reducer, and the JSONL splitter belong to the subagents Module
+(`src/modules/subagents/`), their single consumer.
 
-- `src/shared/agent-runtime/` — the Child-Agent Runtime: `child-agent.ts` (the one child-Pi runtime:
-  shell-free detached spawn, NDJSON parsing into throttled neutral `ChildAgentEvent` flushes,
-  bounded stderr, usage aggregation with fingerprint dedupe, model-label canonicalization,
-  terminal-status classification, SIGTERM→SIGKILL termination, and the process-wide child-Pi
-  semaphore; the subagent runner is an adapter over it) and
-  `presets.ts` (the Agent Roles: `worker`/`explore`/`generic` child-agent presets, the single role
-  allowlist, and the model/timeout resolution used by subagents; the bundled
-  agent guidance lives in `src/shared/agent-runtime/agents/`). Agent Roles belong here, not to the
-  subagents Module — see ADR 0001 in `docs/adr/`.
-- `src/shared/lib/` — the generic library: `background-channel.ts` (producer-side
-  ready/subscribe/route-guard/reset/shutdown wiring with injected protocol parsers and event APIs),
-  `bounded-process.ts` (`runBoundedProcess` spawn/timeout/kill with bounded output;
-  `createGracefulTermination` SIGTERM→SIGKILL escalation and `killProcessTree` group signaling
-  used by every child supervisor), `instance-scoped-runs.ts` (the routed copy-on-write run-set
-  reducer — producer authority, reset/replacement gating, and run caps — behind the subagent
-  bridge), `json-events.ts` (the JSONL splitter for child NDJSON streams),
-  `retained-output.ts` (quota-bounded spill storage plus `composeBoundedOutput`, the single
-  fixed-point composer that fits a truncated preview and its accurate truncation notice inside one
-  byte/line budget for every extension), `semaphore.ts` (abort-aware FIFO concurrency), and
-  `validate.ts` (record, error-message, and Unicode-safe bounded-string helpers).
+- `src/shared/lib/` — the generic library: `bounded-process.ts` (`runBoundedProcess`
+  spawn/timeout/kill with bounded output; `createGracefulTermination` SIGTERM→SIGKILL escalation and
+  `killProcessTree` group signaling used by every child supervisor), `retained-output.ts`
+  (quota-bounded spill storage plus `composeBoundedOutput`, the single fixed-point composer that
+  fits a truncated preview and its accurate truncation notice inside one byte/line budget for every
+  extension), and `validate.ts` (record, error-message, and Unicode-safe bounded-string helpers).
 
 ## Boundary enforcement
 
@@ -242,7 +230,7 @@ parsed state through the Module's UI Entry instead of maintaining mirrors:
   bridge that owns instance authority, subscription lifecycle, cancellation, and the job map,
   published through `interfaces/ui.ts`.
   The bridge delegates instance authority, routed copy-on-write updates, reset/replacement gating,
-  and run caps to `src/shared/lib/instance-scoped-runs.ts`.
+  and run caps to `src/modules/subagents/instance-scoped-runs.ts`.
 
 The UI still treats extension payloads as untrusted input: parsers validate shape and routing, and
 the view models bound every string.

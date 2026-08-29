@@ -1,10 +1,5 @@
-import {
-    type ChildAgentEvent,
-    type ChildAgentState,
-    runChildAgent,
-    type SpawnChildAgent,
-} from "#shared/agent-runtime/child-agent.js";
 import { truncateUtf8 } from "#shared/lib/retained-output.js";
+import { type ChildAgentEvent, type ChildAgentState, runChildAgent, type SpawnChildAgent } from "./child-agent.js";
 import {
     appendSubagentActivity,
     createTerminalSubagentDetails,

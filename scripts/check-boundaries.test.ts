@@ -27,9 +27,10 @@ describe("clean graph", () => {
             // Modules -> own internals + shared
             { from: "modules/web/search.ts", to: "modules/web/crawl.ts" },
             { from: "modules/web/interfaces/pi.ts", to: "modules/web/search.ts" },
-            { from: "modules/subagents/runner.ts", to: "shared/agent-runtime/child-agent.ts" },
+            { from: "modules/subagents/runner.ts", to: "modules/subagents/child-agent.ts" },
+            { from: "modules/subagents/child-agent.ts", to: "shared/lib/validate.ts" },
             // shared -> shared
-            { from: "shared/agent-runtime/child-agent.ts", to: "shared/lib/json-events.ts" },
+            { from: "shared/lib/bounded-process.ts", to: "shared/lib/retained-output.ts" },
         ];
         expect(checkBoundaries(edges)).toEqual([]);
     });

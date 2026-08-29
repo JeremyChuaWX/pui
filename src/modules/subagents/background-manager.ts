@@ -1,16 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { getPiInvocation } from "#shared/agent-runtime/child-agent.js";
-import {
-    AGENTS,
-    type AgentName,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-} from "#shared/agent-runtime/presets.js";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
-import type { AbortableSemaphore } from "#shared/lib/semaphore.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
+import { getPiInvocation } from "./child-agent.js";
+import { AGENTS, type AgentName, type ResolvedAgentName, resolveModel, resolveWorkingDirectory } from "./presets.js";
 import {
     createInitialSubagentDetails,
     SUBAGENT_PROTOCOL_VERSION,
@@ -20,6 +13,7 @@ import {
 import type { SubagentOutputStore } from "./run-job.js";
 import { runSubagentJob } from "./run-job.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+import type { AbortableSemaphore } from "./semaphore.js";
 
 const MAX_JOBS = 64;
 const TITLE_BYTES = 160;

@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AbortableSemaphore } from "#shared/lib/semaphore.ts";
 import { waitFor as waitUntil } from "#test-support/wait.js";
 import { BackgroundSubagentManager } from "./background-manager.ts";
 import { createTerminalSubagentDetails, updateSubagentDetails } from "./protocol.ts";
+import { AbortableSemaphore } from "./semaphore.ts";
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
 function controlled(limit = 1) {

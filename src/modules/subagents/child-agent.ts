@@ -3,11 +3,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { createGracefulTermination, killProcessTree } from "../lib/bounded-process.js";
-import { JsonLineParser } from "../lib/json-events.js";
-import { appendBoundedUtf8, truncateUtf8 } from "../lib/retained-output.js";
-import { AbortableSemaphore, configuredSubagentConcurrency } from "../lib/semaphore.js";
-import { errorMessage, isRecord } from "../lib/validate.js";
+import { createGracefulTermination, killProcessTree } from "#shared/lib/bounded-process.js";
+import { appendBoundedUtf8, truncateUtf8 } from "#shared/lib/retained-output.js";
+import { errorMessage, isRecord } from "#shared/lib/validate.js";
+import { JsonLineParser } from "./json-events.js";
+import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
 
 const DEFAULT_THROTTLE_MS = 75;
 const DEFAULT_KILL_GRACE_MS = 2_000;
@@ -115,9 +115,9 @@ export type SpawnChildAgent = (
     },
 ) => SpawnedChild;
 
-export type ChildAgentPhase = "thinking" | "tool" | "exiting";
+type ChildAgentPhase = "thinking" | "tool" | "exiting";
 
-export interface ChildAgentTool {
+interface ChildAgentTool {
     id: string;
     name: string;
     title: string;

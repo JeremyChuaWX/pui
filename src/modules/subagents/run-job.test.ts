@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { AbortableSemaphore } from "#shared/lib/semaphore.ts";
 import { createInitialSubagentDetails, createTerminalSubagentDetails } from "./protocol.ts";
 import { runSubagentJob } from "./run-job.ts";
+import { AbortableSemaphore } from "./semaphore.ts";
 
 const details = () =>
     createInitialSubagentDetails({ id: "job-1", agent: "explore", model: "fixture/model", cwd: "/repo", now: 1 });
