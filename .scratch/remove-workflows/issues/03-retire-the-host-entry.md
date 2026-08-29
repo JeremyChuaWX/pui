@@ -6,10 +6,10 @@
 
 **Blocked by:** 01 — Delete the workflows Module and everything that only served it.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The subagents Module's empty `host` entry is deleted; no other Module has one
-- [ ] The boundary checker rejects any import from the App layer into a Module; a fixture proves it
-- [ ] The boundary checker no longer maps the App layer to a `host` entry name
-- [ ] CONTRIBUTION and ARCHITECTURE describe the Interfaces Directory as `pi` and `ui` only
-- [ ] `bun run check` is green
+- [x] The subagents Module's empty `host` entry is deleted; no other Module has one
+- [x] The boundary checker rejects any import from the App layer into a Module; a fixture proves it
+- [x] The boundary checker no longer maps the App layer to a `host` entry name
+- [x] CONTRIBUTION and ARCHITECTURE describe the Interfaces Directory as `pi` and `ui` only
+- [x] `bun run check` is green
