@@ -3,11 +3,24 @@ import { isRecord } from "#shared/lib/validate.js";
 export const MAX_RECENT_ACTIVITY = 20;
 export const MAX_SUBAGENT_ACTIVE_TOOLS = 64;
 
-export type SubagentStatus = "queued" | "starting" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+export type SubagentStatus =
+    | "queued"
+    | "starting"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "timed_out"
+    | "stalled"
+    | "tool_stalled";
 
 export type SubagentPhase = "queued" | "spawning" | "thinking" | "tool" | "exiting";
 export type SubagentActivityKind = "turn" | "tool_start" | "tool_end" | "assistant" | "diagnostic";
-export type SubagentTerminalStatus = Extract<SubagentStatus, "succeeded" | "failed" | "cancelled" | "timed_out">;
+/** A Limit ends a Job as `timed_out` (wall clock), `stalled` (stall), or `tool_stalled` (tool stall). */
+export type SubagentTerminalStatus = Extract<
+    SubagentStatus,
+    "succeeded" | "failed" | "cancelled" | "timed_out" | "stalled" | "tool_stalled"
+>;
 
 export interface SubagentActiveToolV1 {
     id: string;
@@ -85,8 +98,17 @@ const STATUSES = new Set<SubagentStatus>([
     "failed",
     "cancelled",
     "timed_out",
+    "stalled",
+    "tool_stalled",
 ]);
-const TERMINAL_STATUSES = new Set<SubagentStatus>(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_STATUSES = new Set<SubagentStatus>([
+    "succeeded",
+    "failed",
+    "cancelled",
+    "timed_out",
+    "stalled",
+    "tool_stalled",
+]);
 const PHASES = new Set<SubagentPhase>(["queued", "spawning", "thinking", "tool", "exiting"]);
 const ACTIVITY_KINDS = new Set<SubagentActivityKind>(["turn", "tool_start", "tool_end", "assistant", "diagnostic"]);
 

@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { composeBoundedOutput, RetainedOutputStore } from "#shared/lib/retained-output.js";
 import { createBackgroundChannel } from "../background-channel.js";
 import { BackgroundSubagentManager, type BackgroundTerminalResult } from "../background-manager.js";
@@ -12,7 +13,7 @@ import {
     type BackgroundSubagentJobV1,
     parseBackgroundSubagentControl,
 } from "../background-protocol.js";
-import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE } from "../child-agent.js";
+import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE, type SpawnChildAgent } from "../child-agent.js";
 import { describeProfile, PROFILES, type SubagentProfile } from "../profiles/index.js";
 import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "../runner.js";
 import type { AbortableSemaphore } from "../semaphore.js";
@@ -33,19 +34,23 @@ export interface SubagentExtensionDependencies {
     semaphore?: AbortableSemaphore;
     run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
     invocation?: typeof getPiInvocation;
-    now?: () => number;
+    /** Spawns each child process; tests inject a scripted child. */
+    spawn?: SpawnChildAgent;
+    /** Time source and timer scheduler; tests inject a clock they advance by hand. */
+    clock?: Clock;
     environment?: NodeJS.ProcessEnv;
 }
 
 /** Production collaborators, including the one process-wide concurrency owner. */
 export function createDefaultSubagentDependencies(
     overrides: SubagentExtensionDependencies = {},
-): Required<SubagentExtensionDependencies> {
+): Required<Omit<SubagentExtensionDependencies, "spawn">> & Pick<SubagentExtensionDependencies, "spawn"> {
     return {
         semaphore: overrides.semaphore ?? PROCESS_CHILD_AGENT_SEMAPHORE,
         run: overrides.run ?? runSubagent,
         invocation: overrides.invocation ?? getPiInvocation,
-        now: overrides.now ?? Date.now,
+        ...(overrides.spawn ? { spawn: overrides.spawn } : {}),
+        clock: overrides.clock ?? SYSTEM_CLOCK,
         environment: overrides.environment ?? process.env,
     };
 }
@@ -55,7 +60,8 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         semaphore,
         run,
         invocation: resolveInvocation,
-        now,
+        spawn,
+        clock,
         environment,
     } = createDefaultSubagentDependencies(dependencies);
     const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
@@ -101,8 +107,9 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         semaphore,
         run,
         invocation: resolveInvocation,
+        ...(spawn ? { spawn } : {}),
         environment,
-        now,
+        clock,
         emit,
         deliver,
         isIdle: () => idle,

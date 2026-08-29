@@ -13,6 +13,9 @@ import {
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
 
+/** Limits with only the wall clock armed, so a real fixture process is bounded by one known timer. */
+const wallClock = (wallClockMs: number) => ({ wallClockMs, stallTimeoutMs: 0, toolStallTimeoutMs: 0 });
+
 async function runFixture(scenario: string, options: Partial<Parameters<typeof runChildAgent>[0]> = {}) {
     const events: ChildAgentEvent[] = [];
     const states: ChildAgentState[] = [];
@@ -20,7 +23,7 @@ async function runFixture(scenario: string, options: Partial<Parameters<typeof r
         command: process.execPath,
         args: [fixture, scenario],
         cwd,
-        timeoutMs: 2_000,
+        limits: wallClock(2_000),
         model: "fixture/model",
         throttleMs: 5,
         killGraceMs: 20,
@@ -107,16 +110,16 @@ describe("runChildAgent", () => {
     });
 
     test("distinguishes timeout from cancellation and reports each termination", async () => {
-        const timedOut = await runFixture("hang", { timeoutMs: 25 });
+        const timedOut = await runFixture("hang", { limits: wallClock(25) });
         expect(timedOut.result.status).toBe("timed_out");
-        expect(timedOut.result.error).toContain("timed out");
-        expect(timedOut.events.some((event) => event.kind === "diagnostic" && event.title === "Timeout reached")).toBe(
-            true,
-        );
+        expect(timedOut.result.error).toContain("wall clock");
+        expect(
+            timedOut.events.some((event) => event.kind === "diagnostic" && event.title === "Wall clock limit reached"),
+        ).toBe(true);
 
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 20);
-        const cancelled = await runFixture("hang", { timeoutMs: 5_000, signal: controller.signal });
+        const cancelled = await runFixture("hang", { limits: wallClock(5_000), signal: controller.signal });
         expect(cancelled.result.status).toBe("cancelled");
         expect(cancelled.result.error).toContain("cancelled");
         expect(

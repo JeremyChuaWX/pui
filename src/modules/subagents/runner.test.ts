@@ -13,6 +13,9 @@ import { runSubagent } from "./runner.ts";
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
 
+/** Limits with only the wall clock armed, so a real fixture process is bounded by one known timer. */
+const wallClock = (wallClockMs: number) => ({ wallClockMs, stallTimeoutMs: 0, toolStallTimeoutMs: 0 });
+
 function startingRun(id = "outer-id"): SubagentRunV1 {
     const initial = createInitialSubagentRun({
         id,
@@ -31,7 +34,7 @@ async function runFixture(scenario: string, options: Partial<Parameters<typeof r
         command: process.execPath,
         args: [fixture, scenario],
         cwd,
-        timeoutMs: 2_000,
+        limits: wallClock(2_000),
         throttleMs: 5,
         killGraceMs: 20,
         onSnapshot: (run) => snapshots.push(run),
@@ -124,19 +127,19 @@ describe("runSubagent", () => {
     });
 
     test("distinguishes timeout from user cancellation and force-kills stubborn children", async () => {
-        const timedOut = await runFixture("hang", { timeoutMs: 25 });
+        const timedOut = await runFixture("hang", { limits: wallClock(25) });
         expect(timedOut.result.run.status).toBe("timed_out");
-        expect(timedOut.result.run.error).toContain("timed out");
+        expect(timedOut.result.run.error).toContain("wall clock");
 
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 20);
-        const cancelled = await runFixture("hang", { timeoutMs: 5_000, signal: controller.signal });
+        const cancelled = await runFixture("hang", { limits: wallClock(5_000), signal: controller.signal });
         expect(cancelled.result.run.status).toBe("cancelled");
         expect(cancelled.result.run.error).toContain("cancelled");
     });
 
     test("kills descendants in the child process group on timeout", async () => {
-        const { result } = await runFixture("descendant-hang", { timeoutMs: 500 });
+        const { result } = await runFixture("descendant-hang", { limits: wallClock(500) });
         const pid = Number(result.stderr.match(/descendant:(\d+)/)?.[1]);
         expect(result.run.status).toBe("timed_out");
         expect(pid).toBeGreaterThan(0);
@@ -182,7 +185,7 @@ describe("runSubagent", () => {
             command: path.join(cwd, "does-not-exist"),
             args: [],
             cwd,
-            timeoutMs: 100,
+            limits: wallClock(100),
         }).then((result) => ({ result }));
         expect(result.run.status).toBe("failed");
         expect(result.run.error).toContain("Unable to start child Pi");

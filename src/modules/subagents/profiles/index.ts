@@ -5,8 +5,10 @@ import worker from "./worker/index.js";
 export {
     childArgs,
     DEFAULT_LIMITS,
+    describeLimit,
     describeProfile,
     type JobLimits,
+    profileLimits,
     resolveProfileModel,
     type SubagentProfile,
 } from "./profile.js";

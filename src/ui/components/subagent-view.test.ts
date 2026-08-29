@@ -55,6 +55,10 @@ describe("subagent view helpers", () => {
         expect(subagentStatusIcon("cancelled")).toBe("⊘");
         expect(subagentStatusIcon("timed_out")).toBe("⧖");
         expect(subagentStatusLabel("timed_out")).toBe("timed out");
+        expect(subagentStatusIcon("stalled")).toBe("⧖");
+        expect(subagentStatusIcon("tool_stalled")).toBe("⧖");
+        expect(subagentStatusLabel("stalled")).toBe("stalled");
+        expect(subagentStatusLabel("tool_stalled")).toBe("tool stalled");
         expect(subagentStatusLabel("running")).toBe("running");
     });
 });

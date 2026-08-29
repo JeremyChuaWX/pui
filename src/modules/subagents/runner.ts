@@ -1,5 +1,7 @@
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { truncateUtf8 } from "#shared/lib/retained-output.js";
 import { type ChildAgentEvent, type ChildAgentState, runChildAgent, type SpawnChildAgent } from "./child-agent.js";
+import type { JobLimits } from "./profiles/profile.js";
 import {
     appendSubagentActivity,
     createTerminalSubagentRun,
@@ -15,12 +17,12 @@ export interface RunSubagentOptions {
     command: string;
     args: string[];
     cwd: string;
-    timeoutMs: number;
+    limits: JobLimits;
     signal?: AbortSignal;
     onSnapshot?: (run: SubagentRunV1) => void;
     throttleMs?: number;
     killGraceMs?: number;
-    now?: () => number;
+    clock?: Clock;
     spawn?: SpawnChildAgent;
 }
 
@@ -40,7 +42,7 @@ export interface SubagentRunResult {
 export async function runSubagent(options: RunSubagentOptions): Promise<SubagentRunResult> {
     if (!isSubagentRunV1(options.run)) throw new Error("runSubagent requires a valid run state");
 
-    const now = options.now ?? Date.now;
+    const now = () => (options.clock ?? SYSTEM_CLOCK).now();
     let run = structuredClone(options.run);
     const publish = () => {
         if (!options.onSnapshot) return;
@@ -94,14 +96,14 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         command: options.command,
         args: options.args,
         cwd: options.cwd,
-        timeoutMs: options.timeoutMs,
+        limits: options.limits,
         model: run.model,
         usage: run.usage,
         signal: options.signal,
         onFlush: fold,
         throttleMs: options.throttleMs,
         killGraceMs: options.killGraceMs,
-        now: options.now,
+        clock: options.clock,
         spawn: options.spawn,
     });
 

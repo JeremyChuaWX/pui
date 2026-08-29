@@ -8,6 +8,8 @@ export function subagentColor(status: SubagentStatus): string {
             return theme.success;
         case "failed":
         case "timed_out":
+        case "stalled":
+        case "tool_stalled":
             return theme.error;
         case "cancelled":
         case "queued":
@@ -28,6 +30,8 @@ export function subagentStatusIcon(status: SubagentStatus): string {
         case "cancelled":
             return "⊘";
         case "timed_out":
+        case "stalled":
+        case "tool_stalled":
             return "⧖";
         case "queued":
             return "○";

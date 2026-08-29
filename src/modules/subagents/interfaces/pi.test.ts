@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { createExtensionApiHarness } from "#test-support/extension-api.ts";
+import { createFakeClock, settleEventLoop } from "#test-support/fake-clock.ts";
+import { waitFor } from "#test-support/wait.ts";
+import type { SpawnChildAgent } from "../child-agent.ts";
 import { createTerminalSubagentRun, updateSubagentRun } from "../run-state.ts";
 import { AbortableSemaphore } from "../semaphore.ts";
 import { registerSubagentExtension } from "./pi.ts";
@@ -109,7 +114,11 @@ describe("subagent extension integration", () => {
         expect(argumentAfter(run.args, "--system-prompt")).toContain("read-only codebase exploration subagent");
         expect(run.args).not.toContain("--append-system-prompt");
         expect(run.args.at(-1)).toBe("Inspect the target");
-        expect(run.timeoutMs).toBe(60 * MINUTE);
+        expect(run.limits).toEqual({
+            wallClockMs: 60 * MINUTE,
+            stallTimeoutMs: 10 * MINUTE,
+            toolStallTimeoutMs: 15 * MINUTE,
+        });
     });
 
     test("worker runs a write-capable child with the Ponytail guidance appended", async () => {
@@ -126,7 +135,11 @@ describe("subagent extension integration", () => {
         expect(guidance.toLowerCase()).not.toContain("ponytail");
         expect(run.args).not.toContain("--system-prompt");
         expect(run.args.at(-1)).toBe("Implement the target");
-        expect(run.timeoutMs).toBe(60 * MINUTE);
+        expect(run.limits).toEqual({
+            wallClockMs: 60 * MINUTE,
+            stallTimeoutMs: 10 * MINUTE,
+            toolStallTimeoutMs: 15 * MINUTE,
+        });
     });
 
     test("resolves each Profile's model from the argument, then its environment variable, then the default", async () => {
@@ -188,5 +201,183 @@ describe("subagent extension integration", () => {
             .tool("worker")
             .execute("home", { prompt: "x", cwd: "~" }, undefined, undefined, { cwd: extensionCwd });
         expect(fromHome.details.run.cwd).toBe(fs.realpathSync(os.homedir()));
+    });
+});
+
+/** A scripted child Pi process: the test writes JSONL to its stdout and decides how it answers signals. */
+class ScriptedChild extends EventEmitter {
+    readonly stdout = new PassThrough();
+    readonly stderr = new PassThrough();
+    readonly pid = undefined;
+    readonly signals: NodeJS.Signals[] = [];
+    closed = false;
+    constructor(private readonly ignoresSigterm: boolean) {
+        super();
+    }
+    kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
+        this.signals.push(signal);
+        if (signal === "SIGKILL" || !this.ignoresSigterm) queueMicrotask(() => this.close(null, signal));
+        return true;
+    }
+    close(code: number | null, signal: NodeJS.Signals | null): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.stdout.end();
+        this.stderr.end();
+        this.emit("close", code, signal);
+    }
+    emitEvent(event: Record<string, unknown>): Promise<void> {
+        this.stdout.write(`${JSON.stringify(event)}\n`);
+        return settleEventLoop();
+    }
+}
+
+/** An extension host running the real runner against scripted children under an injected clock. */
+function limitsHost(options: { ignoresSigterm?: boolean } = {}) {
+    const host = createExtensionApiHarness();
+    const fake = createFakeClock();
+    const children: ScriptedChild[] = [];
+    const spawn: SpawnChildAgent = () => {
+        const child = new ScriptedChild(options.ignoresSigterm ?? false);
+        children.push(child);
+        return child as unknown as ReturnType<SpawnChildAgent>;
+    };
+    registerSubagentExtension(host.api, {
+        semaphore: new AbortableSemaphore(4),
+        environment: {},
+        invocation: (args) => ({ command: "fake-pi", args }),
+        clock: fake.clock,
+        spawn,
+    });
+    return {
+        host,
+        clock: fake,
+        async spawn(profile: "explorer" | "worker" = "worker") {
+            const spawned = await host
+                .tool(profile)
+                .execute(`${profile}-call`, { prompt: `Use ${profile}`, cwd: extensionCwd }, undefined, undefined, {
+                    cwd: extensionCwd,
+                });
+            await waitFor(() => children.length === 1, 5_000, "child was not spawned");
+            await settleEventLoop();
+            return { id: spawned.details.id as string, child: children[0]! };
+        },
+        /** The Job's current run state as `subagent_check` reports it. */
+        status(id: string) {
+            return host
+                .tool("subagent_check")
+                .execute("check", { id })
+                .then((result: any) => result.details.run);
+        },
+        /** The terminal status and error the host delivered for the Job. */
+        async result(id: string) {
+            await host.tool("subagent_wait").execute("wait", { ids: [id] });
+            const run = await this.status(id);
+            return { status: run.status as string, text: (run.error ?? "") as string };
+        },
+    };
+}
+
+const toolStart = (id: string, timestamp: number) => ({
+    type: "tool_execution_start",
+    toolCallId: id,
+    toolName: "bash",
+    args: { command: "sleep 1" },
+    timestamp,
+});
+const toolUpdate = (id: string, timestamp: number) => ({
+    type: "tool_execution_update",
+    toolCallId: id,
+    toolName: "bash",
+    args: { command: "sleep 1" },
+    partialResult: { content: [{ type: "text", text: "still going" }] },
+    timestamp,
+});
+const toolEnd = (id: string, timestamp: number) => ({
+    type: "tool_execution_end",
+    toolCallId: id,
+    toolName: "bash",
+    isError: false,
+    timestamp,
+});
+
+describe("subagent extension Limits", () => {
+    test("a child that keeps calling tools past the wall clock is ended by the wall clock Limit", async () => {
+        const fixture = limitsHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+
+        for (let step = 0; step < 11; step++) {
+            await fixture.clock.advance(5 * MINUTE);
+            await child.emitEvent(toolStart(`tool-${step}`, fixture.clock.now));
+            await child.emitEvent(toolEnd(`tool-${step}`, fixture.clock.now));
+            expect((await fixture.status(id)).status).toBe("running");
+        }
+        await fixture.clock.advance(5 * MINUTE);
+
+        const result = await fixture.result(id);
+        expect(result.status).toBe("timed_out");
+        expect(result.text).toContain("wall clock");
+        expect(result.text).toContain("60 minute");
+        expect(child.signals[0]).toBe("SIGTERM");
+        const run = await fixture.status(id);
+        expect(
+            run.recentActivity.some((item: any) => item.kind === "diagnostic" && /wall clock/i.test(item.title)),
+        ).toBe(true);
+    });
+
+    test("a child that produces no events while idle past the stall timeout is ended by the stall Limit", async () => {
+        const fixture = limitsHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+
+        await fixture.clock.advance(9 * MINUTE);
+        expect((await fixture.status(id)).status).toBe("running");
+        await fixture.clock.advance(MINUTE);
+
+        const result = await fixture.result(id);
+        expect(result.status).toBe("stalled");
+        expect(result.text).toContain("stall");
+        expect(result.text).toContain("10 minute");
+        expect(result.text).not.toContain("tool stall");
+        expect(child.signals[0]).toBe("SIGTERM");
+    });
+
+    test("an active tool without output past the tool-stall timeout is ended by the tool-stall Limit; streaming output resets it", async () => {
+        const fixture = limitsHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+        await child.emitEvent(toolStart("tool-a", fixture.clock.now));
+
+        // Past the idle stall timeout, but a tool is active so the longer tool-stall Limit applies.
+        await fixture.clock.advance(12 * MINUTE);
+        expect((await fixture.status(id)).status).toBe("running");
+
+        // Streaming output resets the tool-stall timer.
+        await child.emitEvent(toolUpdate("tool-a", fixture.clock.now));
+        await fixture.clock.advance(14 * MINUTE);
+        expect((await fixture.status(id)).status).toBe("running");
+
+        await fixture.clock.advance(MINUTE);
+        const result = await fixture.result(id);
+        expect(result.status).toBe("tool_stalled");
+        expect(result.text).toContain("tool stall");
+        expect(result.text).toContain("15 minute");
+        expect(child.signals[0]).toBe("SIGTERM");
+    });
+
+    test("termination escalates SIGTERM to SIGKILL when the child ignores SIGTERM", async () => {
+        const fixture = limitsHost({ ignoresSigterm: true });
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+
+        await fixture.clock.advance(10 * MINUTE);
+        expect(child.signals).toEqual(["SIGTERM"]);
+        expect(child.closed).toBe(false);
+
+        await fixture.clock.advance(2_000);
+        expect(child.signals[1]).toBe("SIGKILL");
+        expect(child.closed).toBe(true);
+        expect((await fixture.result(id)).status).toBe("stalled");
     });
 });

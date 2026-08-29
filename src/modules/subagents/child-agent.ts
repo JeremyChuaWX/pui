@@ -4,9 +4,11 @@ import * as path from "node:path";
 import type { Readable } from "node:stream";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createGracefulTermination, killProcessTree } from "#shared/lib/bounded-process.js";
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { appendBoundedUtf8, truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage, isRecord } from "#shared/lib/validate.js";
 import { JsonLineParser } from "./json-events.js";
+import { describeLimit, type JobLimits } from "./profiles/profile.js";
 import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
 
 const DEFAULT_THROTTLE_MS = 75;
@@ -142,7 +144,17 @@ export interface ChildAgentState {
     updatedAt: number;
 }
 
-export type ChildAgentTerminalStatus = "succeeded" | "failed" | "cancelled" | "timed_out";
+/** `timed_out`, `stalled`, and `tool_stalled` are the wall clock, stall, and tool-stall Limits respectively. */
+export type ChildAgentTerminalStatus = "succeeded" | "failed" | "cancelled" | "timed_out" | "stalled" | "tool_stalled";
+
+/** Why the runtime stopped the child before it exited on its own. */
+interface Termination {
+    status: Extract<ChildAgentTerminalStatus, "cancelled" | "timed_out" | "stalled" | "tool_stalled">;
+    /** Short activity title, shown in the Job's recent activity. */
+    title: string;
+    /** First line of the terminal error. */
+    message: string;
+}
 
 export interface ChildAgentResult {
     status: ChildAgentTerminalStatus;
@@ -162,7 +174,8 @@ export interface RunChildAgentOptions {
     command: string;
     args: string[];
     cwd: string;
-    timeoutMs: number;
+    /** The three Limits the child runs under. */
+    limits: JobLimits;
     /** Initial model label, canonicalized as the child reports its provider and model. */
     model: string;
     /** Usage seed for details that already carry aggregated usage. */
@@ -175,7 +188,8 @@ export interface RunChildAgentOptions {
     onFlush?: (events: ChildAgentEvent[], state: ChildAgentState) => void;
     throttleMs?: number;
     killGraceMs?: number;
-    now?: () => number;
+    /** Time source and timer scheduler for the throttle, the Limits, and the SIGKILL grace. */
+    clock?: Clock;
     spawn?: SpawnChildAgent;
 }
 
@@ -280,12 +294,15 @@ function spawnDefault(
 }
 
 /**
- * Run one child Pi process and always resolve to a structured terminal result. The caller decides
- * whether a failed terminal result should be thrown, and folds the event stream into its own
- * protocol's shape.
+ * Run one child Pi process and always resolve to a structured terminal result. Owns the three
+ * Limits (wall clock, stall, tool stall) and SIGTERM-to-SIGKILL escalation over the process tree.
+ * The caller decides whether a failed terminal result should be thrown, and folds the event
+ * stream into its own protocol's shape.
  */
 export async function runChildAgent(options: RunChildAgentOptions): Promise<ChildAgentResult> {
-    const now = options.now ?? Date.now;
+    const clock = options.clock ?? SYSTEM_CLOCK;
+    const now = () => clock.now();
+    const limits = options.limits;
     const throttleMs = Math.max(0, options.throttleMs ?? DEFAULT_THROTTLE_MS);
     const killGraceMs = Math.max(0, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
     const spawnChild = options.spawn ?? spawnDefault;
@@ -306,12 +323,15 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
     let exitCode: number | null = null;
     let exitSignal: NodeJS.Signals | null = null;
     let spawnError: Error | undefined;
-    let terminationReason: Extract<ChildAgentTerminalStatus, "cancelled" | "timed_out"> | undefined;
+    let termination: Termination | undefined;
     let settled = false;
     let closed = false;
     let dirty = false;
-    let updateTimer: NodeJS.Timeout | undefined;
-    let timeoutTimer: NodeJS.Timeout | undefined;
+    let updateTimer: unknown;
+    let wallClockTimer: unknown;
+    let stallTimer: unknown;
+    /** Clock time of the newest child event; the stall Limits count from here. */
+    let lastActivityAt = now();
     let lastFlush = Number.NEGATIVE_INFINITY;
     let pendingEvents: ChildAgentEvent[] = [];
     const finalizedMessages = new Set<string>();
@@ -325,14 +345,14 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         }
         const wait = throttleMs - (now() - lastFlush);
         if (!force && wait > 0) {
-            if (!updateTimer)
-                updateTimer = setTimeout(() => {
+            if (updateTimer === undefined)
+                updateTimer = clock.setTimeout(() => {
                     updateTimer = undefined;
                     flush(true);
                 }, wait);
             return;
         }
-        if (updateTimer) clearTimeout(updateTimer);
+        if (updateTimer !== undefined) clock.clearTimeout(updateTimer);
         updateTimer = undefined;
         lastFlush = now();
         const events = pendingEvents;
@@ -345,10 +365,45 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         }
     };
 
+    /**
+     * Record child activity. The child's own timestamp feeds the state; the stall Limits count
+     * from this process's clock, so a child cannot postpone them by reporting future times.
+     */
     const touch = (timestamp: number) => {
         state.updatedAt = timestamp;
         dirty = true;
+        lastActivityAt = now();
+        armStallTimer();
     };
+
+    /** The stall Limit that applies right now: tool stall while a tool is active, stall otherwise. */
+    const activeStallLimit = () =>
+        activeTools.size > 0
+            ? { status: "tool_stalled" as const, name: "tool stall", ms: limits.toolStallTimeoutMs }
+            : { status: "stalled" as const, name: "stall", ms: limits.stallTimeoutMs };
+
+    /** Re-arm the one stall timer for the Limit that applies, measured from the newest activity. */
+    function armStallTimer(): void {
+        if (stallTimer !== undefined) clock.clearTimeout(stallTimer);
+        stallTimer = undefined;
+        if (!child || closed || settled || termination) return;
+        const limit = activeStallLimit();
+        if (limit.ms <= 0) return;
+        const remaining = limit.ms - (now() - lastActivityAt);
+        if (remaining > 0) {
+            stallTimer = clock.setTimeout(armStallTimer, remaining);
+            return;
+        }
+        const label = describeLimit(limit.ms);
+        terminate({
+            status: limit.status,
+            title: `${limit.name === "stall" ? "Stall" : "Tool stall"} limit reached`,
+            message:
+                limit.status === "tool_stalled"
+                    ? `Subagent's active tool produced no output for ${label} (tool stall limit).`
+                    : `Subagent produced no events for ${label} while no tool was active (stall limit).`,
+        });
+    }
 
     const pushEvent = (event: ChildAgentEvent, force = false) => {
         pendingEvents.push(
@@ -491,36 +546,35 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         if (!child || closed) return;
         killProcessTree(child, signal);
     };
-    const terminator = createGracefulTermination(sendSignal, { graceMs: killGraceMs });
+    const terminator = createGracefulTermination(sendSignal, { graceMs: killGraceMs, timers: clock });
 
-    const requestTermination = (reason: Extract<ChildAgentTerminalStatus, "cancelled" | "timed_out">) => {
-        if (settled || closed || terminationReason) return;
-        terminationReason = reason;
+    function terminate(next: Termination): void {
+        if (settled || closed || termination) return;
+        termination = next;
         const timestamp = now();
         state.phase = "exiting";
         touch(timestamp);
-        pushEvent(
-            {
-                kind: "diagnostic",
-                timestamp,
-                title: reason === "cancelled" ? "Cancellation requested" : "Timeout reached",
-                isError: true,
-            },
-            true,
-        );
+        pushEvent({ kind: "diagnostic", timestamp, title: next.title, isError: true }, true);
         terminator.begin();
+    }
+
+    const abortListener = () =>
+        terminate({ status: "cancelled", title: "Cancellation requested", message: "Subagent was cancelled." });
+
+    const clearTimers = () => {
+        for (const handle of [wallClockTimer, stallTimer, updateTimer]) {
+            if (handle !== undefined) clock.clearTimeout(handle);
+        }
+        wallClockTimer = undefined;
+        stallTimer = undefined;
+        updateTimer = undefined;
     };
 
-    const abortListener = () => requestTermination("cancelled");
-
     const finalize = (): ChildAgentResult => {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        timeoutTimer = undefined;
         terminator.dispose();
         if (options.signal) options.signal.removeEventListener("abort", abortListener);
         if (dirty) flush(true);
-        if (updateTimer) clearTimeout(updateTimer);
-        updateTimer = undefined;
+        clearTimers();
         settled = true;
 
         const stopReason = finalMessage?.stopReason;
@@ -529,15 +583,9 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         let status: ChildAgentTerminalStatus;
         let error: string | undefined;
 
-        if (terminationReason === "cancelled") {
-            status = "cancelled";
-            error = boundedDiagnostic("Subagent was cancelled.", outputOrDiagnostic);
-        } else if (terminationReason === "timed_out") {
-            status = "timed_out";
-            error = boundedDiagnostic(
-                `Subagent timed out after ${options.timeoutMs / 1000} seconds.`,
-                outputOrDiagnostic,
-            );
+        if (termination) {
+            status = termination.status;
+            error = boundedDiagnostic(termination.message, outputOrDiagnostic);
         } else if (spawnError) {
             status = "failed";
             error = boundedDiagnostic(`Unable to start child Pi: ${spawnError.message}`, stderrOrDiagnostic);
@@ -587,7 +635,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
     };
 
     if (options.signal?.aborted) {
-        terminationReason = "cancelled";
+        termination = { status: "cancelled", title: "Cancellation requested", message: "Subagent was cancelled." };
         return finalize();
     }
 
@@ -645,9 +693,19 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         });
 
         if (options.signal) options.signal.addEventListener("abort", abortListener, { once: true });
-        if (options.timeoutMs > 0) {
-            timeoutTimer = setTimeout(() => requestTermination("timed_out"), options.timeoutMs);
+        if (limits.wallClockMs > 0) {
+            wallClockTimer = clock.setTimeout(
+                () =>
+                    terminate({
+                        status: "timed_out",
+                        title: "Wall clock limit reached",
+                        message: `Subagent reached its ${describeLimit(limits.wallClockMs)} wall clock limit.`,
+                    }),
+                limits.wallClockMs,
+            );
         }
+        lastActivityAt = startedAt;
+        armStallTimer();
         if (options.signal?.aborted) abortListener();
     });
 }

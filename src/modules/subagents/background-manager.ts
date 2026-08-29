@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
 import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
-import { getPiInvocation } from "./child-agent.js";
-import { childArgs, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
+import { getPiInvocation, type SpawnChildAgent } from "./child-agent.js";
+import { childArgs, profileLimits, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
 import {
     appendSubagentActivity,
     createInitialSubagentRun,
@@ -46,8 +47,11 @@ interface BackgroundManagerOptions {
     semaphore: AbortableSemaphore;
     run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
     invocation?: typeof getPiInvocation;
+    /** Spawns the child process; tests inject a scripted child. */
+    spawn?: SpawnChildAgent;
     environment?: NodeJS.ProcessEnv;
-    now?: () => number;
+    /** Time source and timer scheduler for Job timestamps and the child runner's Limits. */
+    clock?: Clock;
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
     deliver: (result: BackgroundTerminalResult) => void;
     isIdle?: () => boolean;
@@ -122,7 +126,8 @@ export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
     private readonly deferred = new Map<string, BackgroundTerminalResult>();
-    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore">>;
+    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore" | "spawn">> &
+        Pick<BackgroundManagerOptions, "spawn">;
     private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
     constructor(options: BackgroundManagerOptions) {
@@ -131,7 +136,7 @@ export class BackgroundSubagentManager {
             run: options.run ?? runSubagent,
             invocation: options.invocation ?? getPiInvocation,
             environment: options.environment ?? process.env,
-            now: options.now ?? Date.now,
+            clock: options.clock ?? SYSTEM_CLOCK,
             isIdle: options.isIdle ?? (() => false),
         };
         this.outputStore =
@@ -150,7 +155,7 @@ export class BackgroundSubagentManager {
         }
         const model = resolveProfileModel(input.profile, input.model, this.options.environment);
         const id = randomUUID();
-        const now = this.options.now();
+        const now = this.options.clock.now();
         const run = createInitialSubagentRun({ id, agent: input.profile.name, model, cwd, now });
         const controller = new AbortController();
         const job: Job = {
@@ -253,7 +258,7 @@ export class BackgroundSubagentManager {
         if (this.outputStore instanceof RetainedOutputStore) this.outputStore.startSession();
     }
 
-    async shutdown(timeoutMs = 3_000): Promise<void> {
+    async shutdown(teardownMs = 3_000): Promise<void> {
         if (this.shuttingDown) return;
         this.shuttingDown = true;
         this.deferred.clear();
@@ -265,7 +270,7 @@ export class BackgroundSubagentManager {
         await Promise.race([
             Promise.allSettled(settlements),
             new Promise<void>((resolve) => {
-                timer = setTimeout(resolve, timeoutMs);
+                timer = setTimeout(resolve, teardownMs);
             }),
         ]);
         if (timer) clearTimeout(timer);
@@ -311,7 +316,8 @@ export class BackgroundSubagentManager {
         model: string,
         cwd: string,
     ): Promise<void> {
-        const { semaphore, run: runChild, invocation, now } = this.options;
+        const { semaphore, run: runChild, invocation, clock, spawn } = this.options;
+        const now = () => clock.now();
         const signal = job.controller.signal;
         let run = job.snapshot.run;
         let output = "";
@@ -346,8 +352,10 @@ export class BackgroundSubagentManager {
                 command: child.command,
                 args: child.args,
                 cwd,
-                timeoutMs: profile.timeoutMs,
+                limits: profileLimits(profile),
                 signal,
+                clock,
+                ...(spawn ? { spawn } : {}),
                 onSnapshot: (next) => {
                     run = next;
                     this.publish(job, next);

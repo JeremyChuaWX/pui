@@ -1,10 +1,10 @@
-/** The three watchdogs every Job runs under. Ticket 07 enforces the stall timers; the wall clock is enforced today. */
+/** The three watchdogs every Job runs under. Each is in milliseconds; 0 disables that Limit. */
 export interface JobLimits {
-    /** Whole-Job wall clock in milliseconds. */
-    timeoutMs: number;
-    /** Time without child progress while no tool is active. */
+    /** Whole-Job wall clock, counted from spawn regardless of activity. */
+    wallClockMs: number;
+    /** Time without a child event while no tool is active. */
     stallTimeoutMs: number;
-    /** Time without child progress while a tool is active. */
+    /** Time without a child event while a tool is active; streaming tool output resets it. */
     toolStallTimeoutMs: number;
 }
 
@@ -12,7 +12,7 @@ const MINUTE = 60_000;
 
 /** Default Limits shared by every Profile. A Profile may override any one of them. */
 export const DEFAULT_LIMITS: JobLimits = {
-    timeoutMs: 60 * MINUTE,
+    wallClockMs: 60 * MINUTE,
     stallTimeoutMs: 10 * MINUTE,
     toolStallTimeoutMs: 15 * MINUTE,
 };
@@ -48,6 +48,15 @@ export function defineProfile(profile: ProfileDeclaration): SubagentProfile {
     return { ...DEFAULT_LIMITS, ...profile };
 }
 
+/** The effective Limits of a Profile, ready to hand to the child runner. */
+export function profileLimits(profile: SubagentProfile): JobLimits {
+    return {
+        wallClockMs: profile.wallClockMs,
+        stallTimeoutMs: profile.stallTimeoutMs,
+        toolStallTimeoutMs: profile.toolStallTimeoutMs,
+    };
+}
+
 /** Explicit argument first, then the Profile's environment variable, then its default. Blank values are ignored. */
 export function resolveProfileModel(
     profile: SubagentProfile,
@@ -76,9 +85,11 @@ export function childArgs(profile: SubagentProfile, model: string, prompt: strin
     ];
 }
 
-function minutes(ms: number): string {
+/** "60 minutes", "2.5 minutes", or "disabled" for a zero Limit. */
+export function describeLimit(ms: number): string {
+    if (ms <= 0) return "disabled";
     const value = ms / MINUTE;
-    return `${Number.isInteger(value) ? value : value.toFixed(1)} minutes`;
+    return `${Number.isInteger(value) ? value : value.toFixed(1)} minute${value === 1 ? "" : "s"}`;
 }
 
 /** The sentence a spawn tool description ends with so the model can pick a Profile without reading docs. */
@@ -86,7 +97,7 @@ export function describeProfile(profile: SubagentProfile): string {
     return (
         `Tools: ${profile.tools.join(", ")}. ` +
         `Default model: ${profile.defaultModel} (override with the model argument or ${profile.modelEnv}). ` +
-        `Limits: ${minutes(profile.timeoutMs)} wall clock, ${minutes(profile.stallTimeoutMs)} stall, ` +
-        `${minutes(profile.toolStallTimeoutMs)} tool stall.`
+        `Limits: ${describeLimit(profile.wallClockMs)} wall clock, ${describeLimit(profile.stallTimeoutMs)} stall, ` +
+        `${describeLimit(profile.toolStallTimeoutMs)} tool stall.`
     );
 }
