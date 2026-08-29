@@ -20,7 +20,7 @@
         "lint": "biome check .",
         "format": "biome format --write .",
         "check": "bun run lint && bun run typecheck && bun scripts/check-boundaries.ts && bun run test && bun run build && bun scripts/smoke-build.ts",
-        "install": "./scripts/install-local.sh"
+        "link": "./scripts/install-local.sh"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.80.10",

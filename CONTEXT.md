@@ -40,7 +40,7 @@ _Avoid_: public folder, exports folder, host entry
 
 **UI Entry**:
 The observation-shaped interface a Module exports for the OpenTUI layer (view models, protocol parsers, change events). The only way UI code may reach a Module.
-_Avoid_: bridge, view model file (as a location)
+_Avoid_: view model file (as a location)
 
 ### Subagents
 

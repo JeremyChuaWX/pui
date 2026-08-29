@@ -14,14 +14,14 @@ On macOS and Linux:
 
 ```sh
 cd ~/dev/pui
-bun install --frozen-lockfile --ignore-scripts
+bun install --frozen-lockfile
 bun run build
-bun run install
+bun run link
 ```
 
 `bun run build` creates a minified native executable with embedded source maps for the current platform. The output is `dist/pui` on macOS and Linux or `dist/pui.exe` on Windows. Running it does not require Bun or this project's `node_modules`.
 
-On macOS and Linux, `install` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
+On macOS and Linux, `bun run link` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
 
 ## Run
 
@@ -56,7 +56,7 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 - Model and session pickers, a `/subagents` Job picker, and a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
-- Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
+- Ctrl+G prompt editing in `$VISUAL` or `$EDITOR` (nvim by default) with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
@@ -112,7 +112,7 @@ Every Job runs under three Limits. Any child event resets the two stall timers, 
 | Stall | 10 minutes | no child event arrives while no tool is active | `stalled` |
 | Tool stall | 15 minutes | no child event arrives while a tool is active | `tool_stalled` |
 
-When a Limit fires, the child's whole process group gets SIGTERM, then SIGKILL two seconds later, and the Job's error names the Limit and its value. Limits are set per Profile in code; there is no environment variable for them.
+When a Limit fires, the child's whole process group gets SIGTERM, then SIGKILL two seconds later, and the Job's error names the Limit and its value. Limits are set per Profile in code; there is no environment variable for them. If pui itself exits for any reason, including a crash, every live child process group gets SIGKILL on the way out.
 
 ### Results
 
@@ -132,7 +132,7 @@ These tools are built into pui; the regular `pi` command does not load them.
 
 ## Web tools
 
-pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/modules/web/`](src/modules/web/). `web_search` uses GPT built-in web search through an authenticated OpenAI Responses or ChatGPT/Codex model. It uses the active model when compatible; otherwise set `WEB_SEARCH_MODEL=provider/model` to a registered, authenticated compatible model. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
+pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/modules/web/`](src/modules/web/). `web_search` calls the ChatGPT Codex standalone search endpoint, which runs searches server-side without model inference, so searches consume no model tokens. It needs ChatGPT/Codex credentials, resolved in order: `CODEX_ACCESS_TOKEN` (with optional `CODEX_ACCOUNT_ID`), a Pi-authenticated ChatGPT/Codex model (the active model, or `WEB_SEARCH_MODEL=provider/model` to select another registered one), then the Codex CLI login at `~/.codex/auth.json`. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
 
 Both tools cap returned output at 50KB and Pi's default line limit. `web_crawl` accepts a smaller `max_bytes` limit, and `web_search` returns at most 10 source URLs. Complete oversized results may be retained in private temporary files, limited to 10 MiB per result and 50 MiB per web-extension session. A retained path is valid only for the current session and is removed at session shutdown. Retention is best-effort: if storage fails or a quota is reached, the successful tool result still includes a bounded preview, reports that the complete output was not retained, and omits `fullOutputPath`.
 
