@@ -113,7 +113,11 @@ test("background delivery persists once on resume and wait consumption suppresse
                     }
                     const message = parentMessage(content, stopReason);
                     stream.push({ type: "start", partial: message });
-                    if (currentTurn > 0) {
+                    // In the wait case the Job settles only once subagent_wait is executing (see the
+                    // tool_execution_start hook below); a Job that finishes with nobody waiting is
+                    // delivered as a follow-up instead and a later wait would find nothing.
+                    const waitTurn = consumeWithWait && currentTurn === 1;
+                    if (currentTurn > 0 && !waitTurn) {
                         await new Promise<void>((resolve) => setImmediate(resolve));
                         allowBackgroundSettlement();
                         await backgroundSettled;
@@ -138,6 +142,9 @@ test("background delivery persists once on resume and wait consumption suppresse
                 {
                     name: "subagent-background-sdk-fixture",
                     factory: (pi) => {
+                        pi.on("tool_execution_start", (event) => {
+                            if (event.toolName === "subagent_wait") allowBackgroundSettlement();
+                        });
                         pi.events?.on("pui.subagent.background", (event: any) => {
                             if (event.job?.run.status === "succeeded" && event.job.run.fullOutputPath)
                                 markBackgroundSettled();

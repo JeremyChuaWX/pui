@@ -68,7 +68,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     let shuttingDown = false;
     let sessionId = "unbound";
     const instanceId = crypto.randomUUID();
-    let idle = true;
     let background: BackgroundSubagentManager;
     const route = () => ({ sessionId, instanceId });
     const channel = createBackgroundChannel({
@@ -90,6 +89,8 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
     });
     const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") =>
         channel.emit(type, { job }, route());
+    // followUp queues behind the current turn and triggerTurn starts one when the agent is idle,
+    // so neither the manager nor this Extension tracks whether the agent is busy.
     const deliver = (result: BackgroundTerminalResult) => {
         if (shuttingDown) return;
         const pathNote = result.fullOutputPath ? `\n\nFull output: ${result.fullOutputPath}` : "";
@@ -112,7 +113,6 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         clock,
         emit,
         deliver,
-        isIdle: () => idle,
         outputStore,
     });
     pi.on("session_start", (_event, ctx) => {
@@ -120,18 +120,9 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         outputStore.startSession();
         background.startSession();
         sessionId = ctx.sessionManager.getSessionId();
-        idle = ctx.isIdle();
         channel.bind(route());
         channel.ready();
     });
-    pi.on("agent_start", () => {
-        idle = false;
-    });
-    pi.on("agent_settled", () => {
-        idle = true;
-        background.flushDeferred();
-    });
-
     pi.on("session_shutdown", async () => {
         shuttingDown = true;
         await channel.shutdown(async () => {

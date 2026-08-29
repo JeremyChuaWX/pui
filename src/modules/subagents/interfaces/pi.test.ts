@@ -31,7 +31,7 @@ function successRun(output = "delegated answer") {
 }
 
 /** An extension host whose fake child spawner records every runner invocation. */
-function spawnHost(environment: NodeJS.ProcessEnv = {}) {
+function spawnHost(environment: NodeJS.ProcessEnv = {}, output = "delegated answer") {
     const host = createExtensionApiHarness();
     const runs: any[] = [];
     registerSubagentExtension(host.api, {
@@ -40,7 +40,7 @@ function spawnHost(environment: NodeJS.ProcessEnv = {}) {
         invocation: (args) => ({ command: "fake-pi", args }),
         run: async (options) => {
             runs.push(options);
-            return successRun()(options);
+            return successRun(output)(options);
         },
     });
     return {
@@ -81,9 +81,10 @@ describe("subagent extension integration", () => {
             "subagent_cancel",
         ]);
         expect(host.handlers.has("session_start")).toBe(true);
-        expect(host.handlers.has("agent_settled")).toBe(true);
-        expect(host.handlers.has("tool_result")).toBe(false);
         expect(host.handlers.has("session_shutdown")).toBe(true);
+        expect(host.handlers.has("agent_start")).toBe(false);
+        expect(host.handlers.has("agent_settled")).toBe(false);
+        expect(host.handlers.has("tool_result")).toBe(false);
     });
 
     test("explorer returns a Job id immediately and runs a read-only child with its own system prompt", async () => {
@@ -201,6 +202,81 @@ describe("subagent extension integration", () => {
             .tool("worker")
             .execute("home", { prompt: "x", cwd: "~" }, undefined, undefined, { cwd: extensionCwd });
         expect(fromHome.details.run.cwd).toBe(fs.realpathSync(os.homedir()));
+    });
+});
+
+describe("subagent extension result delivery", () => {
+    async function spawnOnly(fixture: ReturnType<typeof spawnHost>, profile: "explorer" | "worker" = "explorer") {
+        const spawned = await fixture.host
+            .tool(profile)
+            .execute(`${profile}-call`, { prompt: `Use ${profile}`, cwd: extensionCwd }, undefined, undefined, {
+                cwd: extensionCwd,
+            });
+        return spawned.details.id as string;
+    }
+
+    test("a finished Job nobody waited for sends exactly one subagent-result follow-up that triggers a turn", async () => {
+        const fixture = spawnHost();
+        const id = await spawnOnly(fixture);
+
+        await waitFor(() => fixture.host.messages.length === 1, 5_000, "result was not delivered");
+        await settleEventLoop();
+        expect(fixture.host.messages).toHaveLength(1);
+        const [message, options] = fixture.host.messages[0]!;
+        expect(options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+        expect(message.customType).toBe("subagent-result");
+        expect(message.display).toBe(true);
+        expect(message.details).toEqual({ id, title: "Use explorer", status: "succeeded" });
+        expect(message.content).toBe(`Background subagent Use explorer (${id}) succeeded:\n\ndelegated answer`);
+    });
+
+    test("a Job consumed by subagent_wait sends no follow-up", async () => {
+        const fixture = spawnHost();
+        const { spawned, waited } = await fixture.spawnAndWait("worker");
+        expect(waited.details.results.map((result: any) => result.id)).toEqual([spawned.details.id]);
+
+        await settleEventLoop();
+        expect(fixture.host.messages).toEqual([]);
+    });
+
+    test("subagent_check does not consume the result, so the follow-up still arrives", async () => {
+        const fixture = spawnHost();
+        const id = await spawnOnly(fixture);
+        await fixture.host.tool("subagent_check").execute("check", { id });
+
+        await waitFor(() => fixture.host.messages.length === 1, 5_000, "result was not delivered");
+        expect(fixture.host.messages[0]![0].details).toMatchObject({ id });
+    });
+
+    test("a truncated result names the retained full-output path, and shutdown removes the file", async () => {
+        const output = "x".repeat(20_000);
+        const fixture = spawnHost({}, output);
+        const id = await spawnOnly(fixture);
+
+        await waitFor(() => fixture.host.messages.length === 1, 5_000, "result was not delivered");
+        const [message] = fixture.host.messages[0]!;
+        const content = message.content as string;
+        expect(content).toContain("[Output truncated:");
+        const retained = /Full output: (.+)$/m.exec(content)?.[1];
+        expect(retained).toBeString();
+        expect(await fs.promises.readFile(retained!, "utf8")).toBe(output);
+        expect(message.details).toMatchObject({ id, status: "succeeded" });
+
+        await fixture.host.handler("session_shutdown")({ type: "session_shutdown" }, {});
+        await expect(fs.promises.stat(retained!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("shutdown aborts a running Job without sending a late result", async () => {
+        const fixture = limitsHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+
+        await fixture.host.handler("session_shutdown")({ type: "session_shutdown" }, {});
+        await settleEventLoop();
+        expect(child.signals[0]).toBe("SIGTERM");
+        expect(child.closed).toBe(true);
+        expect((await fixture.status(id)).status).toBe("cancelled");
+        expect(fixture.host.messages).toEqual([]);
     });
 });
 

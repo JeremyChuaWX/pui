@@ -53,8 +53,11 @@ interface BackgroundManagerOptions {
     /** Time source and timer scheduler for Job timestamps and the child runner's Limits. */
     clock?: Clock;
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
+    /**
+     * Receives each finished Job's result when no wait consumed it. The Extension forwards it to
+     * Pi as a follow-up message; Pi decides whether to start a turn or queue behind the current one.
+     */
     deliver: (result: BackgroundTerminalResult) => void;
-    isIdle?: () => boolean;
     outputStore?: SubagentOutputStore;
 }
 export interface BackgroundTerminalResult {
@@ -125,7 +128,6 @@ function boundedResult(result: BackgroundTerminalResult, bytes: number): Backgro
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
-    private readonly deferred = new Map<string, BackgroundTerminalResult>();
     private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore" | "spawn">> &
         Pick<BackgroundManagerOptions, "spawn">;
     private readonly outputStore: SubagentOutputStore;
@@ -137,7 +139,6 @@ export class BackgroundSubagentManager {
             invocation: options.invocation ?? getPiInvocation,
             environment: options.environment ?? process.env,
             clock: options.clock ?? SYSTEM_CLOCK,
-            isIdle: options.isIdle ?? (() => false),
         };
         this.outputStore =
             options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
@@ -213,7 +214,6 @@ export class BackgroundSubagentManager {
             let remaining = WAIT_TOTAL_BYTES;
             consumed = true;
             return jobs.map((job) => {
-                this.deferred.delete(job.snapshot.id);
                 if (!job.terminal) throw new Error(`Background subagent ${job.snapshot.id} did not settle correctly.`);
                 job.terminalConsumed = true;
                 const result = boundedResult(job.terminal, Math.min(WAIT_JOB_BYTES, remaining));
@@ -227,10 +227,8 @@ export class BackgroundSubagentManager {
                 if (count > 0) this.waitInterest.set(job.snapshot.id, count);
                 else {
                     this.waitInterest.delete(job.snapshot.id);
-                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle()) {
-                        this.deferred.delete(job.snapshot.id);
-                        this.consumeAndDeliver(job);
-                    }
+                    // A result that settled during an abandoned wait still has to reach the model.
+                    if (!consumed && job.terminal) this.consumeAndDeliver(job);
                 }
             }
         }
@@ -243,15 +241,6 @@ export class BackgroundSubagentManager {
         return jobs.map(copyJob);
     }
 
-    flushDeferred(): void {
-        if (this.shuttingDown) return;
-        for (const [id] of this.deferred) {
-            if ((this.waitInterest.get(id) ?? 0) > 0) continue;
-            this.deferred.delete(id);
-            this.consumeAndDeliver(this.require(id));
-        }
-    }
-
     /** Reopens the manager so a later session can spawn jobs after an earlier shutdown. */
     startSession(): void {
         this.shuttingDown = false;
@@ -261,7 +250,6 @@ export class BackgroundSubagentManager {
     async shutdown(teardownMs = 3_000): Promise<void> {
         if (this.shuttingDown) return;
         this.shuttingDown = true;
-        this.deferred.clear();
         const settlements = [...this.jobs.values()].map((job) => {
             job.controller.abort();
             return job.settlement;
@@ -274,7 +262,6 @@ export class BackgroundSubagentManager {
             }),
         ]);
         if (timer) clearTimeout(timer);
-        this.deferred.clear();
         await this.outputStore.cleanup();
     }
 
@@ -294,6 +281,8 @@ export class BackgroundSubagentManager {
     private consumeAndDeliver(job: Job): void {
         if (!job.terminal || job.terminalConsumed) return;
         job.terminalConsumed = true;
+        // A Job settling during shutdown is consumed but never sent; the session is going away.
+        if (this.shuttingDown) return;
         try {
             this.options.deliver(boundedResult(job.terminal, AUTO_RESULT_BYTES));
         } catch {
@@ -398,20 +387,14 @@ export class BackgroundSubagentManager {
             text: truncation.content,
             ...(fullOutputPath ? { fullOutputPath } : {}),
         });
-        if (!this.shuttingDown) {
-            if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
-            else if (this.options.isIdle()) this.consumeAndDeliver(job);
-            else this.deferred.set(job.snapshot.id, job.terminal);
-        }
+        // An active wait owns the result; otherwise it goes to the host at once.
+        if ((this.waitInterest.get(job.snapshot.id) ?? 0) === 0) this.consumeAndDeliver(job);
         this.prune();
     }
     private prune(limit = MAX_JOBS): void {
         while (this.jobs.size > limit) {
             const oldest = [...this.jobs.values()].find(
-                (job) =>
-                    job.terminal !== undefined &&
-                    !this.deferred.has(job.snapshot.id) &&
-                    (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
+                (job) => job.terminalConsumed && (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
             );
             if (!oldest) break;
             this.jobs.delete(oldest.snapshot.id);
