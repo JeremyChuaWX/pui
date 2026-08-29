@@ -260,7 +260,9 @@ the view models bound every string.
   retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, and the
   subagents Extension takes `spawn` and `clock`.
 - One deliberate exception: `src/modules/subagents/child-agent.ts` caches its process-wide
-  semaphore on `globalThis` so a duplicated module instance still shares one concurrency limit.
+  semaphore and its registry of live child processes on `globalThis` so a duplicated module
+  instance still shares one concurrency limit and one exit-time kill. The first spawn installs
+  the `exit` hook that SIGKILLs every tracked process group.
 
 ## Testing strategy
 

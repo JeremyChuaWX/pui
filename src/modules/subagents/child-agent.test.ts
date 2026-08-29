@@ -5,10 +5,10 @@ import {
     aggregateChildAgentUsage,
     type ChildAgentEvent,
     type ChildAgentState,
-    emptyChildAgentUsage,
     getPiInvocation,
     runChildAgent,
 } from "./child-agent.ts";
+import { emptySubagentUsage } from "./job-state.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 const cwd = path.dirname(fixture);
@@ -136,7 +136,7 @@ describe("runChildAgent", () => {
 
 describe("aggregateChildAgentUsage", () => {
     test("aggregates missing, zero, and partial usage safely", () => {
-        let usage = aggregateChildAgentUsage(emptyChildAgentUsage(), undefined);
+        let usage = aggregateChildAgentUsage(emptySubagentUsage(), undefined);
         usage = aggregateChildAgentUsage(usage, {
             input: 10,
             output: 2,

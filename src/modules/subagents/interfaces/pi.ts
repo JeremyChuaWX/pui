@@ -2,9 +2,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
-import { composeBoundedOutput, RetainedOutputStore } from "#shared/lib/retained-output.js";
+import { composeBoundedOutput } from "#shared/lib/retained-output.js";
 import { createBackgroundChannel } from "../background-channel.js";
-import { BackgroundSubagentManager, type BackgroundTerminalResult } from "../background-manager.js";
+import {
+    BackgroundSubagentManager,
+    type BackgroundTerminalResult,
+    createSubagentOutputStore,
+} from "../background-manager.js";
 import {
     BACKGROUND_SUBAGENT_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
@@ -70,7 +74,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         clock,
         environment,
     } = createDefaultSubagentDependencies(dependencies);
-    const outputStore = new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
+    const outputStore = createSubagentOutputStore();
     let shuttingDown = false;
     let sessionId = "unbound";
     const instanceId = crypto.randomUUID();

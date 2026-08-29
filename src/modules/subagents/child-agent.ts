@@ -23,15 +23,12 @@ const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
 
 const processState = globalThis as typeof globalThis & {
     __piSubagentSemaphoreV1?: AbortableSemaphore;
+    __piSubagentLiveChildrenV1?: Set<SpawnedChild>;
 };
 /** The one process-wide child-Pi concurrency slot, shared across every extension instance in this process. */
 export const PROCESS_CHILD_AGENT_SEMAPHORE: AbortableSemaphore =
     processState.__piSubagentSemaphoreV1 ?? new AbortableSemaphore(configuredSubagentConcurrency());
 if (!processState.__piSubagentSemaphoreV1) processState.__piSubagentSemaphoreV1 = PROCESS_CHILD_AGENT_SEMAPHORE;
-
-/** The runtime reports usage in the Job's own shape so the manager never translates it. */
-export type ChildAgentUsage = SubagentUsageV1;
-export const emptyChildAgentUsage = emptySubagentUsage;
 
 function nonNegativeNumber(value: unknown): number {
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
@@ -52,10 +49,10 @@ function usageCost(usage: unknown): number {
 
 /** Aggregate one finalized assistant message. Missing and non-finite fields count as zero. */
 export function aggregateChildAgentUsage(
-    current: ChildAgentUsage,
+    current: SubagentUsageV1,
     assistantUsage: unknown,
     turns = 1,
-): ChildAgentUsage {
+): SubagentUsageV1 {
     const input = usageField(assistantUsage, "input");
     const output = usageField(assistantUsage, "output");
     const cacheRead = usageField(assistantUsage, "cacheRead");
@@ -115,7 +112,7 @@ export interface ChildAgentState {
     phase: ChildAgentPhase;
     activeTools: ChildAgentTool[];
     model: string;
-    usage: ChildAgentUsage;
+    usage: SubagentUsageV1;
     /** Last non-empty assistant text, preview-bounded; empty until the child produces text. */
     outputPreview: string;
     /** Timestamp of the newest folded child event. */
@@ -143,7 +140,7 @@ export interface ChildAgentResult {
     exitCode: number | null;
     signal: NodeJS.Signals | null;
     model: string;
-    usage: ChildAgentUsage;
+    usage: SubagentUsageV1;
     /** Preview-bounded final output; empty when there was none. */
     outputPreview: string;
 }
@@ -157,7 +154,7 @@ export interface RunChildAgentOptions {
     /** Initial model label, canonicalized as the child reports its provider and model. */
     model: string;
     /** Usage seed for details that already carry aggregated usage. */
-    usage?: ChildAgentUsage;
+    usage?: SubagentUsageV1;
     signal?: AbortSignal;
     /**
      * Receives batched events with the folded state. Flushes are throttled except at spawn, tool
@@ -267,16 +264,23 @@ function phaseFor(activeToolCount: number): Extract<ChildAgentPhase, "thinking" 
 export const spawnChildAgentProcess: SpawnChildAgent = (command, args, options) =>
     nodeSpawn(command, [...args], options);
 
-const liveChildren = new Set<SpawnedChild>();
 /**
- * Kill every child Pi process this process still tracks. Registered on `exit` so a crash or an
- * unhandled rejection cannot leave a detached worker running with write access.
+ * Kill every child Pi process this process still tracks. Installed on `exit` by the first spawn,
+ * so a crash or an unhandled rejection cannot leave a detached worker running with write access.
+ * Lives on `globalThis` for the same reason as the semaphore: every module instance in the
+ * process must share one registry.
  */
 export function killLiveChildAgents(): void {
-    for (const child of liveChildren) killProcessTree(child, "SIGKILL");
-    liveChildren.clear();
+    for (const child of liveChildren()) killProcessTree(child, "SIGKILL");
+    liveChildren().clear();
 }
-process.once("exit", killLiveChildAgents);
+function liveChildren(): Set<SpawnedChild> {
+    if (!processState.__piSubagentLiveChildrenV1) {
+        processState.__piSubagentLiveChildrenV1 = new Set();
+        process.once("exit", killLiveChildAgents);
+    }
+    return processState.__piSubagentLiveChildrenV1;
+}
 
 /**
  * Run one child Pi process and always resolve to a structured terminal result. Owns the three
@@ -296,7 +300,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         phase: "thinking",
         activeTools: [],
         model: options.model,
-        usage: options.usage ? { ...options.usage } : emptyChildAgentUsage(),
+        usage: options.usage ? { ...options.usage } : emptySubagentUsage(),
         outputPreview: "",
         updatedAt: now(),
     };
@@ -641,7 +645,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         return finalize();
     }
     const runningChild = child;
-    liveChildren.add(runningChild);
+    liveChildren().add(runningChild);
 
     const startedAt = now();
     state.phase = "thinking";
@@ -671,7 +675,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
             // its detached process group ignores it. Escalate the group before clearing
             // the grace timer so cancellation never leaves a descendant behind.
             terminator.escalateOnClose();
-            liveChildren.delete(runningChild);
+            liveChildren().delete(runningChild);
             closed = true;
             exitCode = code;
             exitSignal = signal;

@@ -8,6 +8,7 @@ import {
     PromptHistory,
     REFERENCE_INSTRUCTION,
     REFERENCE_MARKER,
+    resolveEditor,
     type SelectionSource,
     trapFocus,
 } from "./app-support.js";
@@ -219,5 +220,14 @@ describe("PromptHistory", () => {
         history.resetBrowsing();
         expect(history.previous("new draft")).toBe("second");
         expect(history.next()).toBe("new draft");
+    });
+});
+
+describe("resolveEditor", () => {
+    test("prefers VISUAL, then EDITOR, then nvim, and splits flags off the command", () => {
+        expect(resolveEditor({ VISUAL: "code --wait", EDITOR: "vim" })).toEqual({ command: "code", args: ["--wait"] });
+        expect(resolveEditor({ EDITOR: " vim " })).toEqual({ command: "vim", args: [] });
+        expect(resolveEditor({ VISUAL: "", EDITOR: "" })).toEqual({ command: "nvim", args: [] });
+        expect(resolveEditor({})).toEqual({ command: "nvim", args: [] });
     });
 });

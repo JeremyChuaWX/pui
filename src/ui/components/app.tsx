@@ -7,7 +7,14 @@ import { errorMessage } from "#shared/lib/validate.js";
 import type { PuiController } from "../state/controller.js";
 import { shouldTriggerPromptAutocomplete } from "../state/prompt-autocomplete.js";
 import type { PromptAction, PromptCompletions, PuiSnapshot } from "../state/types.js";
-import { copyCurrentSelection, editPromptInEditor, isCopyShortcut, PromptHistory, trapFocus } from "./app-support.js";
+import {
+    copyCurrentSelection,
+    editPromptInEditor,
+    isCopyShortcut,
+    PromptHistory,
+    resolveEditor,
+    trapFocus,
+} from "./app-support.js";
 import { Dialog, type DialogState, extensionDialogState, type PickerItem } from "./dialogs.js";
 import {
     canNavigatePromptHistory,
@@ -231,11 +238,12 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
         const reference = props.controller.getLastAssistantText();
         let suspended = false;
         let failure: unknown;
+        const editor = resolveEditor().command;
 
         try {
             renderer.suspend();
             suspended = true;
-            process.stdout.write("Launching nvim. pui will resume when the editor exits.\n");
+            process.stdout.write(`Launching ${editor}. pui will resume when the editor exits.\n`);
             const edited = await editPromptInEditor(draft, reference, snapshot.cwd);
             if (edited !== undefined && prompt && !prompt.isDestroyed) {
                 promptHistory.resetBrowsing();
@@ -252,7 +260,7 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
         }
 
         if (failure) {
-            props.controller.notify(`Could not open nvim: ${errorMessage(failure)}`, "error");
+            props.controller.notify(`Could not open ${editor}: ${errorMessage(failure)}`, "error");
         }
     }
 

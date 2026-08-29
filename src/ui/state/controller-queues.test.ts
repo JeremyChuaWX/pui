@@ -1,16 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import { createFakeClock } from "#test-support/fake-clock.ts";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.ts";
 
 describe("ToastQueue", () => {
-    test("keeps the three newest toasts and drops them after their ttl", async () => {
+    test("keeps the three newest toasts and drops each one after its ttl", async () => {
         let changes = 0;
-        const queue = new ToastQueue(() => changes++);
-        for (const message of ["a", "b", "c", "d"]) queue.push(message);
+        const fake = createFakeClock();
+        const queue = new ToastQueue(() => changes++, fake.clock);
+        queue.push("a");
+        await fake.advance(1_000);
+        for (const message of ["b", "c", "d"]) queue.push(message);
         expect(queue.list().map((toast) => toast.message)).toEqual(["b", "c", "d"]);
         expect(changes).toBe(4);
+
+        await fake.advance(4_000);
+        expect(queue.list().map((toast) => toast.message)).toEqual(["b", "c", "d"]);
+        await fake.advance(1_000);
+        expect(queue.list()).toEqual([]);
+
+        queue.push("e");
         queue.dispose();
-        await Bun.sleep(10);
-        expect(queue.list()).toHaveLength(3);
+        await fake.advance(10_000);
+        expect(queue.list().map((toast) => toast.message)).toEqual(["e"]);
     });
 });
 
@@ -37,8 +48,12 @@ describe("ExtensionDialogQueue", () => {
     });
 
     test("a timeout or an aborted signal resolves the dialog to undefined and removes it", async () => {
-        const queue = new ExtensionDialogQueue(() => {});
-        const timed = queue.request({ kind: "confirm", title: "Slow", message: "" }, { timeout: 5 });
+        const fake = createFakeClock();
+        const queue = new ExtensionDialogQueue(() => {}, fake.clock);
+        const timed = queue.request({ kind: "confirm", title: "Slow", message: "" }, { timeout: 5_000 });
+        await fake.advance(4_999);
+        expect(queue.current()).toMatchObject({ title: "Slow" });
+        await fake.advance(1);
         expect(await timed).toBeUndefined();
         expect(queue.current()).toBeUndefined();
 

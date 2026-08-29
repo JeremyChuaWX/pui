@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { RetainedOutputStore } from "#shared/lib/retained-output.js";
 import { waitFor as waitUntil } from "#test-support/wait.js";
-import { BackgroundSubagentManager, type SubagentOutputStore } from "./background-manager.ts";
+import {
+    BackgroundSubagentManager,
+    createSubagentOutputStore,
+    type SubagentOutputStore,
+} from "./background-manager.ts";
 import { createTerminalSubagentJob, updateSubagentJob } from "./job-state.ts";
 import worker from "./profiles/worker/index.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
@@ -99,7 +102,7 @@ describe("BackgroundSubagentManager", () => {
         const deliveries: any[] = [];
         let finish!: () => void;
         const manager = new BackgroundSubagentManager({
-            outputStore: new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" }),
+            outputStore: createSubagentOutputStore(),
             semaphore: new AbortableSemaphore(1),
             invocation: (args) => ({ command: "fake", args }),
             deliver: (result) => deliveries.push(result),
@@ -176,7 +179,7 @@ describe("BackgroundSubagentManager", () => {
         const deliveries: any[] = [];
         const output = "x".repeat(20_000);
         const manager = new BackgroundSubagentManager({
-            outputStore: new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" }),
+            outputStore: createSubagentOutputStore(),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: (value) => deliveries.push(value),

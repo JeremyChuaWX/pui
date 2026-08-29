@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
-import { composeBoundedOutput, truncateUtf8 } from "#shared/lib/retained-output.js";
+import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
 import { type BackgroundSubagentJobV1, MAX_TRACKED_JOBS } from "./background-protocol.js";
 import { getPiInvocation, type SpawnChildAgent, spawnChildAgentProcess } from "./child-agent.js";
@@ -36,6 +36,11 @@ export interface SubagentOutputStore {
     /** Reopen the store for a new session after `cleanup`. */
     startSession(): void;
     cleanup(): Promise<unknown>;
+}
+
+/** The production store: private temp files under one `pi-subagent-` directory per session. */
+export function createSubagentOutputStore(): SubagentOutputStore {
+    return new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
 }
 
 export interface SpawnInput {
