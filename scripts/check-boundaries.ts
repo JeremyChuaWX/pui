@@ -56,8 +56,8 @@ function moduleInterfaceEntry(filePath: string): string | undefined {
     return match?.[1];
 }
 
+// The App layer has no entry: it imports only Pi Core and the UI start function.
 const INTERFACE_ENTRY_BY_LAYER: Record<string, string> = {
-    app: "host",
     ui: "ui",
     "pi-core": "pi",
 };

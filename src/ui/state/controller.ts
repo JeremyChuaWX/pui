@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import * as fs from "node:fs";
+import { execFile } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -20,13 +19,9 @@ import {
 import { type AutocompleteItem, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import { fdCompletionCommand } from "#modules/file-search/interfaces/ui.js";
 import { BackgroundSubagentBridge } from "#modules/subagents/interfaces/ui.js";
-import {
-    WorkflowBridge,
-    type WorkflowControlAction,
-    type WorkflowRunSummaryV1,
-} from "#modules/workflows/interfaces/ui.js";
 import { type BundledSkillResources, createBundledSkillResources } from "#pi-core/bundled-skills.js";
 import { BUNDLED_EXTENSION_FACTORIES } from "#pi-core/register.js";
+import { appendBoundedUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
 import { ExtensionDialogQueue, ToastQueue } from "./controller-queues.js";
 import { buildDisplayItems, formatCount, formatToolTitle, reconcileDisplayItems } from "./format.js";
@@ -61,7 +56,7 @@ export interface ControllerOptions {
 export interface ControllerDependencies {
     eventBus?: EventBusController;
     extensionFactories?: InlineExtension[];
-    readGitBranch?: (cwd: string) => string | undefined;
+    readGitBranch?: (cwd: string) => Promise<string | undefined>;
     /** Prepared skill files whose ownership transfers to the controller. */
     bundledSkillResources?: BundledSkillResources;
 }
@@ -95,6 +90,9 @@ export function createPuiRuntimeFactory(
 
 type Listener = (snapshot: PuiSnapshot) => void;
 
+/** A `!` command keeps only the newest bytes of its output on screen; the terminal is not a log. */
+const BASH_OUTPUT_BYTES = 256 * 1024;
+
 const COALESCED_SESSION_EVENTS = new Set<AgentSessionEvent["type"]>([
     "queue_update",
     "message_start",
@@ -118,7 +116,6 @@ export type PaletteCommandId =
     | "models"
     | "sessions"
     | "subagents"
-    | "workflows"
     | "new-session"
     | "compact"
     | "thinking"
@@ -232,13 +229,6 @@ const COMMANDS: readonly CommandDescriptor[] = [
         palette: { id: "subagents", rank: 3, label: "Subagents", detail: "Inspect or cancel background jobs" },
     },
     {
-        name: "workflows",
-        description: "Inspect and control workflow runs",
-        hidden: true,
-        run: () => "workflows",
-        palette: { id: "workflows", rank: 4, label: "Workflows", detail: "Inspect and control workflow runs" },
-    },
-    {
         name: "thinking",
         description: "Cycle the thinking level",
         run: (controller) => {
@@ -295,25 +285,13 @@ function compactPath(cwd: string): string {
     return cwd;
 }
 
-function canonicalPath(cwd: string): string {
-    try {
-        return fs.realpathSync.native(cwd);
-    } catch {
-        return path.resolve(cwd);
-    }
-}
-
-function readGitBranch(cwd: string): string | undefined {
-    try {
-        const branch = execFileSync("git", ["branch", "--show-current"], {
-            cwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-        }).trim();
-        return branch || undefined;
-    } catch {
-        return undefined;
-    }
+/** Off the render path: git can take a while on a cold or networked filesystem. */
+function readGitBranch(cwd: string): Promise<string | undefined> {
+    return new Promise((resolve) => {
+        execFile("git", ["branch", "--show-current"], { cwd, encoding: "utf8" }, (error, stdout) => {
+            resolve(error ? undefined : stdout.trim() || undefined);
+        });
+    });
 }
 
 export class PuiController {
@@ -330,10 +308,9 @@ export class PuiController {
     private exitRequested = false;
     private gitBranch?: string;
     private currentSnapshot: PuiSnapshot;
-    private readonly readGitBranch: (cwd: string) => string | undefined;
+    private readonly readGitBranch: (cwd: string) => Promise<string | undefined>;
     private readonly toasts = new ToastQueue(() => this.refresh());
     private readonly extensionDialogs = new ExtensionDialogQueue(() => this.refresh());
-    private readonly workflows: WorkflowBridge;
     private readonly backgroundSubagents: BackgroundSubagentBridge;
     private readonly eventBus: EventBusController;
     private readonly bundledSkillResources?: BundledSkillResources;
@@ -343,13 +320,12 @@ export class PuiController {
         this.eventBus = dependencies.eventBus ?? createEventBus();
         this.readGitBranch = dependencies.readGitBranch ?? readGitBranch;
         this.bundledSkillResources = dependencies.bundledSkillResources;
-        this.workflows = new WorkflowBridge({ eventBus: this.eventBus, onChange: () => this.scheduleRefresh() });
         this.backgroundSubagents = new BackgroundSubagentBridge({
             eventBus: this.eventBus,
             onChange: () => this.scheduleRefresh(),
         });
         this.backgroundSubagents.bind(runtime.session.sessionId);
-        this.gitBranch = this.readGitBranch(runtime.cwd);
+        this.refreshGitBranch();
         this.currentSnapshot = this.buildSnapshot();
     }
 
@@ -441,12 +417,11 @@ export class PuiController {
         const generation = ++this.bindGeneration;
         this.extensionDialogs.dismissAll();
         this.backgroundSubagents.bind(session.sessionId);
-        this.workflows.bind(session.sessionId, canonicalPath(this.runtime.cwd));
         this.unsubscribeSession?.();
         this.toolExecutions = new Map();
         this.displayItems = [];
         this.runningBash = undefined;
-        this.gitBranch = this.readGitBranch(this.runtime.cwd);
+        this.refreshGitBranch();
 
         const existingUI = session.extensionRunner.getUIContext?.() ?? {};
         await session.bindExtensions({
@@ -533,10 +508,8 @@ export class PuiController {
         const context = session.getContextUsage();
         const streamingMessage = session.agent.state.streamingMessage as AgentMessage | undefined;
         this.toolExecutions = this.reconcileToolExecutionState();
-        const workflows = this.workflows.runs();
         const display = buildDisplayItems(session.messages, streamingMessage, {
             toolExecutions: this.toolExecutions,
-            workflows,
         });
 
         if (this.runningBash) {
@@ -577,7 +550,6 @@ export class PuiController {
             display: stableDisplay,
             activeTools,
             backgroundSubagents: this.backgroundSubagents.jobs(),
-            workflows,
             extensionDialog: this.extensionDialogs.current(),
             toasts: this.toasts.list(),
             exitRequested: this.exitRequested,
@@ -732,7 +704,18 @@ export class PuiController {
                 },
             })
             .catch((error: unknown) => this.notify(errorMessage(error), "error"));
-        return command === "/workflow" && args ? "workflow" : "sent";
+        return "sent";
+    }
+
+    private refreshGitBranch(): void {
+        const cwd = this.runtime.cwd;
+        void this.readGitBranch(cwd)
+            .then((branch) => {
+                if (this.runtime.cwd !== cwd || this.gitBranch === branch) return;
+                this.gitBranch = branch;
+                this.scheduleRefresh();
+            })
+            .catch(() => {});
     }
 
     private async executeBash(command: string, excluded: boolean): Promise<void> {
@@ -747,7 +730,7 @@ export class PuiController {
                 command,
                 (chunk) => {
                     if (!this.runningBash) return;
-                    this.runningBash.output += chunk;
+                    this.runningBash.output = appendBoundedUtf8(this.runningBash.output, chunk, BASH_OUTPUT_BYTES);
                     this.scheduleRefresh();
                 },
                 { excludeFromContext: excluded },
@@ -885,14 +868,6 @@ export class PuiController {
         return this.backgroundSubagents.cancel(id);
     }
 
-    inspectWorkflow(runId: string): WorkflowRunSummaryV1 | undefined {
-        return this.workflows.inspect(runId);
-    }
-
-    controlWorkflow(runId: string, action: WorkflowControlAction, agentId?: string): Promise<string | undefined> {
-        return this.workflows.control(runId, action, agentId);
-    }
-
     async abort(): Promise<void> {
         if (this.session.isCompacting) this.session.abortCompaction();
         if (this.session.isBashRunning) this.session.abortBash();
@@ -914,11 +889,10 @@ export class PuiController {
         if (this.disposed) return;
         this.disposed = true;
         this.extensionDialogs.close();
-        this.workflows.dispose();
         this.backgroundSubagents.dispose();
         this.unsubscribeSession?.();
         this.eventBus.clear();
-        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [], workflows: [] };
+        this.currentSnapshot = { ...this.currentSnapshot, backgroundSubagents: [] };
         this.runtime.setRebindSession(undefined);
         this.toolExecutions = new Map();
         if (this.refreshTimer) clearTimeout(this.refreshTimer);

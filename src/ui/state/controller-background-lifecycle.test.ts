@@ -13,11 +13,11 @@ import {
     SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerSubagentExtension } from "#modules/subagents/interfaces/pi.js";
-import { AbortableSemaphore } from "#shared/lib/semaphore.js";
+import { AbortableSemaphore } from "#modules/subagents/semaphore.js";
 import { waitFor } from "#test-support/wait.js";
 import { PuiController } from "./controller.js";
 
-const fixtureChild = fileURLToPath(new URL("../../shared/agent-runtime/fixtures/fake-child.mjs", import.meta.url));
+const fixtureChild = fileURLToPath(new URL("../../modules/subagents/fixtures/fake-child.mjs", import.meta.url));
 
 const waitUntil = (predicate: () => boolean, description: string) =>
     waitFor(predicate, 10_000, `Timed out waiting for ${description}`);
@@ -98,7 +98,7 @@ describe("controller background runtime lifecycle", () => {
                 const oldSession = runtime.session;
                 const ready = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
                 expect(ready).toBeDefined();
-                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "subagent_spawn");
+                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "worker");
                 if (!spawn) throw new Error("Missing background spawn tool");
                 const result = await spawn.execute(
                     `spawn-${randomUUID()}`,
@@ -107,6 +107,9 @@ describe("controller background runtime lifecycle", () => {
                     undefined,
                 );
                 const jobId = (result.details as any).id as string;
+                // Tool details carry the Job state as `state`; version 1 of the envelope serialises it as `run`.
+                const { state: jobState, ...jobFields } = result.details as any;
+                const wireJob = { ...jobFields, run: jobState };
                 const pidPath = harness.pidPaths.at(-1);
                 if (!pidPath) throw new Error("Missing recorded descendant pid path");
                 await waitUntil(() => fs.existsSync(pidPath), "descendant pid file");
@@ -126,18 +129,18 @@ describe("controller background runtime lifecycle", () => {
                 bus.emit("pui.subagent.background", {
                     ...ready,
                     type: "upsert",
-                    job: result.details,
+                    job: wireJob,
                 });
                 controller.refresh();
                 expect(controller.snapshot().backgroundSubagents).toEqual([]);
 
                 const newReady = lifecycleEvents.filter((event) => event.type === "ready").at(-1);
                 expect(newReady?.instanceId).not.toBe(ready.instanceId);
-                expect(runtime.session.agent.state.tools.some((tool) => tool.name === "subagent_spawn")).toBe(true);
+                expect(runtime.session.agent.state.tools.some((tool) => tool.name === "worker")).toBe(true);
                 const replacementEnvelope = {
                     ...newReady,
                     type: "upsert",
-                    job: result.details,
+                    job: wireJob,
                 };
                 bus.emit("pui.subagent.background", replacementEnvelope);
                 controller.refresh();
@@ -188,7 +191,7 @@ describe("controller background runtime lifecycle", () => {
                 await exercise(() => runtime.fork(cloneEntry, { position: "at" }));
 
                 const oldSession = runtime.session;
-                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "subagent_spawn");
+                const spawn = oldSession.agent.state.tools.find((tool) => tool.name === "worker");
                 if (!spawn) throw new Error("Missing final background spawn tool");
                 await spawn.execute(
                     "final-spawn",

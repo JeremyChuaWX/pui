@@ -1,6 +1,4 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { normalizeSubagentDetails, subagentPresentationKey } from "#modules/subagents/interfaces/ui.js";
-import { resolveWorkflowRun, type WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
 import { recordArgs, type ToolExecution, type ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 
@@ -10,7 +8,6 @@ type ToolDisplayItem = Extract<DisplayItem, { kind: "tool" }>;
 
 interface DisplayFormatOptions {
     toolExecutions?: ToolExecutionState;
-    workflows?: readonly WorkflowRunSummaryV1[];
 }
 
 function truncate(value: string, max = MAX_TOOL_TEXT): string {
@@ -44,47 +41,10 @@ function safeJson(value: unknown): string {
     }
 }
 
-function toolResultDetails(value: unknown): unknown {
-    return typeof value === "object" && value !== null && "details" in value
-        ? (value as { details?: unknown }).details
-        : undefined;
-}
-
 function resultContent(value: unknown): string {
     return typeof value === "object" && value !== null && "content" in value
         ? truncate(contentText((value as { content?: unknown }).content))
         : "";
-}
-
-function applyWorkflowPresentation(
-    item: ToolDisplayItem,
-    details: unknown,
-    workflows: readonly WorkflowRunSummaryV1[] = [],
-): void {
-    const { run, runId } = resolveWorkflowRun(details, workflows);
-    if (runId) item.workflowRunId = runId;
-    else delete item.workflowRunId;
-    if (!run) {
-        delete item.workflow;
-        item.workflowKey = runId;
-        return;
-    }
-    item.workflow = run;
-    item.workflowKey = `${runId}:${run.updatedAt}:${run.status}`;
-}
-
-function applySubagentPresentation(item: ToolDisplayItem, details: unknown, args: Record<string, unknown>): void {
-    const subagent = normalizeSubagentDetails(details, {
-        toolCallId: item.toolCallId,
-        args,
-    });
-    if (subagent) {
-        item.subagent = subagent;
-        item.subagentKey = subagentPresentationKey(subagent);
-    } else {
-        delete item.subagent;
-        delete item.subagentKey;
-    }
 }
 
 export function formatToolTitle(name: string, args: Record<string, unknown> = {}): string {
@@ -102,7 +62,7 @@ export function formatToolTitle(name: string, args: Record<string, unknown> = {}
     return `${name}  ${oneLine.length > 76 ? `${oneLine.slice(0, 73)}…` : oneLine}`;
 }
 
-export function formatToolArguments(args: Record<string, unknown>): string {
+function formatToolArguments(args: Record<string, unknown>): string {
     const entries = Object.entries(args);
     if (entries.length === 0) return "";
 
@@ -119,28 +79,14 @@ export function formatCount(value: number | null | undefined): string {
     return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-function executionDetails(execution?: ToolExecution): unknown {
-    const partialDetails = toolResultDetails(execution?.partialResult);
-    const finalDetails = toolResultDetails(execution?.finalResult);
-    return execution?.status === "running"
-        ? partialDetails !== undefined
-            ? partialDetails
-            : finalDetails
-        : finalDetails !== undefined
-          ? finalDetails
-          : partialDetails;
-}
-
 function buildToolDisplayItem(
     id: string,
     toolCallId: string,
     name: string,
     args: Record<string, unknown>,
     execution?: ToolExecution,
-    workflows: readonly WorkflowRunSummaryV1[] = [],
 ): ToolDisplayItem {
     const liveResult = execution?.status === "ended" ? execution.finalResult : execution?.partialResult;
-    const details = executionDetails(execution);
     const item: ToolDisplayItem = {
         id,
         kind: "tool",
@@ -152,8 +98,6 @@ function buildToolDisplayItem(
         ...(liveResult === undefined || resultContent(liveResult) === "" ? {} : { result: resultContent(liveResult) }),
         ...(execution?.isError === undefined ? {} : { isError: execution.isError }),
     };
-    applySubagentPresentation(item, details, args);
-    applyWorkflowPresentation(item, details, workflows);
     return item;
 }
 
@@ -167,10 +111,7 @@ export function buildDisplayItems(
 
     const result: DisplayItem[] = [];
     const toolById = new Map<string, ToolDisplayItem>();
-    const argsById = new Map<string, Record<string, unknown>>();
-    const detailsById = new Map<string, unknown>();
     const executions = options.toolExecutions ?? new Map();
-    const workflows = options.workflows ?? [];
 
     source.forEach((message, messageIndex) => {
         const id = `${messageIndex}:${message.timestamp ?? messageIndex}`;
@@ -204,18 +145,9 @@ export function buildDisplayItems(
                     }
                     if (part.type === "toolCall") {
                         const args = recordArgs(part.arguments);
-                        const item = buildToolDisplayItem(
-                            partId,
-                            part.id,
-                            part.name,
-                            args,
-                            executions.get(part.id),
-                            workflows,
-                        );
+                        const item = buildToolDisplayItem(partId, part.id, part.name, args, executions.get(part.id));
                         result.push(item);
                         toolById.set(part.id, item);
-                        argsById.set(part.id, args);
-                        detailsById.set(part.id, executionDetails(executions.get(part.id)));
                     }
                 });
                 if (message.errorMessage) {
@@ -230,17 +162,11 @@ export function buildDisplayItems(
                     existing.result = output;
                     existing.isError = message.isError;
                     existing.running = false;
-                    const details =
-                        message.details !== undefined ? message.details : detailsById.get(message.toolCallId);
-                    applySubagentPresentation(existing, details, argsById.get(message.toolCallId) ?? {});
-                    applyWorkflowPresentation(existing, details, workflows);
                 } else {
                     const item = buildToolDisplayItem(id, message.toolCallId, message.toolName, {});
                     item.result = output;
                     item.isError = message.isError;
                     item.running = false;
-                    applySubagentPresentation(item, message.details, {});
-                    applyWorkflowPresentation(item, message.details, workflows);
                     result.push(item);
                     toolById.set(message.toolCallId, item);
                 }
@@ -279,7 +205,6 @@ export function buildDisplayItems(
             execution.name,
             execution.args,
             execution,
-            workflows,
         );
         result.push(item);
     }
@@ -308,10 +233,7 @@ function sameDisplayPresentation(left: DisplayItem, right: DisplayItem): boolean
                 left.args === right.args &&
                 left.result === right.result &&
                 left.isError === right.isError &&
-                left.running === right.running &&
-                left.subagentKey === right.subagentKey &&
-                left.workflowRunId === right.workflowRunId &&
-                left.workflowKey === right.workflowKey
+                left.running === right.running
             );
         case "bash":
             return (

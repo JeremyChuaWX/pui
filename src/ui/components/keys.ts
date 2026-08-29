@@ -4,7 +4,7 @@ import type { KeyEvent } from "@opentui/core";
 
 export const dismissKeyHint = "Esc/Ctrl+C";
 
-/** Dismissal shortcut for dialogs and the read-only workflow status page. */
+/** Dismissal shortcut for dialogs. */
 export function isDismissKey(key: Pick<KeyEvent, "name" | "ctrl">): boolean {
     return key.name.toLowerCase() === "escape" || (key.ctrl && key.name.toLowerCase() === "c");
 }
@@ -156,7 +156,7 @@ interface GlobalShortcut {
 
 /**
  * Every global shortcut, in Help display order. Groups without shortcuts are handled contextually
- * (prompt submission, history, workflow-page dismissal, selection copy) but still document their
+ * (prompt submission, history, selection copy) but still document their
  * bindings here so Help and the handlers cannot drift.
  */
 const globalShortcutGroups: readonly {
@@ -182,7 +182,6 @@ const globalShortcutGroups: readonly {
         description: "abort the current operation",
         shortcuts: [{ names: ["escape"], intent: "abort" }],
     },
-    { label: dismissKeyHint, description: "return from workflow status", shortcuts: [] },
     {
         label: "Shift+Tab",
         description: "cycle thinking level",

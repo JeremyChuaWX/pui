@@ -1,5 +1,7 @@
 # Agent Roles belong to the Child-Agent Runtime
 
+Status: superseded by [ADR 0002](0002-subagents-owns-the-child-agent-runtime.md).
+
 Both the subagents and workflows Modules resolve models, timeouts, and guidance from the Agent
 Roles (`worker`/`explore`/`generic`), so the roles live in the Child-Agent Runtime
 (`src/shared/agent-runtime/`, next to the spawning machinery they configure) rather than in the

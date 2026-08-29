@@ -11,15 +11,12 @@ function violationsFor(edges: ImportEdge[]) {
 describe("clean graph", () => {
     test("every sanctioned edge produces no violations", () => {
         const edges: ImportEdge[] = [
-            // App -> UI start function + Pi Core + Host Entries + shared
+            // App -> UI start function + shared
             { from: "app/index.tsx", to: "ui/start.tsx" },
             { from: "app/index.tsx", to: "shared/lib/validate.ts" },
-            { from: "app/headless-workflow.ts", to: "modules/workflows/interfaces/host.ts" },
-            { from: "app/workflow-smoke.ts", to: "pi-core/bundled-skills.ts" },
-            { from: "app/index.tsx", to: "app/headless-workflow.ts" },
             // UI -> Pi Core + Module UI Entries + shared + itself
             { from: "ui/state/controller.ts", to: "pi-core/register.ts" },
-            { from: "ui/state/format.ts", to: "modules/workflows/interfaces/ui.ts" },
+            { from: "ui/state/format.ts", to: "modules/subagents/interfaces/ui.ts" },
             { from: "ui/state/prompt-autocomplete.ts", to: "modules/file-search/interfaces/ui.ts" },
             { from: "ui/components/app.tsx", to: "ui/state/controller.ts" },
             { from: "ui/state/controller.ts", to: "shared/lib/validate.ts" },
@@ -30,9 +27,10 @@ describe("clean graph", () => {
             // Modules -> own internals + shared
             { from: "modules/web/search.ts", to: "modules/web/crawl.ts" },
             { from: "modules/web/interfaces/pi.ts", to: "modules/web/search.ts" },
-            { from: "modules/subagents/runner.ts", to: "shared/agent-runtime/child-agent.ts" },
+            { from: "modules/subagents/runner.ts", to: "modules/subagents/child-agent.ts" },
+            { from: "modules/subagents/child-agent.ts", to: "shared/lib/validate.ts" },
             // shared -> shared
-            { from: "shared/agent-runtime/child-agent.ts", to: "shared/lib/json-events.ts" },
+            { from: "shared/lib/bounded-process.ts", to: "shared/lib/retained-output.ts" },
         ];
         expect(checkBoundaries(edges)).toEqual([]);
     });
@@ -40,13 +38,13 @@ describe("clean graph", () => {
 
 describe("forbidden edges", () => {
     test("Module -> Module is a violation even through an Interfaces Directory", () => {
-        const edges: ImportEdge[] = [{ from: "modules/workflows/bridge.ts", to: "modules/subagents/interfaces/pi.ts" }];
-        expect(violationsFor(edges)).toEqual(["modules/workflows/bridge.ts -> modules/subagents/interfaces/pi.ts"]);
+        const edges: ImportEdge[] = [{ from: "modules/web/search.ts", to: "modules/subagents/interfaces/pi.ts" }];
+        expect(violationsFor(edges)).toEqual(["modules/web/search.ts -> modules/subagents/interfaces/pi.ts"]);
     });
 
     test("deep import bypassing an Interfaces Directory is a violation", () => {
-        const edges: ImportEdge[] = [{ from: "ui/components/app.tsx", to: "modules/subagents/view-model.ts" }];
-        expect(violationsFor(edges)).toEqual(["ui/components/app.tsx -> modules/subagents/view-model.ts"]);
+        const edges: ImportEdge[] = [{ from: "ui/components/app.tsx", to: "modules/subagents/background-bridge.ts" }];
+        expect(violationsFor(edges)).toEqual(["ui/components/app.tsx -> modules/subagents/background-bridge.ts"]);
     });
 
     test("UI -> App is a violation", () => {
@@ -54,9 +52,25 @@ describe("forbidden edges", () => {
         expect(violationsFor(edges)).toEqual(["ui/state/controller.ts -> app/index.tsx"]);
     });
 
-    test("Pi Core -> Host Entry is a violation", () => {
-        const edges: ImportEdge[] = [{ from: "pi-core/register.ts", to: "modules/workflows/interfaces/host.ts" }];
-        expect(violationsFor(edges)).toEqual(["pi-core/register.ts -> modules/workflows/interfaces/host.ts"]);
+    test("App -> any Module entry is a violation; host is not a recognised entry", () => {
+        const edges: ImportEdge[] = [
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/host.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/pi.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/interfaces/ui.ts" },
+            { from: "app/index.tsx", to: "modules/subagents/background-bridge.ts" },
+        ];
+        expect(violationsFor(edges)).toEqual([
+            "app/index.tsx -> modules/subagents/interfaces/host.ts",
+            "app/index.tsx -> modules/subagents/interfaces/pi.ts",
+            "app/index.tsx -> modules/subagents/interfaces/ui.ts",
+            "app/index.tsx -> modules/subagents/background-bridge.ts",
+        ]);
+        expect(checkBoundaries(edges)[0]?.rule).toBe("app must not import Modules");
+    });
+
+    test("Pi Core -> a Module entry other than pi is a violation", () => {
+        const edges: ImportEdge[] = [{ from: "pi-core/register.ts", to: "modules/subagents/interfaces/ui.ts" }];
+        expect(violationsFor(edges)).toEqual(["pi-core/register.ts -> modules/subagents/interfaces/ui.ts"]);
     });
 
     test("UI -> Module Extension (interfaces/pi) is a violation", () => {
@@ -115,7 +129,7 @@ describe("forbidden edges", () => {
 
     test("each violation names its rule", () => {
         const [violation] = checkBoundaries([
-            { from: "modules/workflows/bridge.ts", to: "modules/subagents/interfaces/pi.ts" },
+            { from: "modules/web/search.ts", to: "modules/subagents/interfaces/pi.ts" },
         ]);
         expect(violation?.rule).toContain("Module");
     });
@@ -135,7 +149,7 @@ describe("test-file scoping", () => {
     test("files under a test-support directory may cross boundaries", () => {
         const edges: ImportEdge[] = [
             { from: "test-support/extension-api.ts", to: "shared/lib/validate.ts" },
-            { from: "modules/workflows/test-support/workflow-fixture.ts", to: "test-support/wait.ts" },
+            { from: "modules/subagents/test-support/fixture.ts", to: "test-support/wait.ts" },
         ];
         expect(checkBoundaries(edges)).toEqual([]);
     });
@@ -150,17 +164,17 @@ describe("import spelling", () => {
     test("a Module-local test-support directory is part of its Module for spelling", () => {
         const edges: ImportEdge[] = [
             {
-                from: "modules/workflows/test-support/workflow-fixture.ts",
-                to: "modules/workflows/protocol.ts",
-                specifier: "../protocol.js",
+                from: "modules/subagents/test-support/fixture.ts",
+                to: "modules/subagents/job-state.ts",
+                specifier: "../job-state.js",
             },
             {
-                from: "modules/workflows/protocol.test.ts",
-                to: "modules/workflows/test-support/workflow-fixture.ts",
-                specifier: "./test-support/workflow-fixture.js",
+                from: "modules/subagents/job-state.test.ts",
+                to: "modules/subagents/test-support/fixture.ts",
+                specifier: "./test-support/fixture.js",
             },
             {
-                from: "modules/workflows/test-support/workflow-fixture.ts",
+                from: "modules/subagents/test-support/fixture.ts",
                 to: "test-support/wait.ts",
                 specifier: "#test-support/wait.js",
             },

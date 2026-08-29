@@ -1,6 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { BackgroundSubagentViewModel, SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
-import type { WorkflowRunSummaryV1 } from "#modules/workflows/interfaces/ui.js";
+import type { BackgroundSubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 
 interface DisplayItemBase {
     id: string;
@@ -44,11 +43,6 @@ export interface ToolDisplayItem extends DisplayItemBase {
     result?: string;
     isError?: boolean;
     running?: boolean;
-    subagent?: SubagentViewModel;
-    subagentKey?: string;
-    workflow?: WorkflowRunSummaryV1;
-    workflowRunId?: string;
-    workflowKey?: string;
 }
 
 interface BashDisplayItem extends DisplayItemBase {
@@ -105,7 +99,6 @@ export interface PuiSnapshot {
     display: DisplayItem[];
     activeTools: ActiveTool[];
     backgroundSubagents: BackgroundSubagentViewModel[];
-    workflows: readonly WorkflowRunSummaryV1[];
     extensionDialog?: ExtensionDialog;
     toasts: ToastMessage[];
     exitRequested: boolean;
@@ -142,13 +135,4 @@ export interface AppliedPromptCompletion {
     cursorOffset: number;
 }
 
-export type PromptAction =
-    | "sent"
-    | "workflow"
-    | "models"
-    | "sessions"
-    | "subagents"
-    | "workflows"
-    | "commands"
-    | "help"
-    | "ignored";
+export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "commands" | "help" | "ignored";

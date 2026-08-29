@@ -3,9 +3,10 @@
 # appearing in a tmux pane. Usage: scripts/measure-startup.sh [runs] [command...]
 set -eu
 
+project_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
 runs=${1:-5}
 shift 2>/dev/null || true
-cmd=${*:-/Users/jer/dev/pui/dist/pui --no-session}
+cmd=${*:-$project_dir/dist/pui --no-session}
 marker='press Ctrl+K for commands'
 window=pui-bench
 
@@ -14,7 +15,7 @@ now() { perl -MTime::HiRes -e 'printf "%.3f\n", Time::HiRes::time()'; }
 run_once() {
   start_file=$(mktemp)
   tmux kill-window -t "$window" 2>/dev/null || true
-  tmux new-window -d -n "$window" -c /Users/jer/dev/pui \
+  tmux new-window -d -n "$window" -c "$project_dir" \
     "perl -MTime::HiRes -e 'printf \"%.3f\n\", Time::HiRes::time()' > $start_file; exec $cmd"
 
   deadline=$(perl -e 'print time() + 30')

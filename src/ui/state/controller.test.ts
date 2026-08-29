@@ -5,7 +5,6 @@ import * as path from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AgentSessionEvent, type AgentSessionRuntime, createEventBus } from "@earendil-works/pi-coding-agent";
 import type { BundledSkillResources } from "#pi-core/bundled-skills.js";
-import { waitFor } from "#test-support/wait.js";
 import { type ControllerDependencies, PuiController } from "./controller.js";
 
 function usage() {
@@ -19,26 +18,22 @@ function usage() {
     };
 }
 
-function details(id: string, status: "queued" | "running" | "succeeded" | "failed") {
+function jobState(id: string, status: "queued" | "running" | "succeeded" | "failed") {
     const terminal = status === "succeeded" || status === "failed";
     return {
-        schema: "pi.subagent",
-        version: 1,
-        run: {
-            id,
-            agent: "explore",
-            model: "fixture/model",
-            cwd: process.cwd(),
-            status,
-            phase: status === "queued" ? "queued" : terminal ? "exiting" : "thinking",
-            ...(status === "queued" ? {} : { startedAt: 10 }),
-            updatedAt: 20,
-            ...(terminal ? { endedAt: 30 } : {}),
-            activeTools: [],
-            recentActivity: [],
-            usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
-            ...(status === "failed" ? { error: "fixture failure" } : {}),
-        },
+        id,
+        agent: "explorer",
+        model: "fixture/model",
+        cwd: process.cwd(),
+        status,
+        phase: status === "queued" ? "queued" : terminal ? "exiting" : "thinking",
+        ...(status === "queued" ? {} : { startedAt: 10 }),
+        updatedAt: 20,
+        ...(terminal ? { endedAt: 30 } : {}),
+        activeTools: [],
+        recentActivity: [],
+        usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
+        ...(status === "failed" ? { error: "fixture failure" } : {}),
     };
 }
 
@@ -167,7 +162,7 @@ describe("PuiController background event bridge", () => {
             instanceId: "live-instance",
             type,
             ...(type === "upsert"
-                ? { job: { id: "job", title: "Background", run: details("job", status as any).run } }
+                ? { job: { id: "job", title: "Background", run: jobState("job", status as any) } }
                 : {}),
         });
         bus.emit("pui.subagent.background", envelope("ready"));
@@ -225,7 +220,7 @@ describe("PuiController assistant reference text", () => {
 });
 
 describe("PuiController tool event path", () => {
-    test("transports partial subagent snapshots and preserves a running sibling", async () => {
+    test("keeps sibling tool cards stable while one tool updates", async () => {
         const ids = ["slow", "fast"];
         const { controller, state, emit } = await createController([
             assistantText("Stable context"),
@@ -240,7 +235,7 @@ describe("PuiController tool event path", () => {
                 toolCallId: id,
                 toolName: "delegator",
                 args,
-                partialResult: { content: [{ type: "text", text: "queued" }], details: details(id, "queued") },
+                partialResult: { content: [{ type: "text", text: "queued" }] },
             });
         }
         await Bun.sleep(25);
@@ -254,9 +249,7 @@ describe("PuiController tool event path", () => {
         expect(queuedFast).toBeDefined();
         expect(snapshot.activeTools.map((tool) => tool.id).sort()).toEqual([...ids].sort());
         expect(
-            snapshot.display
-                .filter((item) => item.kind === "tool")
-                .map((item) => [item.toolCallId, item.subagent?.status]),
+            snapshot.display.filter((item) => item.kind === "tool").map((item) => [item.toolCallId, item.result]),
         ).toEqual([
             ["slow", "queued"],
             ["fast", "queued"],
@@ -268,7 +261,7 @@ describe("PuiController tool event path", () => {
             toolCallId: "slow",
             toolName: "delegator",
             args: slowArgs,
-            partialResult: { content: [{ type: "text", text: "working" }], details: details("slow", "running") },
+            partialResult: { content: [{ type: "text", text: "working" }] },
         });
         await Bun.sleep(25);
         snapshot = controller.snapshot();
@@ -276,18 +269,13 @@ describe("PuiController tool event path", () => {
         expect(snapshot.display.find((item) => item.kind === "assistant")).toBe(textItem);
         expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(queuedFast);
         expect(runningSlow).not.toBe(queuedSlow);
-        expect(runningSlow).toEqual(
-            expect.objectContaining({ running: true, subagent: expect.objectContaining({ status: "running" }) }),
-        );
+        expect(runningSlow).toEqual(expect.objectContaining({ running: true, result: "working" }));
 
         emit({
             type: "tool_execution_end",
             toolCallId: "fast",
             toolName: "delegator",
-            result: {
-                content: [{ type: "text", text: "fixture failure" }],
-                details: details("fast", "failed"),
-            },
+            result: { content: [{ type: "text", text: "fixture failure" }] },
             isError: true,
         });
         snapshot = controller.snapshot();
@@ -297,11 +285,7 @@ describe("PuiController tool event path", () => {
         const failedFast = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast");
         expect(failedFast).not.toBe(queuedFast);
         expect(failedFast).toEqual(
-            expect.objectContaining({
-                running: false,
-                isError: true,
-                subagent: expect.objectContaining({ status: "failed" }),
-            }),
+            expect.objectContaining({ running: false, isError: true, result: "fixture failure" }),
         );
 
         state.messages.push({
@@ -309,7 +293,6 @@ describe("PuiController tool event path", () => {
             toolCallId: "fast",
             toolName: "delegator",
             content: [{ type: "text", text: "fixture failure" }],
-            details: details("fast", "failed"),
             isError: true,
             timestamp: 2,
         } as AgentMessage);
@@ -317,7 +300,7 @@ describe("PuiController tool event path", () => {
             type: "tool_execution_end",
             toolCallId: "slow",
             toolName: "delegator",
-            result: { content: [{ type: "text", text: "done" }], details: details("slow", "succeeded") },
+            result: { content: [{ type: "text", text: "done" }] },
             isError: false,
         });
         snapshot = controller.snapshot();
@@ -326,23 +309,13 @@ describe("PuiController tool event path", () => {
         expect(snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "fast")).toBe(failedFast);
         const succeededSlow = snapshot.display.find((item) => item.kind === "tool" && item.toolCallId === "slow");
         expect(succeededSlow).not.toBe(runningSlow);
-        expect(succeededSlow).toEqual(
-            expect.objectContaining({
-                running: false,
-                isError: false,
-                subagent: expect.objectContaining({ status: "succeeded" }),
-            }),
-        );
-        expect(failedFast).toEqual(
-            expect.objectContaining({ subagent: expect.objectContaining({ status: "failed" }) }),
-        );
+        expect(succeededSlow).toEqual(expect.objectContaining({ running: false, isError: false, result: "done" }));
 
         state.messages.push({
             role: "toolResult",
             toolCallId: "slow",
             toolName: "delegator",
             content: [{ type: "text", text: "done" }],
-            details: details("slow", "succeeded"),
             isError: false,
             timestamp: 3,
         } as AgentMessage);
@@ -350,12 +323,10 @@ describe("PuiController tool event path", () => {
         emit({ type: "agent_settled" });
         snapshot = controller.snapshot();
         expect(
-            snapshot.display
-                .filter((item) => item.kind === "tool")
-                .map((item) => [item.toolCallId, item.subagent?.status]),
+            snapshot.display.filter((item) => item.kind === "tool").map((item) => [item.toolCallId, item.isError]),
         ).toEqual([
-            ["slow", "succeeded"],
-            ["fast", "failed"],
+            ["slow", false],
+            ["fast", true],
         ]);
 
         await controller.dispose();
@@ -386,48 +357,8 @@ describe("PuiController tool event path", () => {
         expect(controller.snapshot().display[0]).toEqual(
             expect.objectContaining({ kind: "tool", name: "read", running: true, result: "partial read" }),
         );
-        const item = controller.snapshot().display[0];
-        expect(item && item.kind === "tool" ? item.subagent : undefined).toBeUndefined();
         await controller.dispose();
     });
-});
-
-const workflowUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, turns: 0 };
-function run(sessionId: string, cwd: string, id = "run-1") {
-    return {
-        schema: "pi.workflow" as const,
-        version: 1 as const,
-        id,
-        name: "Review",
-        sessionId,
-        cwd,
-        status: "running" as const,
-        phases: [],
-        agents: [
-            {
-                id: "agent-1",
-                label: "Agent",
-                role: "explore",
-                status: "running" as const,
-                updatedAt: 1,
-                usage: workflowUsage,
-                recentActivity: [],
-            },
-        ],
-        usage: workflowUsage,
-        limits: { maxConcurrency: 4, maxAgents: 1000, timeoutMs: 1, maxTokens: 0, maxCost: 0 },
-        recentActivity: [],
-        updatedAt: 1,
-    };
-}
-const envelope = (sessionId: string, cwd: string, type: string, extra: object = {}) => ({
-    schema: "pi.workflow.background",
-    version: 1,
-    sessionId,
-    instanceId: "instance-1",
-    cwd,
-    type,
-    ...extra,
 });
 
 function harness(cwd: string) {
@@ -470,7 +401,7 @@ function harness(cwd: string) {
     return { bus, controller, runtime, session, bind, sessionListener, bindings: () => extensionBindings };
 }
 
-describe("PuiController workflow bridge", () => {
+describe("PuiController session binding", () => {
     test("does not finish an out-of-order stale session bind", async () => {
         const h = harness(process.cwd());
         let releaseOld!: () => void;
@@ -515,65 +446,6 @@ describe("PuiController workflow bridge", () => {
         expect(h.controller.snapshot()).toBe(snapshot);
         expect(h.controller.snapshot().sessionId).toBe("session-2");
         await h.controller.dispose();
-    });
-
-    test("binds authoritative snapshots, routes controls, and disposes cleanly", async () => {
-        const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pui-workflow-controller-"));
-        const h = harness(temp);
-        try {
-            const canonical = fs.realpathSync(temp);
-            h.session.bindExtensions = async () => {
-                h.bus.emit("pui.workflow.background", envelope("session-1", canonical, "ready"));
-                h.bus.emit(
-                    "pui.workflow.background",
-                    envelope("session-1", canonical, "upsert", { run: run("session-1", canonical) }),
-                );
-            };
-            await h.bind();
-            await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "run-1"));
-            expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["run-1"]);
-            expect(h.controller.inspectWorkflow("run-1")?.name).toBe("Review");
-            expect(h.controller.handlePrompt("/workflows")).toBe("workflows");
-            expect(h.controller.handlePrompt("/workflow review.ts")).toBe("workflow");
-            expect(h.controller.handlePrompt("/workflow")).toBe("sent");
-
-            const controls: Array<Record<string, unknown>> = [];
-            h.bus.on("pui.workflow.background.control", (value) => controls.push(value as Record<string, unknown>));
-            const pause = h.controller.controlWorkflow("run-1", "pause");
-            await expect(h.controller.controlWorkflow("run-1", "restart-agent", "missing")).rejects.toThrow(
-                "Workflow agent is unavailable.",
-            );
-            const restart = h.controller.controlWorkflow("run-1", "restart-agent", "agent-1");
-            restart.catch(() => {});
-            expect(controls).toEqual([
-                expect.objectContaining({ action: "pause", runId: "run-1", cwd: canonical }),
-                expect.objectContaining({ action: "restart-agent", runId: "run-1", agentId: "agent-1" }),
-            ]);
-            h.bus.emit("pui.workflow.background.control.result", {
-                schema: "pi.workflow.background.control.result",
-                version: 1,
-                sessionId: "session-1",
-                instanceId: "instance-1",
-                cwd: canonical,
-                requestId: controls[0]?.requestId,
-                ok: true,
-            });
-            await expect(pause).resolves.toBeUndefined();
-            const prior = h.controller.snapshot();
-            h.bus.emit("pui.workflow.background", envelope("wrong", canonical, "reset"));
-            h.bus.emit("pui.workflow.background", envelope("session-1", `${canonical}/..`, "reset"));
-            h.bus.emit("pui.workflow.background", { ...envelope("session-1", canonical, "reset"), version: 2 });
-            expect(h.controller.snapshot()).toBe(prior);
-            await h.controller.dispose();
-            h.bus.emit(
-                "pui.workflow.background",
-                envelope("session-1", canonical, "upsert", { run: run("session-1", canonical, "late") }),
-            );
-            expect(h.controller.snapshot().workflows).toEqual([]);
-        } finally {
-            await h.controller.dispose();
-            await fs.promises.rm(temp, { recursive: true, force: true });
-        }
     });
 
     test("bridges queued extension dialogs with resolve, deny, abort, timeout, rebind, and dispose", async () => {
@@ -624,13 +496,37 @@ describe("PuiController workflow bridge", () => {
         }
     });
 
-    test("bounds extension dialogs without truncating a 64 KiB approval body", async () => {
+    test("bounds a running shell command's transcript output to its tail", async () => {
+        const h = harness(process.cwd());
+        await h.bind();
+        let release!: () => void;
+        h.session.executeBash = async (_command: string, onChunk: (chunk: string) => void) => {
+            for (let index = 0; index < 5; index += 1) onChunk(`${index}`.repeat(100 * 1024));
+            onChunk("tail");
+            await new Promise<void>((resolve) => {
+                release = resolve;
+            });
+        };
+        expect(h.controller.handlePrompt("! yes")).toBe("sent");
+        await Bun.sleep(25);
+
+        const running = h.controller.snapshot().display.find((item) => item.kind === "bash");
+        expect(running).toMatchObject({ kind: "bash", command: "yes", running: true });
+        const output = (running as { output: string }).output;
+        expect(Buffer.byteLength(output)).toBeLessThanOrEqual(256 * 1024);
+        expect(output.endsWith("tail")).toBe(true);
+        expect(output.startsWith("0")).toBe(false);
+        release();
+        await h.controller.dispose();
+    });
+
+    test("bounds extension dialogs at the 16 KiB confirm cap", async () => {
         const h = harness(process.cwd());
         await h.bind();
         const ui = h.bindings().uiContext;
 
         expect(await ui.confirm("x".repeat(513), "body")).toBe(false);
-        expect(await ui.confirm("title", "x".repeat(72 * 1024 + 1))).toBe(false);
+        expect(await ui.confirm("title", "x".repeat(16 * 1024 + 1))).toBe(false);
         expect(
             await ui.select(
                 "title",
@@ -641,7 +537,7 @@ describe("PuiController workflow bridge", () => {
         expect(await ui.input("title", "x".repeat(1025))).toBeUndefined();
         expect(h.controller.snapshot().extensionDialog).toBeUndefined();
 
-        const exact = ui.confirm("title", "x".repeat(64 * 1024));
+        const exact = ui.confirm("title", "x".repeat(16 * 1024));
         const exactDialog = h.controller.snapshot().extensionDialog!;
         h.controller.resolveExtensionDialog(exactDialog.id, true);
         expect(await exact).toBe(true);
@@ -653,33 +549,6 @@ describe("PuiController workflow bridge", () => {
             h.controller.resolveExtensionDialog(dialog.id, `value ${index}`);
         }
         expect(await Promise.all(queued)).toHaveLength(32);
-        await h.controller.dispose();
-    });
-
-    test("resets on replacement and accepts only the replacement instance", async () => {
-        const h = harness(process.cwd());
-        await h.bind();
-        const cwd = fs.realpathSync(process.cwd());
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "ready"));
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "upsert", { run: run("session-1", cwd) }));
-        h.bus.emit("pui.workflow.background", envelope("session-1", cwd, "reset"));
-        h.bus.emit("pui.workflow.background", { ...envelope("session-1", cwd, "ready"), instanceId: "instance-2" });
-        h.bus.emit("pui.workflow.background", {
-            ...envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "new") }),
-            instanceId: "instance-2",
-        });
-        h.bus.emit(
-            "pui.workflow.background",
-            envelope("session-1", cwd, "upsert", { run: run("session-1", cwd, "stale") }),
-        );
-        await waitFor(() => h.controller.snapshot().workflows.some((item) => item.id === "new"));
-        expect(h.controller.snapshot().workflows.map((item) => item.id)).toEqual(["new"]);
-
-        const replacement = { ...h.session, sessionId: "session-2" };
-        (h.runtime as any).session = replacement;
-        await h.bind(replacement);
-        expect(h.controller.snapshot().workflows).toEqual([]);
-        await expect(h.controller.controlWorkflow("new", "stop")).rejects.toThrow("Workflow control is unavailable.");
         await h.controller.dispose();
     });
 });

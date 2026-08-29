@@ -1,4 +1,4 @@
-import type { SubagentStatus, SubagentUsage, SubagentViewModel } from "#modules/subagents/interfaces/ui.js";
+import type { SubagentStatus, SubagentUsage } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import { theme } from "./theme.js";
 
@@ -8,6 +8,8 @@ export function subagentColor(status: SubagentStatus): string {
             return theme.success;
         case "failed":
         case "timed_out":
+        case "stalled":
+        case "tool_stalled":
             return theme.error;
         case "cancelled":
         case "queued":
@@ -28,6 +30,8 @@ export function subagentStatusIcon(status: SubagentStatus): string {
         case "cancelled":
             return "⊘";
         case "timed_out":
+        case "stalled":
+        case "tool_stalled":
             return "⧖";
         case "queued":
             return "○";
@@ -50,7 +54,13 @@ function formatElapsed(milliseconds: number): string {
     return `${hours}h ${minutes % 60}m`;
 }
 
-export function subagentElapsed(view: SubagentViewModel, now = Date.now()): string {
+interface SubagentTiming {
+    startedAt?: number;
+    updatedAt: number;
+    endedAt?: number;
+}
+
+export function subagentElapsed(view: SubagentTiming, now = Date.now()): string {
     const start = view.startedAt ?? view.updatedAt;
     const end = view.endedAt ?? now;
     return formatElapsed(Math.max(0, end - start));
@@ -60,15 +70,5 @@ export function compactSubagentUsage(usage: SubagentUsage): string {
     const parts: string[] = [];
     if (usage.turns > 0) parts.push(`${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`);
     if (usage.totalTokens > 0) parts.push(`${formatCount(usage.totalTokens)} tokens`);
-    return parts.join(" · ");
-}
-
-export function subagentSummary(view: SubagentViewModel, now = Date.now()): string {
-    const parts = [view.agent];
-    if (view.model) parts.push(view.model);
-    if (view.status !== "succeeded") parts.push(subagentStatusLabel(view.status));
-    parts.push(subagentElapsed(view, now));
-    const usage = compactSubagentUsage(view.usage);
-    if (usage) parts.push(usage);
     return parts.join(" · ");
 }

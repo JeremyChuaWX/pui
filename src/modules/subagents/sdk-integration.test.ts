@@ -10,9 +10,9 @@ import {
     SessionManager,
     SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { AbortableSemaphore } from "#shared/lib/semaphore.ts";
 import { registerSubagentExtension } from "./interfaces/pi.ts";
-import { createTerminalSubagentDetails } from "./protocol.ts";
+import { createTerminalSubagentJob } from "./job-state.ts";
+import { AbortableSemaphore } from "./semaphore.ts";
 
 const usage = {
     input: 1,
@@ -83,7 +83,7 @@ test("background delivery persists once on resume and wait consumption suppresse
                             {
                                 type: "toolCall",
                                 id: "spawn-background",
-                                name: "subagent_spawn",
+                                name: "worker",
                                 arguments: { prompt: "Produce the large fixture", cwd: temp, name: requestedTitle },
                             },
                         ];
@@ -113,7 +113,11 @@ test("background delivery persists once on resume and wait consumption suppresse
                     }
                     const message = parentMessage(content, stopReason);
                     stream.push({ type: "start", partial: message });
-                    if (currentTurn > 0) {
+                    // In the wait case the Job settles only once subagent_wait is executing (see the
+                    // tool_execution_start hook below); a Job that finishes with nobody waiting is
+                    // delivered as a follow-up instead and a later wait would find nothing.
+                    const waitTurn = consumeWithWait && currentTurn === 1;
+                    if (currentTurn > 0 && !waitTurn) {
                         await new Promise<void>((resolve) => setImmediate(resolve));
                         allowBackgroundSettlement();
                         await backgroundSettled;
@@ -138,6 +142,9 @@ test("background delivery persists once on resume and wait consumption suppresse
                 {
                     name: "subagent-background-sdk-fixture",
                     factory: (pi) => {
+                        pi.on("tool_execution_start", (event) => {
+                            if (event.toolName === "subagent_wait") allowBackgroundSettlement();
+                        });
                         pi.events?.on("pui.subagent.background", (event: any) => {
                             if (event.job?.run.status === "succeeded" && event.job.run.fullOutputPath)
                                 markBackgroundSettled();
@@ -147,11 +154,12 @@ test("background delivery persists once on resume and wait consumption suppresse
                             invocation: (args) => ({ command: "fake-pi", args }),
                             run: async (options) => {
                                 await backgroundMaySettle;
-                                const details = createTerminalSubagentDetails(options.details, {
-                                    status: "succeeded",
-                                    outputPreview: "background output",
-                                });
-                                return { details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
+                                const details = createTerminalSubagentJob(
+                                    options.job,
+                                    { status: "succeeded", outputPreview: "background output" },
+                                    options.clock?.now() ?? Date.now(),
+                                );
+                                return { job: details, output: fullOutput, stderr: "", exitCode: 0, signal: null };
                             },
                         });
                     },
@@ -168,7 +176,7 @@ test("background delivery persists once on resume and wait consumption suppresse
             resourceLoader: loader,
             settingsManager: settings,
             sessionManager: manager,
-            tools: ["subagent_spawn", "subagent_wait"],
+            tools: ["worker", "subagent_wait"],
         });
         let outputDirectory: string | undefined;
         try {

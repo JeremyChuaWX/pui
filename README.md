@@ -14,14 +14,14 @@ On macOS and Linux:
 
 ```sh
 cd ~/dev/pui
-bun install --frozen-lockfile --ignore-scripts
+bun install --frozen-lockfile
 bun run build
-bun run install
+bun run link
 ```
 
 `bun run build` creates a minified native executable with embedded source maps for the current platform. The output is `dist/pui` on macOS and Linux or `dist/pui.exe` on Windows. Running it does not require Bun or this project's `node_modules`.
 
-On macOS and Linux, `install` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
+On macOS and Linux, `bun run link` links the executable into `~/.local/bin`; make sure that directory is on `PATH`. On Windows, add `dist/pui.exe` to `PATH` manually.
 
 ## Run
 
@@ -32,6 +32,8 @@ pui "review this repository"
 ```
 
 Run `pui --help` for startup flags. Inside the app, use `Ctrl+K` or `/help`.
+
+`pui --smoke` boots Pi headlessly against a throwaway agent directory with only the bundled Extensions and skills, prints the registered tool and skill names as one JSON line, and exits. It never reads your Pi configuration. The exit code is non-zero if any bundled Extension failed to load or a bundled skill produced a diagnostic. The build gate runs it against the compiled binary.
 
 For development, run the source directly from the project:
 
@@ -50,15 +52,15 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
-- Live and resumed subagent cards with lifecycle, child activity, usage, output, and diagnostics
-- Responsive OpenCode-style session sidebar with active blocking and background subagents
-- Model, session, and `/subagents` background-job pickers plus a command palette
+- Responsive OpenCode-style session sidebar listing active background Jobs
+- Model and session pickers, a `/subagents` Job picker, and a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
-- Ctrl+G prompt editing in nvim with the last agent response included as read-only reference
+- Ctrl+G prompt editing in `$VISUAL` or `$EDITOR` (nvim by default) with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
+- Bundled `explorer` and `worker` subagents with `subagent_check`, `subagent_wait`, and `subagent_cancel`
 - Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
 - Bundled `unslop` skill for removing AI writing patterns
 - `!command` and `!!command` shell execution
@@ -73,76 +75,54 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns isolated child processes, concurrency, cancellation, timeouts, and output limits, and draws its Agent Roles from the Child-Agent Runtime. pui consumes its renderer-neutral `pi.subagent` details and restores completed cards from normal Pi sessions.
+Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns the two Profiles, the child Pi processes, the process-wide concurrency limit, cancellation, the three Limits, output bounds, and the Background Protocol that the sidebar and palette read. Nothing here loads into the regular `pi` command.
 
-Omitting the `agent` argument starts a generic write-capable child with no bundled agent prompt, leaving the input task to steer Pi's normal coding context. Select `agent: "worker"` for [Ponytail](https://ponytail.dev/) minimal-coding guidance or `agent: "explore"` for read-only reconnaissance. Write-capable child process isolation is not a filesystem or OS sandbox; use it only in trusted repositories. See the extension guide for model settings and the full security boundary.
+### Tools
 
-Use `Ctrl+O` to expand delegated prompts, child activity, usage, output, and diagnostics. Child tool calls appear in expanded subagent cards but stay out of the session sidebar. Background jobs remain visible there with title, stable model label, elapsed time, and usage; open `/subagents` (also available in the command palette) to inspect recent jobs or explicitly cancel an active one. Persisted background results render as dedicated result messages. Unknown protocol versions and malformed details remain generic tool cards, and legacy session details remain readable.
+The Extension registers five tools and no others.
 
-This Extension is built into pui. It is not a standalone `pi` extension, and the regular `pi` command does not load it.
+| Tool | What it does |
+| --- | --- |
+| `explorer` | Spawns a read-only child under the `explorer` Profile and returns its Job id at once |
+| `worker` | Spawns a write-capable child under the `worker` Profile and returns its Job id at once |
+| `subagent_check` | Returns one Job's status and output preview without waiting and without consuming its result |
+| `subagent_wait` | Blocks on one or more Jobs and returns their results; aborting the wait does not cancel the Jobs |
+| `subagent_cancel` | Cancels queued or running Jobs and returns once each reaches a terminal state |
 
-See the [extension guide](src/modules/subagents/README.md) for configuration and troubleshooting.
+`explorer` and `worker` take the same arguments: `prompt`, `cwd`, an optional `model` override, and an optional `name` shown in Job listings. Relative `cwd` values resolve from the parent session's working directory.
 
-## Workflows
+### Profiles
 
-Programmatic workflows are built in and enabled by default. pui registers the `workflow` tool, `/workflow <path> [JSON args]` for file sources, and `/workflows` for run management. A file can also run without the TUI or a Pi session:
+| Profile | Child tools | Prompt | Default model | Env override |
+| --- | --- | --- | --- | --- |
+| `explorer` | `read`, `grep`, `find`, `ls` | Replaces Pi's coding prompt with a read-only exploration prompt | `openrouter/z-ai/glm-5.3-flash:low` | `PI_EXPLORER_MODEL` |
+| `worker` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Appends [Ponytail](https://ponytail.dev/) minimal-coding guidance to Pi's coding prompt | `openrouter/z-ai/glm-5.3-flash:high` | `PI_WORKER_MODEL` |
 
-```sh
-pui workflow [--cwd /path/to/project] ./review.ts '{"user":"Ada"}'
-```
+Model selection is the call's `model` argument first, then the Profile's environment variable, then its default. Both children run with `--no-session`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, so a child cannot load this Extension recursively. Each tool's description tells the model the Profile's tools, model, and Limits.
 
-The explicit command authorizes that exact file for this invocation, so the interactive approval and project-trust prompts are intentionally bypassed. JSON args are optional. Progress (phases, logs, shell calls, and agent lifecycle) is written to stderr while the workflow runs; stdout remains reserved for the final JSON result. Launch or workflow failures are written to stderr and produce a nonzero exit. Durable run artifacts and all normal sandbox, policy, Node-resolution, and worktree rules still apply. Headless runs are not delivered, recovered, or continued by a later TUI session.
+`PI_SUBAGENT_MAX_CONCURRENCY` caps running children process-wide. The default is 4 and the valid range is 1 to 64; extra Jobs queue in FIFO order and can be cancelled before they spawn.
 
-Workflows require an external Node **>=22.19**. Resolution order is `PUI_WORKFLOW_NODE`, a configured workflow Node path, then `node` on `PATH`; an unavailable or old runtime produces an actionable startup/launch error.
+### Limits
 
-Inline workflows accept TypeScript (and its JavaScript subset) using `agent`, `shell`, `pipeline`, `parallel`, `phase`, `log`, and `args`:
+Every Job runs under three Limits. Any child event resets the two stall timers, including streaming tool output, so a long `bash` command that keeps printing stays alive.
 
-```ts
-type ReviewRequest = { user: string };
-await phase("review");
-const reports: unknown[] = await parallel([
-    agent("Review API", { role: "explore" }),
-    agent("Review UI", { role: "explore" }),
-]);
-const tests = await shell("bun test", { timeoutMs: 120_000 });
-return { reports, tests, requestedBy: (args as ReviewRequest).user };
-```
+| Limit | Default | Fires when | Terminal status |
+| --- | --- | --- | --- |
+| Wall clock | 60 minutes | the Job has run this long, active or not | `timed_out` |
+| Stall | 10 minutes | no child event arrives while no tool is active | `stalled` |
+| Tool stall | 15 minutes | no child event arrives while a tool is active | `tool_stalled` |
 
-The `workflow` tool accepts exactly one source: inline TypeScript in `script`, or an explicit canonical `.ts` workflow file in `path`. `/workflow <path> [JSON args]` launches a `.ts` file directly; wrap paths containing spaces in single or double quotes. Relative paths are resolved from the current working directory; pui does not discover or save named workflow definitions in fixed project or personal directories.
+When a Limit fires, the child's whole process group gets SIGTERM, then SIGKILL two seconds later, and the Job's error names the Limit and its value. Limits are set per Profile in code; there is no environment variable for them. If pui itself exits for any reason, including a crash, every live child process group gets SIGKILL on the way out.
 
-Workflow files default-export a named async function. pui calls it with a frozen explicit context and the supplied JSON arguments:
+### Results
 
-```ts
-import type { WorkflowContext, WorkflowMetadata } from "pui/workflow";
+When a Job finishes and no `subagent_wait` is holding it, the Extension sends one `subagent-result` message through Pi's `followUp` delivery with `triggerTurn` set. If the agent is idle the message starts a turn; if a turn is running the message queues behind it. A Job consumed by `subagent_wait` sends no follow-up. When the text is truncated, the message ends with `Full output: <path>` pointing at a private `0600` file that lives until session shutdown.
 
-type ReviewRequest = { user: string };
+In the transcript, a delivered result renders as a "Background subagent result" card. The sidebar lists every non-terminal Job with its status icon, title, model, status label, elapsed time, and usage. `/subagents`, also reachable from the command palette, opens a picker of recent Jobs; selecting an active one cancels it. Reload, session switch, fork, and quit abort every queued and running Job. Jobs are not restored across sessions.
 
-export const meta = {
-    name: "review-pair",
-    description: "Run two independent reviews",
-} satisfies WorkflowMetadata;
+Worker Jobs are write-capable and not sandboxed. They can edit files and run arbitrary shell commands, inherit the parent environment, and are not confined to `cwd`. Use `worker` only in trusted repositories. The explorer's read-only allowlist is a Pi tool restriction, not an operating-system sandbox.
 
-export default async function reviewPair(context: WorkflowContext, args: ReviewRequest) {
-    await context.phase("review");
-    const reports = await context.parallel([
-        context.agent("Review API", { role: "explore" }),
-        context.agent("Review UI", { role: "explore" }),
-    ]);
-    return { reports, requestedBy: args.user };
-}
-```
-
-The context provides `agent`, `shell`, `pipeline`, `parallel`, `phase`, and `log`; unlike inline scripts, file workflows do not receive those as ambient globals. `shell(command, options?)` runs a platform-shell command in the workflow cwd without starting an agent and returns `{ exitCode, stdout, stderr }`. A nonzero exit is returned normally. Options support `timeoutMs` and string-valued `env` overrides. File metadata is optional; without it, the display name falls back to the filename. Inline scripts may also provide metadata, otherwise they use the inline-workflow fallback name. Workflow TypeScript runs through Node's built-in strip-only support: there is no typechecking or `tsconfig` processing. The optional `pui/workflow` type-only import is erased before execution; runtime imports, other import sources, TSX, enums, runtime namespaces, decorators, and other transform-required syntax are unsupported.
-
-Every exact workflow source is shown in an inline transcript approval block; use **PageUp**/**PageDown** to inspect long scripts. Accepting the approval immediately runs the workflow and trusts that exact source in the project. Approval is tied to the canonical file path, exact source, and workflow host-capability version, so moving or changing a file—or upgrading to a newly exposed host capability—requires approval again. A file that resolves inside the current repository additionally requires Pi project trust. File paths are explicit inputs, not implicit trust: the host reads the file and approval covers the bytes that will launch.
-
-Starting `/workflow <path>` replaces the central chat transcript with a read-only status page showing phases, agents, and their current statuses. Press `Esc` or `Ctrl+C` to return to chat. Use `/workflows` (or the command palette) to inspect runs and pause, resume, stop, retry, or restart a completed agent. Pause lets active agent and shell operations finish but starts no new work. Stop aborts the worker and active operations. Concurrent write-capable agents require `isolation: "worktree"` unless unsafe shared-checkout execution was explicitly allowed. Worktree branches are retained and **never auto-merged**.
-
-Private run artifacts are stored under `~/.pi/agent/workflow-runs/<project-hash>/<run-id>/` (exact source/arguments, snapshots, journal, result, and summary). On startup pui discovers interrupted runs and asks whether to resume, inspect, stop, or defer. Completed agent and shell operations replay from the journal; an operation interrupted before durable completion runs again. Model, command, tool, and filesystem side effects are therefore **at least once**, not exactly once. Terminal result delivery uses a durable claim to suppress duplicates during ordinary recovery, but a crash between the external message send and recording delivery has an unavoidable duplicate-versus-loss window; it does not promise strict exactly-once delivery across that send.
-
-Defaults are 4 concurrent agents (configurable ceiling 16), a warning at 25 scheduled agents, 1,000 agents maximum, a 10-minute run/agent/shell timeout, 128 KiB combined shell output, 128 MiB worker old-space, 64 KiB scripts, and 256 KiB worker protocol frames. Direct filesystem, environment, network, runtime imports, child processes, and signals remain unavailable inside the worker. The approved `shell()` primitive is the explicit exception: the trusted host runs it in the workflow cwd with the host environment plus declared overrides. Scripts run in a separate permission-restricted Node process with a stripped VM realm, static preflight, bounded NDJSON, heartbeat supervision, and host-side RPC validation. This is a layered sandbox boundary—not a claim that `node:vm` or agent tool allowlists alone are OS sandboxes. Host agents remain trusted code with capabilities selected by role and policy.
-
-Troubleshooting: set `PUI_WORKFLOW_NODE=/absolute/path/to/node` when Node is missing or the wrong version is found; ensure that path reports >=22.19 with `node --version`. If a run is interrupted, reopen `/workflows` and inspect its recovery artifact before resuming. Permission errors should be fixed by selecting a canonical external Node path, not by weakening Node permission flags.
+See the [subagents Module guide](src/modules/subagents/README.md) for the Job state, the Background Protocol, and troubleshooting.
 
 ## File-search tools
 
@@ -152,7 +132,7 @@ These tools are built into pui; the regular `pi` command does not load them.
 
 ## Web tools
 
-pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/modules/web/`](src/modules/web/). `web_search` uses GPT built-in web search through an authenticated OpenAI Responses or ChatGPT/Codex model. It uses the active model when compatible; otherwise set `WEB_SEARCH_MODEL=provider/model` to a registered, authenticated compatible model. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
+pui bundles the application-owned `web_search` and `web_crawl` tools from [`src/modules/web/`](src/modules/web/). `web_search` calls the ChatGPT Codex standalone search endpoint, which runs searches server-side without model inference, so searches consume no model tokens. It needs ChatGPT/Codex credentials, resolved in order: `CODEX_ACCESS_TOKEN` (with optional `CODEX_ACCOUNT_ID`), a Pi-authenticated ChatGPT/Codex model (the active model, or `WEB_SEARCH_MODEL=provider/model` to select another registered one), then the Codex CLI login at `~/.codex/auth.json`. `web_crawl` extracts the main Markdown content of a known HTTP(S) URL through Firecrawl and requires `FIRECRAWL_API_KEY`; `FIRECRAWL_API_URL` optionally selects a hosted or self-hosted endpoint (default: `https://api.firecrawl.dev`).
 
 Both tools cap returned output at 50KB and Pi's default line limit. `web_crawl` accepts a smaller `max_bytes` limit, and `web_search` returns at most 10 source URLs. Complete oversized results may be retained in private temporary files, limited to 10 MiB per result and 50 MiB per web-extension session. A retained path is valid only for the current session and is removed at session shutdown. Retention is best-effort: if storage fails or a quota is reached, the successful tool result still includes a bounded preview, reports that the complete output was not retained, and omits `fullOutputPath`.
 
@@ -167,33 +147,36 @@ ownership, dependency-injection conventions, and the testing strategy. The sourc
 five top-level layers (`app/`, `ui/`, `pi-core/`, `modules/`, `shared/`) with one-way dependency
 edges enforced by a boundary check in `bun run check`. The short version:
 
-- `src/app/index.tsx` owns CLI dispatch and invokes the UI's single start function, `src/ui/start.tsx`,
-  which owns OpenTUI renderer startup and shutdown.
+- `src/app/index.tsx` owns CLI dispatch. It starts the TUI through the UI's single start function,
+  `src/ui/start.tsx`, or runs the headless `--smoke` entry in `src/app/smoke.ts`. The App never
+  imports a Module.
 - `src/ui/state/controller.ts` (`PuiController`) is the stateful hub: it embeds Pi through
   `AgentSessionRuntime`, rebinds every replaced session, reduces events into immutable
   `PuiSnapshot`s, and exposes every user action as a method. Its collaborators are injectable with
-  production defaults: the workflows Module's UI Entry (workflow run map and control round-trips) and
-  `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command table
-  drives slash-command autocomplete and dispatch.
+  production defaults: the subagents Module's UI Entry (`BackgroundSubagentBridge`) and
+  `src/ui/state/controller-queues.ts` (bounded dialogs and notifications). The controller's command
+  table drives slash-command autocomplete, dispatch, and the palette.
 - `src/ui/components/app.tsx` is the Solid/OpenTUI shell; rendering and menu construction live in
-  `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts` owns
-  all keyboard predicates, plus dialog/transcript/prompt/sidebar/workflow-page components).
+  `src/ui/components/` (`menus.ts` builds every picker behind a testable `MenuHost` seam, `keys.ts`
+  owns all keyboard predicates, plus dialog, transcript, prompt, and sidebar components).
 - `src/ui/state/format.ts` projects Pi messages and live tool executions into display variants and
-  preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces tool
-  lifecycle events; the subagents Module's UI Entry validates and bounds the subagent protocol for
-  display.
-- `src/modules/file-search/`, `src/modules/web/`, `src/modules/subagents/`, and `src/modules/workflows/` are
-  the four Modules behind their Interfaces Directories, registered via Pi Core's
-  Register File `src/pi-core/register.ts`. Each Module owns its wire protocol; consumers reach parsed
-  state through the Module's UI Entry instead of maintaining mirrors. The `"pui/workflow"` authoring
-  import resolves to the workflows Module's `interfaces/api.ts`.
-- `src/shared/` holds the Shared Primitives importable from every layer: `src/shared/agent-runtime/` (the
-  Child-Agent Runtime for spawning child Pi processes, plus the Agent Roles) and `src/shared/lib/`
-  (the generic library: validation, bounded processes, retained output, semaphores, and friends).
-- `src/pi-core/skills/` holds application-owned skills, registered via `src/pi-core/bundled-skills.ts`.
+  preserves item identity when presentation is unchanged; `src/ui/state/tool-executions.ts` reduces
+  tool lifecycle events; the subagents Module's UI Entry validates and bounds the Background
+  Protocol for display.
+- `src/modules/file-search/`, `src/modules/web/`, and `src/modules/subagents/` are the three
+  Modules behind their Interfaces Directories (`interfaces/pi.ts`, plus `interfaces/ui.ts` where
+  the UI needs it), registered by Pi Core's Register File `src/pi-core/register.ts`. Each Module
+  owns its wire protocol; consumers reach parsed state through the Module's UI Entry instead of
+  maintaining mirrors. The subagents Module owns its Profiles and the child runner outright (ADR
+  0002).
+- `src/shared/lib/` holds the Shared Primitives importable from every layer: validation, bounded
+  processes, retained output, and the injectable clock. Only code with two or more consumers lives
+  there.
+- `src/pi-core/skills/` holds application-owned skills, registered via
+  `src/pi-core/bundled-skills.ts`.
 - `scripts/build.ts` compiles the Solid application and embeds the bundled extensions, skills, and
   skill licenses into `dist/pui`.
 
-The bundled application-owned resources augment normal Pi discovery: global and trusted project extensions, tools, and skills still load from Pi's regular configuration. The subagent emits renderer-neutral details and relies on regular Pi's generic tool fallback outside pui. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
+The bundled application-owned resources augment normal Pi discovery: global and trusted project extensions, tools, and skills still load from Pi's regular configuration. Other extensions built specifically from `@earendil-works/pi-tui` components cannot render those components inside OpenTUI, but their non-UI hooks, tools, commands, lifecycle events, and renderer-neutral details still work.
 
 `@earendil-works/pi-tui` remains a deliberate direct dependency because the controller reuses its `CombinedAutocompleteProvider`. This preserves Pi's slash, path, `fd`, quoting, ranking, cancellation, and insertion behavior without maintaining an autocomplete fork; pui's visible renderer remains OpenTUI.

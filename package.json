@@ -1,15 +1,9 @@
 {
     "name": "pui",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "private": true,
     "description": "An OpenCode-inspired OpenTUI client for Pi",
     "type": "module",
-    "exports": {
-        "./workflow": {
-            "types": "./src/modules/workflows/interfaces/api.ts",
-            "default": "./src/modules/workflows/interfaces/api.ts"
-        }
-    },
     "imports": {
         "#app/*": "./src/app/*",
         "#ui/*": "./src/ui/*",
@@ -26,7 +20,7 @@
         "lint": "biome check .",
         "format": "biome format --write .",
         "check": "bun run lint && bun run typecheck && bun scripts/check-boundaries.ts && bun run test && bun run build && bun scripts/smoke-build.ts",
-        "install": "./scripts/install-local.sh"
+        "link": "./scripts/install-local.sh"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.80.10",

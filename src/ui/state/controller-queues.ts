@@ -1,5 +1,8 @@
 import type { ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import type { ExtensionDialog, ToastMessage } from "./types.js";
+
+type Timers = Pick<Clock, "setTimeout" | "clearTimeout">;
 
 const TOAST_TTL_MS = 5_000;
 const MAX_VISIBLE_TOASTS = 3;
@@ -8,16 +11,19 @@ const MAX_VISIBLE_TOASTS = 3;
 export class ToastQueue {
     private toasts: ToastMessage[] = [];
     private nextId = 0;
-    private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+    private readonly timers = new Set<unknown>();
 
-    constructor(private readonly onChange: () => void) {}
+    constructor(
+        private readonly onChange: () => void,
+        private readonly clock: Timers = SYSTEM_CLOCK,
+    ) {}
 
     push(message: string, type: ToastMessage["type"] = "info"): void {
         const toast = { id: ++this.nextId, message, type };
         this.toasts = [...this.toasts.slice(-(MAX_VISIBLE_TOASTS - 1)), toast];
         this.onChange();
 
-        const timer = setTimeout(() => {
+        const timer: unknown = this.clock.setTimeout(() => {
             this.timers.delete(timer);
             this.toasts = this.toasts.filter((candidate) => candidate.id !== toast.id);
             this.onChange();
@@ -30,7 +36,7 @@ export class ToastQueue {
     }
 
     dispose(): void {
-        for (const timer of this.timers) clearTimeout(timer);
+        for (const timer of this.timers) this.clock.clearTimeout(timer);
         this.timers.clear();
     }
 }
@@ -42,8 +48,8 @@ type ExtensionDialogSpec =
 
 const MAX_PENDING_DIALOGS = 32;
 const MAX_TITLE = 512;
-/** A 64 KiB workflow script plus approval headers must remain inspectable byte-for-byte. */
-const MAX_CONFIRM_MESSAGE = 72 * 1024;
+/** Bound on untrusted extension content: a confirm body larger than this is rejected, not truncated. */
+const MAX_CONFIRM_MESSAGE = 16 * 1024;
 const MAX_INPUT_PLACEHOLDER = 1_024;
 const MAX_SELECT_OPTIONS = 100;
 const MAX_SELECT_OPTION_LENGTH = 4_096;
@@ -62,7 +68,10 @@ export class ExtensionDialogQueue {
     private nextId = 0;
     private closed = false;
 
-    constructor(private readonly onChange: () => void) {}
+    constructor(
+        private readonly onChange: () => void,
+        private readonly clock: Timers = SYSTEM_CLOCK,
+    ) {}
 
     /** The dialog currently presented to the user, if any. */
     current(): ExtensionDialog | undefined {
@@ -84,15 +93,15 @@ export class ExtensionDialogQueue {
             return Promise.resolve(undefined);
         return new Promise((resolve) => {
             const dialog = { ...value, id: ++this.nextId } as ExtensionDialog;
-            let timer: ReturnType<typeof setTimeout> | undefined;
+            let timer: unknown;
             const abort = () => this.resolve(dialog.id, undefined);
             const cleanup = () => {
-                if (timer) clearTimeout(timer);
+                if (timer !== undefined) this.clock.clearTimeout(timer);
                 options?.signal?.removeEventListener("abort", abort);
             };
             this.queue.push({ dialog, resolve, cleanup });
             options?.signal?.addEventListener("abort", abort, { once: true });
-            if (options?.timeout !== undefined) timer = setTimeout(abort, Math.max(0, options.timeout));
+            if (options?.timeout !== undefined) timer = this.clock.setTimeout(abort, Math.max(0, options.timeout));
             this.onChange();
         });
     }

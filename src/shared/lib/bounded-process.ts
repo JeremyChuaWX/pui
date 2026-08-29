@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { type Clock, SYSTEM_CLOCK, unrefTimer } from "./clock.js";
 import { truncateUtf8, truncateUtf8Tail } from "./retained-output.js";
 
 /**
@@ -58,12 +59,16 @@ export interface GracefulTermination {
     dispose(): void;
 }
 
-/** The one SIGTERM-then-SIGKILL escalation policy shared by every child-process owner. */
+/**
+ * The one SIGTERM-then-SIGKILL escalation policy shared by every child-process owner. The grace
+ * timer runs on the given Clock so an owner under an injected clock escalates on that clock.
+ */
 export function createGracefulTermination(
     sendSignal: (signal: NodeJS.Signals) => void,
-    options: { graceMs?: number; unrefTimer?: boolean } = {},
+    options: { graceMs?: number; unrefTimer?: boolean; timers?: Pick<Clock, "setTimeout" | "clearTimeout"> } = {},
 ): GracefulTermination {
-    let killTimer: NodeJS.Timeout | undefined;
+    const timers = options.timers ?? SYSTEM_CLOCK;
+    let killTimer: unknown;
     let begun = false;
     return {
         begin() {
@@ -74,14 +79,14 @@ export function createGracefulTermination(
                 return;
             }
             sendSignal("SIGTERM");
-            killTimer = setTimeout(() => sendSignal("SIGKILL"), options.graceMs);
-            if (options.unrefTimer) killTimer.unref();
+            killTimer = timers.setTimeout(() => sendSignal("SIGKILL"), options.graceMs);
+            if (options.unrefTimer) unrefTimer(killTimer);
         },
         escalateOnClose() {
             if (begun) sendSignal("SIGKILL");
         },
         dispose() {
-            if (killTimer) clearTimeout(killTimer);
+            if (killTimer !== undefined) timers.clearTimeout(killTimer);
             killTimer = undefined;
         },
     };
@@ -153,7 +158,9 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
             if (request.directChildOnly) {
                 try {
                     child.kill(signal);
-                } catch {}
+                } catch {
+                    // The child may have exited between the checks.
+                }
             } else killProcessTree(child, signal);
         };
         const terminator = createGracefulTermination(sendSignal, {

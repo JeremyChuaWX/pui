@@ -26,8 +26,10 @@ export async function startUi(options: UiStartOptions): Promise<void> {
     const destroy = () => {
         if (!renderer.isDestroyed) renderer.destroy();
     };
+    // The renderer owns Ctrl+C in raw mode; these arrive from outside (kill, a closing terminal).
     process.once("SIGTERM", destroy);
     process.once("SIGHUP", destroy);
+    process.once("SIGINT", destroy);
 
     try {
         await render(() => <App controller={controller} initialPrompt={options.initialPrompt} />, renderer);
@@ -35,6 +37,7 @@ export async function startUi(options: UiStartOptions): Promise<void> {
     } finally {
         process.off("SIGTERM", destroy);
         process.off("SIGHUP", destroy);
+        process.off("SIGINT", destroy);
         destroy();
         await controller.dispose();
         syntaxStyle.destroy();

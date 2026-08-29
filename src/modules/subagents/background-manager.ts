@@ -1,56 +1,76 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
-import { getPiInvocation } from "#shared/agent-runtime/child-agent.js";
-import {
-    AGENTS,
-    type AgentName,
-    type ResolvedAgentName,
-    resolveModel,
-    resolveWorkingDirectory,
-} from "#shared/agent-runtime/presets.js";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
+import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
-import type { AbortableSemaphore } from "#shared/lib/semaphore.js";
-import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
+import { errorMessage } from "#shared/lib/validate.js";
+import { type BackgroundSubagentJobV1, MAX_TRACKED_JOBS } from "./background-protocol.js";
+import { getPiInvocation, type SpawnChildAgent, spawnChildAgentProcess } from "./child-agent.js";
 import {
-    createInitialSubagentDetails,
-    SUBAGENT_PROTOCOL_VERSION,
-    SUBAGENT_SCHEMA,
-    type SubagentDetailsV1,
-} from "./protocol.js";
-import type { SubagentOutputStore } from "./run-job.js";
-import { runSubagentJob } from "./run-job.js";
-import { type RunSubagentOptions, runSubagent, type SubagentRunResult } from "./runner.js";
+    appendSubagentActivity,
+    createInitialSubagentJob,
+    createTerminalSubagentJob,
+    isTerminalSubagentStatus,
+    type SubagentJobV1,
+    type SubagentStatus,
+    type SubagentTerminalStatus,
+    updateSubagentJob,
+} from "./job-state.js";
+import { childArgs, profileLimits, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
+import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "./runner.js";
+import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
+import { resolveWorkingDirectory } from "./working-directory.js";
 
-const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
 const PROMPT_BYTES = 2 * 1024;
 const AUTO_RESULT_BYTES = 12 * 1024;
 const WAIT_JOB_BYTES = 24 * 1024;
 const WAIT_TOTAL_BYTES = 48 * 1024;
 const DELIVERY_MAX_LINES = DEFAULT_MAX_LINES - 8;
+const ERROR_PREVIEW_BYTES = 8 * 1024;
+const FAILURE_ACTIVITY_TITLE_BYTES = 512;
 
-interface SpawnInput {
+/** The complete-output store the manager needs; RetainedOutputStore is the production implementation. */
+export interface SubagentOutputStore {
+    /** Retain one complete output; undefined when it was not retained (quota, shutdown, or storage). */
+    savePath(output: string): Promise<string | undefined>;
+    /** Reopen the store for a new session after `cleanup`. */
+    startSession(): void;
+    cleanup(): Promise<unknown>;
+}
+
+/** The production store: private temp files under one `pi-subagent-` directory per session. */
+export function createSubagentOutputStore(): SubagentOutputStore {
+    return new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
+}
+
+export interface SpawnInput {
+    profile: SubagentProfile;
     prompt: string;
     cwd: string;
-    agent?: AgentName;
     model?: string;
     name?: string;
 }
 interface BackgroundManagerOptions {
     semaphore: AbortableSemaphore;
-    run?: (options: RunSubagentOptions) => Promise<SubagentRunResult>;
+    run?: (options: RunSubagentOptions) => Promise<RunSubagentResult>;
     invocation?: typeof getPiInvocation;
+    /** Spawns the child process; tests inject a scripted child. */
+    spawn?: SpawnChildAgent;
     environment?: NodeJS.ProcessEnv;
-    now?: () => number;
+    /** Time source and timer scheduler for Job timestamps and the child runner's Limits. */
+    clock?: Clock;
     emit: (job: BackgroundSubagentJobV1, type?: "upsert" | "remove") => void;
+    /**
+     * Receives each finished Job's result when no wait consumed it. The Extension forwards it to
+     * Pi as a follow-up message; Pi decides whether to start a turn or queue behind the current one.
+     */
     deliver: (result: BackgroundTerminalResult) => void;
-    isIdle?: () => boolean;
-    outputStore?: SubagentOutputStore;
+    outputStore: SubagentOutputStore;
 }
 export interface BackgroundTerminalResult {
     id: string;
     title: string;
-    status: string;
+    status: SubagentTerminalStatus;
     text: string;
     fullOutputPath?: string;
 }
@@ -76,6 +96,29 @@ function titleFor(input: SpawnInput): string {
 function copyJob(job: Job): BackgroundSubagentJobV1 {
     return structuredClone(job.snapshot);
 }
+/** Append a bounded diagnostic activity and settle the Job into a terminal failure. */
+function synthesizeFailure(
+    state: SubagentJobV1,
+    status: Extract<SubagentStatus, "failed" | "cancelled">,
+    message: string,
+    now: number,
+): SubagentJobV1 {
+    const annotated = appendSubagentActivity(
+        state,
+        {
+            timestamp: now,
+            kind: "diagnostic",
+            title: truncateUtf8(message, FAILURE_ACTIVITY_TITLE_BYTES).content,
+            isError: true,
+        },
+        now,
+    );
+    return createTerminalSubagentJob(
+        annotated,
+        { status, error: truncateUtf8(message, ERROR_PREVIEW_BYTES).content },
+        now,
+    );
+}
 function boundedResult(result: BackgroundTerminalResult, bytes: number): BackgroundTerminalResult {
     const cap = Math.max(0, bytes);
     if (!truncateUtf8(result.text, cap).truncated) return result;
@@ -89,11 +132,14 @@ function boundedResult(result: BackgroundTerminalResult, bytes: number): Backgro
     return { ...result, text };
 }
 
+function assertNotAborted(signal: AbortSignal | undefined): void {
+    if (signal?.aborted) throw new Error("Background subagent spawn was cancelled.");
+}
+
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
-    private readonly deferred = new Map<string, BackgroundTerminalResult>();
-    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore">>;
+    private readonly options: Required<BackgroundManagerOptions>;
     private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
     constructor(options: BackgroundManagerOptions) {
@@ -101,37 +147,34 @@ export class BackgroundSubagentManager {
             ...options,
             run: options.run ?? runSubagent,
             invocation: options.invocation ?? getPiInvocation,
+            spawn: options.spawn ?? spawnChildAgentProcess,
             environment: options.environment ?? process.env,
-            now: options.now ?? Date.now,
-            isIdle: options.isIdle ?? (() => false),
+            clock: options.clock ?? SYSTEM_CLOCK,
         };
-        this.outputStore =
-            options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
+        this.outputStore = options.outputStore;
     }
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {
         if (this.shuttingDown) throw new Error("Background subagent manager is shutting down.");
-        if (creationSignal?.aborted) throw new Error("Background subagent spawn was cancelled.");
+        assertNotAborted(creationSignal);
         if (!input.prompt.trim()) throw new Error("Subagent prompt must not be empty.");
         const cwd = await resolveWorkingDirectory(input.cwd, parentCwd);
-        if (creationSignal?.aborted) throw new Error("Background subagent spawn was cancelled.");
-        this.prune(MAX_JOBS - 1);
-        if (this.jobs.size >= MAX_JOBS) {
-            throw new Error(`Cannot track more than ${MAX_JOBS} active background subagents.`);
+        assertNotAborted(creationSignal);
+        this.prune(MAX_TRACKED_JOBS - 1);
+        if (this.jobs.size >= MAX_TRACKED_JOBS) {
+            throw new Error(`Cannot track more than ${MAX_TRACKED_JOBS} active background subagents.`);
         }
-        const agentName: ResolvedAgentName = input.agent ?? "generic";
-        const agent = AGENTS[agentName];
-        const model = resolveModel(agent, input.model, this.options.environment);
+        const model = resolveProfileModel(input.profile, input.model, this.options.environment);
         const id = randomUUID();
-        const now = this.options.now();
-        const details = createInitialSubagentDetails({ id, agent: agentName, model: model ?? "default", cwd, now });
+        const now = this.options.clock.now();
+        const state = createInitialSubagentJob({ id, agent: input.profile.name, model, cwd, now });
         const controller = new AbortController();
         const job: Job = {
             snapshot: {
                 id,
                 title: titleFor(input),
                 prompt: truncateUtf8(input.prompt, PROMPT_BYTES).content,
-                run: details.run,
+                state,
             },
             controller,
             settlement: Promise.resolve(),
@@ -142,7 +185,7 @@ export class BackgroundSubagentManager {
         this.emit(job);
         this.prune();
         // Deliberately detach only after all synchronous/async validation succeeds.
-        job.settlement = this.execute(job, input.prompt, agentName, model, cwd);
+        job.settlement = this.execute(job, input.prompt, input.profile, model, cwd);
         return copyJob(job);
     }
 
@@ -181,7 +224,6 @@ export class BackgroundSubagentManager {
             let remaining = WAIT_TOTAL_BYTES;
             consumed = true;
             return jobs.map((job) => {
-                this.deferred.delete(job.snapshot.id);
                 if (!job.terminal) throw new Error(`Background subagent ${job.snapshot.id} did not settle correctly.`);
                 job.terminalConsumed = true;
                 const result = boundedResult(job.terminal, Math.min(WAIT_JOB_BYTES, remaining));
@@ -195,10 +237,8 @@ export class BackgroundSubagentManager {
                 if (count > 0) this.waitInterest.set(job.snapshot.id, count);
                 else {
                     this.waitInterest.delete(job.snapshot.id);
-                    if (!consumed && job.terminal && this.deferred.has(job.snapshot.id) && this.options.isIdle()) {
-                        this.deferred.delete(job.snapshot.id);
-                        this.consumeAndDeliver(job);
-                    }
+                    // A result that settled during an abandoned wait still has to reach the model.
+                    if (!consumed && job.terminal) this.consumeAndDeliver(job);
                 }
             }
         }
@@ -211,25 +251,15 @@ export class BackgroundSubagentManager {
         return jobs.map(copyJob);
     }
 
-    flushDeferred(): void {
-        if (this.shuttingDown) return;
-        for (const [id] of this.deferred) {
-            if ((this.waitInterest.get(id) ?? 0) > 0) continue;
-            this.deferred.delete(id);
-            this.consumeAndDeliver(this.require(id));
-        }
-    }
-
     /** Reopens the manager so a later session can spawn jobs after an earlier shutdown. */
     startSession(): void {
         this.shuttingDown = false;
-        if (this.outputStore instanceof RetainedOutputStore) this.outputStore.startSession();
+        this.outputStore.startSession();
     }
 
-    async shutdown(timeoutMs = 3_000): Promise<void> {
+    async shutdown(teardownMs = 3_000): Promise<void> {
         if (this.shuttingDown) return;
         this.shuttingDown = true;
-        this.deferred.clear();
         const settlements = [...this.jobs.values()].map((job) => {
             job.controller.abort();
             return job.settlement;
@@ -238,11 +268,10 @@ export class BackgroundSubagentManager {
         await Promise.race([
             Promise.allSettled(settlements),
             new Promise<void>((resolve) => {
-                timer = setTimeout(resolve, timeoutMs);
+                timer = setTimeout(resolve, teardownMs);
             }),
         ]);
         if (timer) clearTimeout(timer);
-        this.deferred.clear();
         await this.outputStore.cleanup();
     }
 
@@ -262,70 +291,122 @@ export class BackgroundSubagentManager {
     private consumeAndDeliver(job: Job): void {
         if (!job.terminal || job.terminalConsumed) return;
         job.terminalConsumed = true;
+        // A Job settling during shutdown is consumed but never sent; the session is going away.
+        if (this.shuttingDown) return;
         try {
             this.options.deliver(boundedResult(job.terminal, AUTO_RESULT_BYTES));
         } catch {
-            // Host delivery failures must not reject or duplicate settled jobs.
+            // Delivery failures in the Extension must not reject or duplicate settled jobs.
         }
     }
-    private publish(job: Job, details: SubagentDetailsV1): void {
-        job.snapshot = { ...job.snapshot, run: details.run };
+    private publish(job: Job, state: SubagentJobV1): void {
+        job.snapshot = { ...job.snapshot, state };
         this.emit(job);
     }
+    /**
+     * Run one Job from queued to terminal: queue activity, semaphore acquisition, child
+     * invocation, runner execution, terminal synthesis for any failure, output spill, and
+     * result delivery. Never rejects; failures settle into the Job state.
+     */
     private async execute(
         job: Job,
         prompt: string,
-        agentName: ResolvedAgentName,
-        model: string | undefined,
+        profile: SubagentProfile,
+        model: string,
         cwd: string,
     ): Promise<void> {
-        const details: SubagentDetailsV1 = {
-            schema: SUBAGENT_SCHEMA,
-            version: SUBAGENT_PROTOCOL_VERSION,
-            run: job.snapshot.run,
-        };
-        const outcome = await runSubagentJob(
-            {
-                semaphore: this.options.semaphore,
-                run: this.options.run,
-                invocation: this.options.invocation,
-                now: this.options.now,
-            },
-            {
-                details,
-                agent: AGENTS[agentName],
-                model,
-                prompt,
-                cwd,
-                signal: job.controller.signal,
-                publish: (next) => this.publish(job, next),
-                onSettled: (settled) => this.publish(job, settled),
-                spill: { store: this.outputStore, maxLines: DELIVERY_MAX_LINES, spillOverBytes: AUTO_RESULT_BYTES },
-            },
+        const { semaphore, run: runChild, invocation, clock, spawn } = this.options;
+        const now = () => clock.now();
+        const signal = job.controller.signal;
+        let state = job.snapshot.state;
+        let output = "";
+        let release: SemaphoreRelease | undefined;
+
+        state = appendSubagentActivity(
+            state,
+            { timestamp: now(), kind: "diagnostic", title: "Queued for a child Pi process" },
+            now(),
         );
-        job.output = outcome.output;
-        if (outcome.fullOutputPath) this.publish(job, outcome.details);
+        this.publish(job, state);
+        try {
+            try {
+                release = await semaphore.acquire(signal);
+            } catch (error) {
+                throw new Error("Subagent was cancelled while queued.", { cause: error });
+            }
+            if (signal.aborted) throw new Error("Subagent was cancelled before it started.");
+
+            const startedAt = now();
+            state = updateSubagentJob(state, { status: "starting", phase: "spawning", startedAt }, startedAt);
+            state = appendSubagentActivity(
+                state,
+                { timestamp: startedAt, kind: "diagnostic", title: "Starting child Pi" },
+                startedAt,
+            );
+            this.publish(job, state);
+
+            const child = invocation(childArgs(profile, model, prompt));
+            const execution = await runChild({
+                job: state,
+                command: child.command,
+                args: child.args,
+                cwd,
+                limits: profileLimits(profile),
+                signal,
+                clock,
+                spawn,
+                onSnapshot: (next) => {
+                    state = next;
+                    this.publish(job, next);
+                },
+            });
+            state = execution.job;
+            output = execution.output;
+            if (!isTerminalSubagentStatus(state.status)) throw new Error(`Subagent ${state.status}.`);
+        } catch (error) {
+            if (!isTerminalSubagentStatus(state.status)) {
+                state = synthesizeFailure(state, signal.aborted ? "cancelled" : "failed", errorMessage(error), now());
+                this.publish(job, state);
+            }
+        } finally {
+            release?.();
+        }
+        this.publish(job, state);
+
+        const delivered = output || state.error || "(no output)";
+        const truncation = truncateHead(delivered, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DELIVERY_MAX_LINES });
+        const needsSpill = truncation.truncated || truncateUtf8(delivered, AUTO_RESULT_BYTES).truncated;
+        let savedPath: string | undefined;
+        if (needsSpill) {
+            try {
+                savedPath = await this.outputStore.savePath(delivered);
+            } catch {
+                // Retention is best effort; the terminal snapshot must still settle.
+            }
+        }
+        const fullOutputPath = savedPath ?? state.fullOutputPath;
+        if (fullOutputPath && fullOutputPath !== state.fullOutputPath) {
+            state = updateSubagentJob(state, { fullOutputPath }, now());
+            this.publish(job, state);
+        }
+        job.output = output;
+        const status = state.status;
+        if (!isTerminalSubagentStatus(status)) throw new Error(`Subagent ${status} did not settle.`);
         job.terminal = Object.freeze({
             id: job.snapshot.id,
             title: job.snapshot.title,
-            status: outcome.details.run.status,
-            text: outcome.truncation.content,
-            ...(outcome.fullOutputPath ? { fullOutputPath: outcome.fullOutputPath } : {}),
+            status,
+            text: truncation.content,
+            ...(fullOutputPath ? { fullOutputPath } : {}),
         });
-        if (!this.shuttingDown) {
-            if ((this.waitInterest.get(job.snapshot.id) ?? 0) > 0) this.deferred.set(job.snapshot.id, job.terminal);
-            else if (this.options.isIdle()) this.consumeAndDeliver(job);
-            else this.deferred.set(job.snapshot.id, job.terminal);
-        }
+        // An active wait owns the result; otherwise it goes to the Extension at once.
+        if ((this.waitInterest.get(job.snapshot.id) ?? 0) === 0) this.consumeAndDeliver(job);
         this.prune();
     }
-    private prune(limit = MAX_JOBS): void {
+    private prune(limit = MAX_TRACKED_JOBS): void {
         while (this.jobs.size > limit) {
             const oldest = [...this.jobs.values()].find(
-                (job) =>
-                    job.terminal !== undefined &&
-                    !this.deferred.has(job.snapshot.id) &&
-                    (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
+                (job) => job.terminalConsumed && (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
             );
             if (!oldest) break;
             this.jobs.delete(oldest.snapshot.id);

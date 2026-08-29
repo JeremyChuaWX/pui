@@ -85,13 +85,21 @@ function waitForExit(command: string, args: string[], cwd: string): Promise<numb
     });
 }
 
-export async function editPromptInNvim(draft: string, reference: string, cwd: string): Promise<string | undefined> {
+/** The user's editor: `$VISUAL`, then `$EDITOR`, then nvim. Only the first word is the command. */
+export function resolveEditor(environment: NodeJS.ProcessEnv = process.env): { command: string; args: string[] } {
+    const configured = (environment.VISUAL || environment.EDITOR || "").trim();
+    const [command = "", ...args] = configured.split(/\s+/);
+    return command ? { command, args } : { command: "nvim", args: [] };
+}
+
+export async function editPromptInEditor(draft: string, reference: string, cwd: string): Promise<string | undefined> {
     const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "pui-editor-"));
     const tempFile = path.join(tempDirectory, "prompt.pi.md");
 
     try {
         await writeFile(tempFile, buildEditorBuffer(reference, draft), "utf8");
-        const status = await waitForExit("nvim", [tempFile], cwd);
+        const editor = resolveEditor();
+        const status = await waitForExit(editor.command, [...editor.args, tempFile], cwd);
         if (status !== 0) return undefined;
 
         const edited = extractEditedPrompt(await readFile(tempFile, "utf8"));
