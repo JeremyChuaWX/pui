@@ -5,6 +5,7 @@ import {
     BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
     BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
     type BackgroundSubagentEventV1,
+    MAX_TRACKED_JOBS,
     parseBackgroundSubagentEvent as parseWireEvent,
 } from "./background-protocol.js";
 import type { InstanceScopedJobs } from "./instance-scoped-jobs.js";
@@ -18,7 +19,6 @@ import {
 
 const MAX_TITLE = 512;
 const MAX_PROMPT = 8_000;
-const MAX_JOBS = 64;
 
 /** A validated, string-bounded copy of one Job, safe for rendering. */
 export interface BackgroundSubagentViewModel extends SubagentJobV1 {
@@ -146,6 +146,6 @@ export function reduceBackgroundSubagentEvent(
         event.type === "upsert" || event.type === "remove"
             ? { type: event.type, instanceId: event.instanceId, job: event.job }
             : { type: event.type, instanceId: event.instanceId },
-        { routeMatches: event.sessionId === sessionId, maxJobs: MAX_JOBS, id: (job) => job.id },
+        { routeMatches: event.sessionId === sessionId, maxJobs: MAX_TRACKED_JOBS, id: (job) => job.id },
     );
 }

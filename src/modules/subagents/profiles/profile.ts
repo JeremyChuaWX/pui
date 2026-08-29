@@ -17,7 +17,7 @@ export const DEFAULT_LIMITS: JobLimits = {
     toolStallTimeoutMs: 15 * MINUTE,
 };
 
-export const CHILD_ISOLATION_FLAGS = [
+const CHILD_ISOLATION_FLAGS = [
     "--no-session",
     "--no-extensions",
     "--no-skills",

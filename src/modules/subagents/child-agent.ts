@@ -7,6 +7,7 @@ import { createGracefulTermination, killProcessTree } from "#shared/lib/bounded-
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
 import { appendBoundedUtf8, truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage, isRecord } from "#shared/lib/validate.js";
+import { emptySubagentUsage, type SubagentActiveToolV1, type SubagentUsageV1 } from "./job-state.js";
 import { JsonLineParser } from "./json-events.js";
 import { describeLimit, type JobLimits } from "./profiles/profile.js";
 import { AbortableSemaphore, configuredSubagentConcurrency } from "./semaphore.js";
@@ -28,27 +29,9 @@ export const PROCESS_CHILD_AGENT_SEMAPHORE: AbortableSemaphore =
     processState.__piSubagentSemaphoreV1 ?? new AbortableSemaphore(configuredSubagentConcurrency());
 if (!processState.__piSubagentSemaphoreV1) processState.__piSubagentSemaphoreV1 = PROCESS_CHILD_AGENT_SEMAPHORE;
 
-export interface ChildAgentUsage {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    totalTokens: number;
-    cost: number;
-    turns: number;
-}
-
-export function emptyChildAgentUsage(): ChildAgentUsage {
-    return {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: 0,
-        turns: 0,
-    };
-}
+/** The runtime reports usage in the Job's own shape so the manager never translates it. */
+export type ChildAgentUsage = SubagentUsageV1;
+export const emptyChildAgentUsage = emptySubagentUsage;
 
 function nonNegativeNumber(value: unknown): number {
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
@@ -119,12 +102,7 @@ export type SpawnChildAgent = (
 
 type ChildAgentPhase = "thinking" | "tool" | "exiting";
 
-interface ChildAgentTool {
-    id: string;
-    name: string;
-    title: string;
-    startedAt: number;
-}
+type ChildAgentTool = SubagentActiveToolV1;
 
 /** One notable moment in a child agent's lifetime, phrased without any wire protocol's vocabulary. */
 export type ChildAgentEvent =
@@ -244,8 +222,8 @@ export function getPiInvocation(
     currentScript = process.argv[1],
     execPath = process.execPath,
 ): { command: string; args: string[] } {
-    // Reuse argv[1] only when the host is Pi's own CLI. Other scripts and
-    // compiled hosts (including pui) cannot parse Pi CLI flags.
+    // Reuse argv[1] only when the running executable is Pi's own CLI. Other scripts and
+    // compiled executables (including pui) cannot parse Pi CLI flags.
     let resolvedScript: string | undefined;
     if (currentScript && !currentScript.startsWith("/$bunfs/root/") && fs.existsSync(currentScript)) {
         try {
@@ -285,13 +263,20 @@ function phaseFor(activeToolCount: number): Extract<ChildAgentPhase, "thinking" 
     return activeToolCount > 0 ? "tool" : "thinking";
 }
 
-function spawnDefault(
-    command: string,
-    args: readonly string[],
-    options: { cwd: string; shell: false; detached: boolean; stdio: ["ignore", "pipe", "pipe"] },
-): SpawnedChild {
-    return nodeSpawn(command, [...args], options);
+/** The production child spawner: a plain detached Node child process. */
+export const spawnChildAgentProcess: SpawnChildAgent = (command, args, options) =>
+    nodeSpawn(command, [...args], options);
+
+const liveChildren = new Set<SpawnedChild>();
+/**
+ * Kill every child Pi process this process still tracks. Registered on `exit` so a crash or an
+ * unhandled rejection cannot leave a detached worker running with write access.
+ */
+export function killLiveChildAgents(): void {
+    for (const child of liveChildren) killProcessTree(child, "SIGKILL");
+    liveChildren.clear();
 }
+process.once("exit", killLiveChildAgents);
 
 /**
  * Run one child Pi process and always resolve to a structured terminal result. Owns the three
@@ -305,7 +290,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
     const limits = options.limits;
     const throttleMs = Math.max(0, options.throttleMs ?? DEFAULT_THROTTLE_MS);
     const killGraceMs = Math.max(0, options.killGraceMs ?? DEFAULT_KILL_GRACE_MS);
-    const spawnChild = options.spawn ?? spawnDefault;
+    const spawnChild = options.spawn ?? spawnChildAgentProcess;
     const activeTools = new Map<string, ChildAgentTool>();
     const state: ChildAgentState = {
         phase: "thinking",
@@ -656,6 +641,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
         return finalize();
     }
     const runningChild = child;
+    liveChildren.add(runningChild);
 
     const startedAt = now();
     state.phase = "thinking";
@@ -685,6 +671,7 @@ export async function runChildAgent(options: RunChildAgentOptions): Promise<Chil
             // its detached process group ignores it. Escalate the group before clearing
             // the grace timer so cancellation never leaves a descendant behind.
             terminator.escalateOnClose();
+            liveChildren.delete(runningChild);
             closed = true;
             exitCode = code;
             exitSignal = signal;

@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 /** Normalise a model-supplied cwd: strip a stray leading @, expand ~, resolve relative paths from the parent cwd. */
-export function workingDirectoryCandidate(input: string, parentCwd: string): string {
+function workingDirectoryCandidate(input: string, parentCwd: string): string {
     let value = input.trim().replace(/^@/, "");
     if (!value) return path.resolve(parentCwd);
     if (value === "~") value = os.homedir();

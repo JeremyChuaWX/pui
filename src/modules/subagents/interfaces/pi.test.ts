@@ -17,7 +17,7 @@ import {
     type BackgroundSubagentEventV1,
     parseBackgroundSubagentEvent,
 } from "../background-protocol.ts";
-import type { SpawnChildAgent } from "../child-agent.ts";
+import { killLiveChildAgents, type SpawnChildAgent } from "../child-agent.ts";
 import { createTerminalSubagentJob, updateSubagentJob } from "../job-state.ts";
 import { AbortableSemaphore } from "../semaphore.ts";
 import { registerSubagentExtension } from "./pi.ts";
@@ -450,6 +450,32 @@ describe("subagent extension Limits", () => {
         expect(result.text).toContain("tool stall");
         expect(result.text).toContain("15 minute");
         expect(child.signals[0]).toBe("SIGTERM");
+    });
+
+    test("subagent_cancel signals the child and returns each Job in a terminal state", async () => {
+        const fixture = limitsHost();
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+        expect((await fixture.status(id)).status).toBe("running");
+
+        const cancelled = await fixture.host.tool("subagent_cancel").execute("cancel", { ids: [id] });
+        expect(child.signals[0]).toBe("SIGTERM");
+        expect(cancelled.details.jobs.map((job: any) => job.state.status)).toEqual(["cancelled"]);
+        expect(cancelled.content[0].text).toBe(`[${id}] cancelled`);
+        expect((await fixture.status(id)).status).toBe("cancelled");
+    });
+
+    test("process exit kills every live child so a crashed parent leaves no detached worker", async () => {
+        const fixture = limitsHost({ ignoresSigterm: true });
+        const { id, child } = await fixture.spawn();
+        await child.emitEvent({ type: "turn_start", turnIndex: 0, timestamp: fixture.clock.now });
+
+        killLiveChildAgents();
+        expect(child.signals).toEqual(["SIGKILL"]);
+        await fixture.result(id);
+        expect((await fixture.status(id)).status).toBe("failed");
+        killLiveChildAgents();
+        expect(child.signals).toEqual(["SIGKILL"]);
     });
 
     test("termination escalates SIGTERM to SIGKILL when the child ignores SIGTERM", async () => {

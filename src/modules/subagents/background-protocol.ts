@@ -6,6 +6,8 @@ export const BACKGROUND_SUBAGENT_CONTROL_CHANNEL = "pui.subagent.background.cont
 export const BACKGROUND_SUBAGENT_SCHEMA = "pi.subagent.background" as const;
 export const BACKGROUND_SUBAGENT_CONTROL_SCHEMA = "pi.subagent.background.control" as const;
 export const BACKGROUND_SUBAGENT_VERSION = 1 as const;
+/** Producer and consumer track at most this many Jobs; the producer prunes the oldest terminal Job first. */
+export const MAX_TRACKED_JOBS = 64;
 /**
  * Version 1 of the envelope serialises the Job state under the key `run`. The key is frozen with
  * the schema version; in process the same value is `state`. Only `encodeBackgroundSubagentJob`

@@ -14,7 +14,12 @@ import {
     encodeBackgroundSubagentJob,
     parseBackgroundSubagentControl,
 } from "../background-protocol.js";
-import { getPiInvocation, PROCESS_CHILD_AGENT_SEMAPHORE, type SpawnChildAgent } from "../child-agent.js";
+import {
+    getPiInvocation,
+    PROCESS_CHILD_AGENT_SEMAPHORE,
+    type SpawnChildAgent,
+    spawnChildAgentProcess,
+} from "../child-agent.js";
 import { describeProfile, PROFILES, type SubagentProfile } from "../profiles/index.js";
 import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "../runner.js";
 import type { AbortableSemaphore } from "../semaphore.js";
@@ -45,12 +50,12 @@ export interface SubagentExtensionDependencies {
 /** Production collaborators, including the one process-wide concurrency owner. */
 export function createDefaultSubagentDependencies(
     overrides: SubagentExtensionDependencies = {},
-): Required<Omit<SubagentExtensionDependencies, "spawn">> & Pick<SubagentExtensionDependencies, "spawn"> {
+): Required<SubagentExtensionDependencies> {
     return {
         semaphore: overrides.semaphore ?? PROCESS_CHILD_AGENT_SEMAPHORE,
         run: overrides.run ?? runSubagent,
         invocation: overrides.invocation ?? getPiInvocation,
-        ...(overrides.spawn ? { spawn: overrides.spawn } : {}),
+        spawn: overrides.spawn ?? spawnChildAgentProcess,
         clock: overrides.clock ?? SYSTEM_CLOCK,
         environment: overrides.environment ?? process.env,
     };
@@ -109,7 +114,7 @@ export function registerSubagentExtension(pi: ExtensionAPI, dependencies: Subage
         semaphore,
         run,
         invocation: resolveInvocation,
-        ...(spawn ? { spawn } : {}),
+        spawn,
         environment,
         clock,
         emit,

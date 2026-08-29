@@ -2,11 +2,17 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { RetainedOutputStore } from "#shared/lib/retained-output.js";
 import { waitFor as waitUntil } from "#test-support/wait.js";
-import { BackgroundSubagentManager } from "./background-manager.ts";
+import { BackgroundSubagentManager, type SubagentOutputStore } from "./background-manager.ts";
 import { createTerminalSubagentJob, updateSubagentJob } from "./job-state.ts";
 import worker from "./profiles/worker/index.ts";
 import { AbortableSemaphore } from "./semaphore.ts";
+
+/** A store that never retains, for tests that only care about the bounded preview. */
+function discardingOutputStore(): SubagentOutputStore {
+    return { savePath: async () => undefined, startSession: () => {}, cleanup: async () => {} };
+}
 
 const cwd = path.dirname(fileURLToPath(import.meta.url));
 /** The manager hands its Clock to the runner; the fake reads the same one instead of Date.now(). */
@@ -18,6 +24,7 @@ function controlled(limit = 1) {
     const deliveries: any[] = [];
     const events: any[] = [];
     const manager = new BackgroundSubagentManager({
+        outputStore: discardingOutputStore(),
         semaphore,
         invocation: (args) => ({ command: "fake", args }),
         emit: (job, type) => events.push({ type, job }),
@@ -92,6 +99,7 @@ describe("BackgroundSubagentManager", () => {
         const deliveries: any[] = [];
         let finish!: () => void;
         const manager = new BackgroundSubagentManager({
+            outputStore: new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" }),
             semaphore: new AbortableSemaphore(1),
             invocation: (args) => ({ command: "fake", args }),
             deliver: (result) => deliveries.push(result),
@@ -168,6 +176,7 @@ describe("BackgroundSubagentManager", () => {
         const deliveries: any[] = [];
         const output = "x".repeat(20_000);
         const manager = new BackgroundSubagentManager({
+            outputStore: new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" }),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: (value) => deliveries.push(value),
@@ -195,6 +204,7 @@ describe("BackgroundSubagentManager", () => {
     test("copies producer-bounded snapshots without applying a second truncation policy", async () => {
         const model = "m".repeat(300);
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: () => {},
@@ -221,6 +231,7 @@ describe("BackgroundSubagentManager", () => {
         await fs.promises.writeFile(externalPath, "runner-owned");
         let finish!: () => void;
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: () => {},
@@ -251,6 +262,7 @@ describe("BackgroundSubagentManager", () => {
     test("keeps settlement successful when host delivery throws", async () => {
         let deliveryAttempts = 0;
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: () => {
@@ -274,6 +286,7 @@ describe("BackgroundSubagentManager", () => {
 
     test("host emit exceptions cannot reject settlement, cancellation, shutdown, or pruning", async () => {
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(64),
             emit: () => {
                 throw new Error("host UI unavailable");
@@ -304,6 +317,7 @@ describe("BackgroundSubagentManager", () => {
 
     test("never tracks more than 64 active or queued jobs", async () => {
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(1),
             emit: () => {},
             deliver: () => {},
@@ -344,6 +358,7 @@ describe("BackgroundSubagentManager", () => {
             deliver: (value) => deliveries.push(value),
             invocation: (args) => ({ command: "fake", args }),
             outputStore: {
+                startSession: () => {},
                 savePath: async () => {
                     saveStarted = true;
                     await new Promise<void>((resolve) => (releaseSave = resolve));
@@ -398,6 +413,7 @@ describe("BackgroundSubagentManager", () => {
     test("prunes oldest terminal jobs above 64", async () => {
         const deliveries: any[] = [];
         const manager = new BackgroundSubagentManager({
+            outputStore: discardingOutputStore(),
             semaphore: new AbortableSemaphore(64),
             emit: () => {},
             deliver: (value) => deliveries.push(value),

@@ -158,7 +158,9 @@ export function runBoundedProcess(request: BoundedProcessRequest): Promise<Bound
             if (request.directChildOnly) {
                 try {
                     child.kill(signal);
-                } catch {}
+                } catch {
+                    // The child may have exited between the checks.
+                }
             } else killProcessTree(child, signal);
         };
         const terminator = createGracefulTermination(sendSignal, {

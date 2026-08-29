@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
-import { composeBoundedOutput, RetainedOutputStore, truncateUtf8 } from "#shared/lib/retained-output.js";
+import { composeBoundedOutput, truncateUtf8 } from "#shared/lib/retained-output.js";
 import { errorMessage } from "#shared/lib/validate.js";
-import type { BackgroundSubagentJobV1 } from "./background-protocol.js";
-import { getPiInvocation, type SpawnChildAgent } from "./child-agent.js";
+import { type BackgroundSubagentJobV1, MAX_TRACKED_JOBS } from "./background-protocol.js";
+import { getPiInvocation, type SpawnChildAgent, spawnChildAgentProcess } from "./child-agent.js";
 import {
     appendSubagentActivity,
     createInitialSubagentJob,
@@ -12,6 +12,7 @@ import {
     isTerminalSubagentStatus,
     type SubagentJobV1,
     type SubagentStatus,
+    type SubagentTerminalStatus,
     updateSubagentJob,
 } from "./job-state.js";
 import { childArgs, profileLimits, resolveProfileModel, type SubagentProfile } from "./profiles/index.js";
@@ -19,7 +20,6 @@ import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "./
 import type { AbortableSemaphore, SemaphoreRelease } from "./semaphore.js";
 import { resolveWorkingDirectory } from "./working-directory.js";
 
-const MAX_JOBS = 64;
 const TITLE_BYTES = 160;
 const PROMPT_BYTES = 2 * 1024;
 const AUTO_RESULT_BYTES = 12 * 1024;
@@ -33,6 +33,8 @@ const FAILURE_ACTIVITY_TITLE_BYTES = 512;
 export interface SubagentOutputStore {
     /** Retain one complete output; undefined when it was not retained (quota, shutdown, or storage). */
     savePath(output: string): Promise<string | undefined>;
+    /** Reopen the store for a new session after `cleanup`. */
+    startSession(): void;
     cleanup(): Promise<unknown>;
 }
 
@@ -58,12 +60,12 @@ interface BackgroundManagerOptions {
      * Pi as a follow-up message; Pi decides whether to start a turn or queue behind the current one.
      */
     deliver: (result: BackgroundTerminalResult) => void;
-    outputStore?: SubagentOutputStore;
+    outputStore: SubagentOutputStore;
 }
 export interface BackgroundTerminalResult {
     id: string;
     title: string;
-    status: string;
+    status: SubagentTerminalStatus;
     text: string;
     fullOutputPath?: string;
 }
@@ -132,8 +134,7 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
 export class BackgroundSubagentManager {
     private readonly jobs = new Map<string, Job>();
     private readonly waitInterest = new Map<string, number>();
-    private readonly options: Required<Omit<BackgroundManagerOptions, "outputStore" | "spawn">> &
-        Pick<BackgroundManagerOptions, "spawn">;
+    private readonly options: Required<BackgroundManagerOptions>;
     private readonly outputStore: SubagentOutputStore;
     private shuttingDown = false;
     constructor(options: BackgroundManagerOptions) {
@@ -141,11 +142,11 @@ export class BackgroundSubagentManager {
             ...options,
             run: options.run ?? runSubagent,
             invocation: options.invocation ?? getPiInvocation,
+            spawn: options.spawn ?? spawnChildAgentProcess,
             environment: options.environment ?? process.env,
             clock: options.clock ?? SYSTEM_CLOCK,
         };
-        this.outputStore =
-            options.outputStore ?? new RetainedOutputStore({ prefix: "pi-subagent-", fileName: "output.md" });
+        this.outputStore = options.outputStore;
     }
 
     async spawn(input: SpawnInput, parentCwd: string, creationSignal?: AbortSignal): Promise<BackgroundSubagentJobV1> {
@@ -154,9 +155,9 @@ export class BackgroundSubagentManager {
         if (!input.prompt.trim()) throw new Error("Subagent prompt must not be empty.");
         const cwd = await resolveWorkingDirectory(input.cwd, parentCwd);
         assertNotAborted(creationSignal);
-        this.prune(MAX_JOBS - 1);
-        if (this.jobs.size >= MAX_JOBS) {
-            throw new Error(`Cannot track more than ${MAX_JOBS} active background subagents.`);
+        this.prune(MAX_TRACKED_JOBS - 1);
+        if (this.jobs.size >= MAX_TRACKED_JOBS) {
+            throw new Error(`Cannot track more than ${MAX_TRACKED_JOBS} active background subagents.`);
         }
         const model = resolveProfileModel(input.profile, input.model, this.options.environment);
         const id = randomUUID();
@@ -248,7 +249,7 @@ export class BackgroundSubagentManager {
     /** Reopens the manager so a later session can spawn jobs after an earlier shutdown. */
     startSession(): void {
         this.shuttingDown = false;
-        if (this.outputStore instanceof RetainedOutputStore) this.outputStore.startSession();
+        this.outputStore.startSession();
     }
 
     async shutdown(teardownMs = 3_000): Promise<void> {
@@ -348,7 +349,7 @@ export class BackgroundSubagentManager {
                 limits: profileLimits(profile),
                 signal,
                 clock,
-                ...(spawn ? { spawn } : {}),
+                spawn,
                 onSnapshot: (next) => {
                     state = next;
                     this.publish(job, next);
@@ -384,10 +385,12 @@ export class BackgroundSubagentManager {
             this.publish(job, state);
         }
         job.output = output;
+        const status = state.status;
+        if (!isTerminalSubagentStatus(status)) throw new Error(`Subagent ${status} did not settle.`);
         job.terminal = Object.freeze({
             id: job.snapshot.id,
             title: job.snapshot.title,
-            status: state.status,
+            status,
             text: truncation.content,
             ...(fullOutputPath ? { fullOutputPath } : {}),
         });
@@ -395,7 +398,7 @@ export class BackgroundSubagentManager {
         if ((this.waitInterest.get(job.snapshot.id) ?? 0) === 0) this.consumeAndDeliver(job);
         this.prune();
     }
-    private prune(limit = MAX_JOBS): void {
+    private prune(limit = MAX_TRACKED_JOBS): void {
         while (this.jobs.size > limit) {
             const oldest = [...this.jobs.values()].find(
                 (job) => job.terminalConsumed && (this.waitInterest.get(job.snapshot.id) ?? 0) === 0,
