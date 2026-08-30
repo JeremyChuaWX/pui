@@ -45,17 +45,17 @@ _Avoid_: view model file (as a location)
 ### Subagents
 
 **Profile**:
-A named child-agent configuration owned by the subagents Module: tools, model, prompt, and limits. The two Profiles are `explorer` and `worker`.
+A named child-agent configuration owned by the subagents Module: tools, model, thinking level, prompt, and Limits. The two Profiles are `explorer` and `worker`.
 _Avoid_: agent role, preset, role, generic
 
 **Job**:
-One spawned child Pi process running under a Profile, tracked from queued through terminal state.
+One isolated child AgentSession running under a Profile, tracked from queued through terminal state.
 _Avoid_: run, subagent (for the instance), task
 
 **Limits**:
-The three watchdogs every Job runs under: the whole-job wall clock, the stall timeout while no tool is active, and the tool-stall timeout while one is.
+The two watchdogs every Job runs under: the whole-Job hard Limit and the inactivity Limit reset by child activity.
 _Avoid_: timeout (bare)
 
 **Background Protocol**:
-The versioned, bounded snapshot stream a Job publishes for the UI Entry, plus the matching control channel for cancellation.
+The bounded, session-routed active-Job snapshot stream published for the UI Entry.
 _Avoid_: progress protocol, jobs channel

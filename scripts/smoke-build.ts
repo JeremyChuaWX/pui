@@ -21,17 +21,7 @@ function run(args: string[], environment: Record<string, string | undefined> = {
 const help = run(["--help"]);
 if (help.exitCode !== 0) throw new Error(`Standalone executable smoke failed: ${help.stderr.toString()}`);
 
-const expectedTools = [
-    "fd",
-    "rg",
-    "explorer",
-    "worker",
-    "subagent_wait",
-    "subagent_check",
-    "subagent_cancel",
-    "web_search",
-    "web_crawl",
-];
+const expectedTools = ["fd", "rg", "explorer", "worker", "subagent_cancel", "subagent_list", "web_search", "web_crawl"];
 const expectedSkills = ["unslop"];
 const smoke = run(["--smoke"]);
 if (smoke.exitCode !== 0) throw new Error(`Compiled smoke entry failed: ${smoke.stderr.toString()}`);

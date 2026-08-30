@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { parseSubagentResultDetails } from "#modules/subagents/interfaces/ui.js";
 import { recordArgs, type ToolExecution, type ToolExecutionState } from "./tool-executions.js";
 import type { DisplayItem } from "./types.js";
 
@@ -185,7 +186,18 @@ export function buildDisplayItems(
                 break;
             case "custom":
                 if (message.display) {
-                    result.push({ id, kind: "custom", label: message.customType, text: contentText(message.content) });
+                    const subagentResult =
+                        message.customType === "subagent-result"
+                            ? parseSubagentResultDetails(message.details)
+                            : undefined;
+                    if (subagentResult) result.push({ id, kind: "subagentResult", result: subagentResult });
+                    else
+                        result.push({
+                            id,
+                            kind: "custom",
+                            label: message.customType,
+                            text: contentText(message.content),
+                        });
                 }
                 break;
             case "branchSummary":
@@ -224,6 +236,20 @@ function sameDisplayPresentation(left: DisplayItem, right: DisplayItem): boolean
         case "custom":
         case "summary":
             return right.kind === left.kind && left.text === right.text && left.label === right.label;
+        case "subagentResult":
+            return (
+                right.kind === "subagentResult" &&
+                left.result.id === right.result.id &&
+                left.result.profile === right.result.profile &&
+                left.result.task === right.result.task &&
+                left.result.status === right.result.status &&
+                left.result.runtimeMs === right.result.runtimeMs &&
+                left.result.partial === right.result.partial &&
+                left.result.totalTokens === right.result.totalTokens &&
+                left.result.error === right.result.error &&
+                left.result.location === right.result.location &&
+                left.result.preview === right.result.preview
+            );
         case "tool":
             return (
                 right.kind === "tool" &&

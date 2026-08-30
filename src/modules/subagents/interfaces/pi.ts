@@ -1,227 +1,188 @@
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type Clock, SYSTEM_CLOCK } from "#shared/lib/clock.js";
-import { composeBoundedOutput } from "#shared/lib/retained-output.js";
-import { createBackgroundChannel } from "../background-channel.js";
-import {
-    BackgroundSubagentManager,
-    type BackgroundTerminalResult,
-    createSubagentOutputStore,
-} from "../background-manager.js";
-import {
-    BACKGROUND_SUBAGENT_CHANNEL,
-    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
-    BACKGROUND_SUBAGENT_SCHEMA,
-    BACKGROUND_SUBAGENT_VERSION,
-    type BackgroundSubagentJobV1,
-    encodeBackgroundSubagentJob,
-    parseBackgroundSubagentControl,
-} from "../background-protocol.js";
-import {
-    getPiInvocation,
-    PROCESS_CHILD_AGENT_SEMAPHORE,
-    type SpawnChildAgent,
-    spawnChildAgentProcess,
-} from "../child-agent.js";
-import { describeProfile, PROFILES, type SubagentProfile } from "../profiles/index.js";
-import { type RunSubagentOptions, type RunSubagentResult, runSubagent } from "../runner.js";
-import type { AbortableSemaphore } from "../semaphore.js";
+import { Manager, seconds } from "../manager.js";
+import { profiles } from "../profiles/index.js";
+import { type Job, SUBAGENT_JOBS_CHANNEL, type SubagentJobsEvent } from "../protocol.js";
+import { prepareResultMessage, renderResultMessage } from "../result-message.js";
+import { createRunner } from "../subagent.js";
 
-const SpawnParams = Type.Object({
-    prompt: Type.String({ description: "Task prompt for the child. Self-contained: the child sees nothing else." }),
-    cwd: Type.String({
-        description:
-            "Working directory for the child process. Relative paths resolve from the parent working directory.",
-    }),
-    model: Type.Optional(Type.String({ description: "Optional model override for this Job." })),
-    name: Type.Optional(Type.String({ description: "Optional short title shown in Job listings." })),
-});
-const BackgroundIdsParams = Type.Object({ ids: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }) });
-const BackgroundCheckParams = Type.Object({ id: Type.String() });
+const DEFAULT_MAX_ACTIVE = 4;
+const DEFAULT_MAX_QUEUED = 16;
 
-export interface SubagentExtensionDependencies {
-    semaphore?: AbortableSemaphore;
-    run?: (options: RunSubagentOptions) => Promise<RunSubagentResult>;
-    invocation?: typeof getPiInvocation;
-    /** Spawns each child process; tests inject a scripted child. */
-    spawn?: SpawnChildAgent;
-    /** Time source and timer scheduler; tests inject a clock they advance by hand. */
-    clock?: Clock;
-    environment?: NodeJS.ProcessEnv;
+function clamp(value: number, lower: number, upper: number): number {
+    return Math.min(upper, Math.max(lower, value));
 }
 
-/** Production collaborators, including the one process-wide concurrency owner. */
+function configuredMaxActive(environment: NodeJS.ProcessEnv): number {
+    const configured = environment.PI_SUBAGENT_MAX_ACTIVE;
+    if (!configured?.trim()) return DEFAULT_MAX_ACTIVE;
+    const parsed = Number(configured);
+    const value = Number.isNaN(parsed) ? DEFAULT_MAX_ACTIVE : Math.trunc(parsed);
+    return clamp(value, 1, 64);
+}
+
+/** "provider/model-id" as written in a Profile. */
+function splitModel(spec: string): [string, string] {
+    const slash = spec.indexOf("/");
+    return [spec.slice(0, slash), spec.slice(slash + 1)];
+}
+
+export interface SubagentExtensionDependencies {
+    createRunner?: typeof createRunner;
+    environment?: NodeJS.ProcessEnv;
+    clock?: Clock;
+    maxActive?: number;
+    maxQueued?: number;
+}
+
+export interface ResolvedSubagentExtensionDependencies {
+    createRunner: typeof createRunner;
+    clock: Clock;
+    maxActive: number;
+    maxQueued: number;
+}
+
 export function createDefaultSubagentDependencies(
     overrides: SubagentExtensionDependencies = {},
-): Required<SubagentExtensionDependencies> {
+): ResolvedSubagentExtensionDependencies {
     return {
-        semaphore: overrides.semaphore ?? PROCESS_CHILD_AGENT_SEMAPHORE,
-        run: overrides.run ?? runSubagent,
-        invocation: overrides.invocation ?? getPiInvocation,
-        spawn: overrides.spawn ?? spawnChildAgentProcess,
+        createRunner: overrides.createRunner ?? createRunner,
         clock: overrides.clock ?? SYSTEM_CLOCK,
-        environment: overrides.environment ?? process.env,
+        maxActive: overrides.maxActive ?? configuredMaxActive(overrides.environment ?? process.env),
+        maxQueued: overrides.maxQueued ?? DEFAULT_MAX_QUEUED,
     };
 }
 
 export function registerSubagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
-    const {
-        semaphore,
-        run,
-        invocation: resolveInvocation,
-        spawn,
-        clock,
-        environment,
-    } = createDefaultSubagentDependencies(dependencies);
-    const outputStore = createSubagentOutputStore();
-    let shuttingDown = false;
-    let sessionId = "unbound";
-    const instanceId = crypto.randomUUID();
-    let background: BackgroundSubagentManager;
-    const route = () => ({ sessionId, instanceId });
-    const channel = createBackgroundChannel({
-        events: pi.events,
-        eventChannel: BACKGROUND_SUBAGENT_CHANNEL,
-        controlChannel: BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
-        parseControl: parseBackgroundSubagentControl,
-        controlRoute: (control) => ({ sessionId: control.sessionId, instanceId: control.instanceId }),
-        envelope: (type, target, extra) => ({
-            schema: BACKGROUND_SUBAGENT_SCHEMA,
-            version: BACKGROUND_SUBAGENT_VERSION,
-            ...target,
-            type,
-            ...extra,
-        }),
-        onControl: (control) => {
-            if (!shuttingDown) void background.cancel([control.jobId]).catch(() => {});
-        },
-    });
-    const emit = (job: BackgroundSubagentJobV1, type: "upsert" | "remove" = "upsert") =>
-        channel.emit(type, { job: encodeBackgroundSubagentJob(job) }, route());
-    // followUp queues behind the current turn and triggerTurn starts one when the agent is idle,
-    // so neither the manager nor this Extension tracks whether the agent is busy.
-    const deliver = (result: BackgroundTerminalResult) => {
-        if (shuttingDown) return;
-        const pathNote = result.fullOutputPath ? `\n\nFull output: ${result.fullOutputPath}` : "";
-        pi.sendMessage(
-            {
-                customType: "subagent-result",
-                content: `Background subagent ${result.title} (${result.id}) ${result.status}:\n\n${result.text}${pathNote}`,
-                display: true,
-                details: { id: result.id, title: result.title, status: result.status },
+    const resolved = createDefaultSubagentDependencies(dependencies);
+    let manager: Manager | undefined;
+
+    pi.registerMessageRenderer("subagent-result", renderResultMessage);
+
+    pi.on("session_start", async (_event, ctx) => {
+        const previous = manager;
+        manager = undefined;
+        await previous?.shutdown();
+
+        const sessionId = ctx.sessionManager.getSessionId();
+        const dir = path.join(os.tmpdir(), "pi-subagents", sessionId);
+        let current!: Manager;
+        const publishJobs = (jobs: Job[]) => {
+            if (manager !== current) return;
+            const event: SubagentJobsEvent = {
+                sessionId,
+                jobs: jobs.filter((job) => job.state === "queued" || job.state === "running"),
+            };
+            pi.events.emit(SUBAGENT_JOBS_CHANNEL, event);
+        };
+        current = new Manager({
+            maxActive: resolved.maxActive,
+            maxQueued: resolved.maxQueued,
+            clock: resolved.clock,
+            run: resolved.createRunner({
+                resolveModel: (spec) => ctx.modelRegistry.find(...splitModel(spec)),
+            }),
+            deliver: (result) => {
+                if (manager !== current) return;
+                const message = prepareResultMessage(result, dir);
+                pi.sendMessage(
+                    { customType: "subagent-result", ...message, display: true },
+                    { deliverAs: "steer", triggerTurn: true },
+                );
             },
-            { deliverAs: "followUp", triggerTurn: true },
-        );
-    };
-    background = new BackgroundSubagentManager({
-        semaphore,
-        run,
-        invocation: resolveInvocation,
-        spawn,
-        environment,
-        clock,
-        emit,
-        deliver,
-        outputStore,
-    });
-    pi.on("session_start", (_event, ctx) => {
-        shuttingDown = false;
-        outputStore.startSession();
-        background.startSession();
-        sessionId = ctx.sessionManager.getSessionId();
-        channel.bind(route());
-        channel.ready();
-    });
-    pi.on("session_shutdown", async () => {
-        shuttingDown = true;
-        await channel.shutdown(async () => {
-            await background.shutdown();
-            await outputStore.cleanup();
+            onChange: publishJobs,
         });
+        manager = current;
+        publishJobs([]);
     });
 
-    const renderResults = (results: BackgroundTerminalResult[]) => {
-        const content = results
-            .map(
-                (item) =>
-                    `[${item.id}] ${item.title}: ${item.status}\n${item.text}${item.fullOutputPath ? `\nFull output: ${item.fullOutputPath}` : ""}`,
-            )
-            .join("\n\n");
-        const truncation = truncateHead(content, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
-        return truncation.truncated
-            ? composeBoundedOutput(
-                  content,
-                  { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES },
-                  {
-                      nonRetentionReason:
-                          "the combined wait presentation is not retained; use each job's retained path when available",
-                  },
-              )
-            : content;
+    pi.on("session_shutdown", async () => {
+        const current = manager;
+        manager = undefined;
+        await current?.shutdown();
+    });
+
+    const getManager = (): Manager => {
+        if (!manager) throw new Error("Subagents are not ready: no session has started.");
+        return manager;
     };
-    /** One spawn tool per Profile. Each returns a Job id at once and queues behind the process-wide semaphore. */
-    function registerSpawnTool(profile: SubagentProfile): void {
+
+    for (const profile of profiles) {
         pi.registerTool({
             name: profile.name,
             label: profile.label,
-            description: `${profile.description} ${describeProfile(profile)}`,
+            description: profile.description,
             promptSnippet: profile.promptSnippet,
             promptGuidelines: profile.promptGuidelines,
-            parameters: SpawnParams,
-            async execute(_id, params, signal, _update, ctx) {
-                const job = await background.spawn({ ...params, profile }, ctx.cwd, signal);
+            parameters: Type.Object({
+                task: Type.String({ description: "Focused, self-contained task for the subagent." }),
+                cwd: Type.Optional(Type.String({ description: "Working directory. Defaults to the current one." })),
+            }),
+            async execute(_id, params, _signal, _update, ctx) {
+                const job = getManager().spawn({
+                    ...profile.config,
+                    profile: profile.name,
+                    task: params.task,
+                    cwd: params.cwd ? path.resolve(ctx.cwd, params.cwd) : ctx.cwd,
+                });
                 return {
-                    content: [{ type: "text", text: `Started ${profile.name} Job ${job.id} (${job.title}).` }],
+                    content: [
+                        {
+                            type: "text",
+                            text: `Started ${job.id} (${job.state}). Its result will be injected when ready; do not wait or poll.`,
+                        },
+                    ],
                     details: job,
                 };
             },
         });
     }
-    for (const profile of PROFILES) registerSpawnTool(profile);
-    pi.registerTool({
-        name: "subagent_wait",
-        label: "Wait for Background Subagents",
-        description: "Wait for background jobs without cancelling them if this wait is aborted.",
-        parameters: BackgroundIdsParams,
-        async execute(_id, params, signal) {
-            const results = await background.wait(params.ids, signal);
-            return { content: [{ type: "text", text: renderResults(results) }], details: { results } };
-        },
-    });
-    pi.registerTool({
-        name: "subagent_check",
-        label: "Check Background Subagent",
-        description: "Inspect one background job without waiting or consuming result delivery.",
-        parameters: BackgroundCheckParams,
-        async execute(_id, params) {
-            const job = background.check(params.id);
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `[${job.id}] ${job.title}: ${job.state.status}\n${job.state.outputPreview ?? job.state.error ?? "No output yet."}`,
-                    },
-                ],
-                details: job,
-            };
-        },
-    });
+
     pi.registerTool({
         name: "subagent_cancel",
-        label: "Cancel Background Subagents",
-        description: "Cancel queued or running background jobs and await terminal state.",
-        parameters: BackgroundIdsParams,
+        label: "Cancel Subagents",
+        description:
+            "Cancel queued or running subagent Jobs and return their final state. Cancelled Jobs emit no result message.",
+        promptSnippet: "Cancel background subagent Jobs",
+        parameters: Type.Object({ ids: Type.Array(Type.String(), { minItems: 1, maxItems: 64 }) }),
         async execute(_id, params) {
-            const jobs = await background.cancel(params.ids);
+            const jobs = await getManager().cancel(params.ids);
             return {
-                content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.state.status}`).join("\n") }],
+                content: [{ type: "text", text: jobs.map((job) => `[${job.id}] ${job.state}`).join("\n") }],
                 details: { jobs },
             };
+        },
+    });
+
+    pi.registerTool({
+        name: "subagent_list",
+        label: "List Subagents",
+        description:
+            "Return an immediate snapshot of queued and running subagent Jobs. Never use this tool to wait or poll for completion.",
+        promptSnippet: "List active background subagent Jobs without waiting",
+        promptGuidelines: [
+            "Use subagent_list only for a requested status snapshot; never poll it while waiting for subagents.",
+        ],
+        parameters: Type.Object({}),
+        async execute() {
+            const jobs = getManager().list();
+            const now = resolved.clock.now();
+            const text = jobs.length
+                ? jobs
+                      .map(
+                          (job) =>
+                              `[${job.id}] ${job.state} ${seconds(now - (job.startedAt ?? job.createdAt))}: ${job.task.slice(0, 80)}`,
+                      )
+                      .join("\n")
+                : "No active subagent Jobs.";
+            return { content: [{ type: "text", text }], details: { jobs }, terminate: true };
         },
     });
 }
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-    registerSubagentExtension(pi, createDefaultSubagentDependencies());
+    registerSubagentExtension(pi);
 }

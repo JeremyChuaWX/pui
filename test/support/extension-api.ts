@@ -14,6 +14,7 @@ type SentMessage = Parameters<ExtensionAPI["sendMessage"]>;
 export function createExtensionApiHarness() {
     const tools = new Map<string, RegisteredTool>();
     const commands = new Map<string, CommandDefinition>();
+    const messageRenderers = new Map<string, Parameters<ExtensionAPI["registerMessageRenderer"]>[1]>();
     const handlers = new Map<ExtensionEvent["type"], Handler[]>();
     const messages: SentMessage[] = [];
     const emitted: Array<{ channel: string; payload: EventPayload }> = [];
@@ -51,6 +52,9 @@ export function createExtensionApiHarness() {
             registerCommand(name: string, command: CommandDefinition) {
                 commands.set(name, command);
             },
+            registerMessageRenderer(type: string, renderer: Parameters<ExtensionAPI["registerMessageRenderer"]>[1]) {
+                messageRenderers.set(type, renderer);
+            },
             sendMessage(...args: SentMessage) {
                 messages.push(args);
             },
@@ -69,6 +73,7 @@ export function createExtensionApiHarness() {
         api,
         tools,
         commands,
+        messageRenderers,
         messages,
         emitted,
         eventHandlers,

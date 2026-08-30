@@ -1,131 +1,82 @@
 import { describe, expect, test } from "bun:test";
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import {
-    type BackgroundSubagentState,
-    parseBackgroundSubagentEvent,
-    reduceBackgroundSubagentEvent,
+    BackgroundSubagentBridge,
+    parseSubagentJobsEvent,
+    parseSubagentResultDetails,
 } from "#modules/subagents/background-bridge.js";
+import { SUBAGENT_JOBS_CHANNEL } from "#modules/subagents/protocol.js";
 
-function event(type: "ready" | "upsert" | "remove" | "reset", overrides: Record<string, unknown> = {}) {
-    const base: Record<string, unknown> = {
-        schema: "pi.subagent.background",
-        version: 1,
+function event(overrides: Record<string, unknown> = {}) {
+    return {
         sessionId: "session-a",
-        instanceId: "instance-a",
-        type,
-    };
-    if (type === "upsert" || type === "remove") {
-        base.job = {
-            id: "job-a",
-            title: "Inspect target",
-            prompt: "Inspect everything",
-            run: {
-                id: "job-a",
-                agent: "explore",
-                model: "provider/model:off",
-                cwd: "/tmp",
-                status: "running",
-                phase: "tool",
-                startedAt: 1,
-                updatedAt: 2,
-                activeTools: [{ id: "tool", name: "read", title: "read file", startedAt: 2 }],
-                recentActivity: [{ sequence: 1, timestamp: 2, kind: "tool_start", title: "read file" }],
-                usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
-                outputPreview: "partial",
+        jobs: [
+            {
+                id: "explorer_1",
+                profile: "explorer",
+                task: "Inspect the target",
+                cwd: "/repo",
+                state: "running",
+                createdAt: 1,
+                startedAt: 2,
             },
-        };
-    }
-    return { ...base, ...overrides };
+        ],
+        ...overrides,
+    };
 }
 
-function parse(value: unknown) {
-    const parsed = parseBackgroundSubagentEvent(value);
-    if (!parsed) throw new Error("Expected valid event");
-    return parsed;
-}
-
-describe("background subagent host protocol", () => {
-    test("parses and bounds complete v1 snapshots", () => {
-        const payload = event("upsert");
-        (payload.job as Record<string, unknown>).title = "x".repeat(1_000);
-        const parsed = parse(payload);
-        expect(parsed.type).toBe("upsert");
-        if (parsed.type !== "upsert") throw new Error("Expected upsert");
-        expect(parsed.job.title.length).toBe(512);
-        expect(parsed.job.model).toBe("provider/model:off");
-        expect(parsed.job.activeTools[0]?.name).toBe("read");
+describe("background subagent UI bridge", () => {
+    test("parses active-Job snapshots and rejects malformed payloads", () => {
+        expect(parseSubagentJobsEvent(event())).toEqual({
+            ...event(),
+            jobs: [expect.objectContaining({ title: "Inspect the target" })],
+        });
+        expect(parseSubagentJobsEvent(null)).toBeUndefined();
+        expect(parseSubagentJobsEvent(event({ sessionId: "" }))).toBeUndefined();
+        expect(parseSubagentJobsEvent(event({ jobs: [{ id: "bad" }] }))).toBeUndefined();
+        expect(
+            parseSubagentJobsEvent(event({ jobs: Array.from({ length: 81 }, () => event().jobs[0]) })),
+        ).toBeUndefined();
     });
 
-    test("keeps background envelopes parseable at the producer active-tool maximum", () => {
-        const payload = event("upsert");
-        const run = (payload.job as any).run as any;
-        run.activeTools = Array.from({ length: 64 }, (_, index) => ({
-            id: `tool-${index}`,
-            name: "read",
-            title: `read ${index}`,
-            startedAt: index + 1,
-        }));
-        expect(parseBackgroundSubagentEvent(payload)).toBeDefined();
+    test("bounds strings, replaces complete snapshots, and ignores another session", () => {
+        const eventBus = createEventBus();
+        let changes = 0;
+        const bridge = new BackgroundSubagentBridge({ eventBus, onChange: () => changes++ });
+        bridge.bind("session-a");
+        const payload = event();
+        (payload.jobs[0] as { task: string }).task = `  ${"x".repeat(9_000)}  `;
+        eventBus.emit(SUBAGENT_JOBS_CHANNEL, payload);
+        expect(changes).toBe(1);
+        expect(bridge.jobs()[0]).toMatchObject({
+            id: "explorer_1",
+            state: "running",
+        });
+        expect(bridge.jobs()[0]!.title.length).toBe(512);
+        expect(bridge.jobs()[0]!.title.endsWith("…")).toBe(true);
+        expect(bridge.jobs()[0]!.task.length).toBe(8_000);
 
-        run.activeTools.push({ id: "tool-64", name: "read", title: "read 64", startedAt: 65 });
-        expect(parseBackgroundSubagentEvent(payload)).toBeUndefined();
+        eventBus.emit(SUBAGENT_JOBS_CHANNEL, event({ sessionId: "other", jobs: [] }));
+        expect(bridge.jobs()).toHaveLength(1);
+        eventBus.emit(SUBAGENT_JOBS_CHANNEL, event({ jobs: [] }));
+        expect(bridge.jobs()).toEqual([]);
+        bridge.dispose();
     });
 
-    test("rejects malformed fields, mismatched ids, and unknown versions/types", () => {
-        expect(parseBackgroundSubagentEvent(null)).toBeUndefined();
-        expect(parseBackgroundSubagentEvent(event("ready", { version: 2 }))).toBeUndefined();
-        expect(parseBackgroundSubagentEvent(event("ready", { type: "future" }))).toBeUndefined();
-        expect(parseBackgroundSubagentEvent(event("ready", { sessionId: "" }))).toBeUndefined();
-        expect(parseBackgroundSubagentEvent(event("ready", { job: {} }))).toBeUndefined();
-        const mismatch = event("upsert");
-        ((mismatch.job as any).run as any).id = "other";
-        expect(parseBackgroundSubagentEvent(mismatch)).toBeUndefined();
-        const malformed = event("upsert");
-        ((malformed.job as any).run as any).usage.totalTokens = -1;
-        expect(parseBackgroundSubagentEvent(malformed)).toBeUndefined();
-    });
-
-    test("reduces ready, upsert, remove, and reset", () => {
-        let state: BackgroundSubagentState = { jobs: new Map() };
-        state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
-        state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
-        expect(state.jobs.get("job-a")?.title).toBe("Inspect target");
-        state = reduceBackgroundSubagentEvent(state, parse(event("remove")), "session-a");
-        expect(state.jobs.size).toBe(0);
-        state = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
-        state = reduceBackgroundSubagentEvent(state, parse(event("reset")), "session-a");
-        expect(state).toEqual({ instanceId: "instance-a", acceptingInstance: true, jobs: new Map() });
-    });
-
-    test("ignores stale sessions and instances", () => {
-        const state = reduceBackgroundSubagentEvent({ jobs: new Map() }, parse(event("ready")), "session-a");
-        const current = reduceBackgroundSubagentEvent(state, parse(event("upsert")), "session-a");
-        expect(reduceBackgroundSubagentEvent(current, parse(event("upsert", { sessionId: "old" })), "session-a")).toBe(
-            current,
-        );
-        expect(reduceBackgroundSubagentEvent(current, parse(event("upsert", { instanceId: "old" })), "session-a")).toBe(
-            current,
-        );
-        expect(reduceBackgroundSubagentEvent(current, parse(event("remove", { instanceId: "old" })), "session-a")).toBe(
-            current,
-        );
-        expect(reduceBackgroundSubagentEvent(current, parse(event("reset", { instanceId: "old" })), "session-a")).toBe(
-            current,
-        );
-        expect(reduceBackgroundSubagentEvent(current, parse(event("ready", { instanceId: "old" })), "session-a")).toBe(
-            current,
-        );
-    });
-
-    test("bounds the host to 64 complete job snapshots", () => {
-        let state: BackgroundSubagentState = { jobs: new Map() };
-        state = reduceBackgroundSubagentEvent(state, parse(event("ready")), "session-a");
-        for (let index = 0; index < 65; index++) {
-            const payload = event("upsert");
-            const job = payload.job as any;
-            job.id = `job-${index}`;
-            job.run.id = job.id;
-            state = reduceBackgroundSubagentEvent(state, parse(payload), "session-a");
-        }
-        expect(state.jobs.size).toBe(64);
+    test("parses and bounds structured result details", () => {
+        const details = parseSubagentResultDetails({
+            id: "explorer_1",
+            profile: "explorer",
+            task: "x".repeat(9_000),
+            status: "completed",
+            runtimeMs: 2_000,
+            partial: false,
+            totalTokens: 12,
+            location: "/tmp/result.md",
+            preview: "done",
+        });
+        expect(details).toMatchObject({ id: "explorer_1", status: "completed", preview: "done" });
+        expect(details?.task.length).toBe(8_000);
+        expect(parseSubagentResultDetails({ status: "running" })).toBeUndefined();
     });
 });

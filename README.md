@@ -53,14 +53,14 @@ Highlight text inside pui, then press `Ctrl+Shift+C` to copy it. If a terminal o
 - Stable streaming Markdown and syntax-colored code blocks
 - User, reasoning, tool, shell, queue, custom-message, and compaction views
 - Responsive OpenCode-style session sidebar listing active background Jobs
-- Model and session pickers, a `/subagents` Job picker, and a command palette
+- Model and session pickers plus a command palette
 - Inline slash-command completion for built-ins, extensions, prompt templates, and skills
 - `@` file picker with fuzzy project search and quoted paths
 - Ctrl+G prompt editing in `$VISUAL` or `$EDITOR` (nvim by default) with the last agent response included as read-only reference
 - Steering with Enter and follow-ups with Alt+Enter while Pi is working
 - Pi session persistence, model/thinking controls, compaction, reload, and abort
 - Bundled `fd` file discovery and `rg` content search with safe direct execution and bounded output
-- Bundled `explorer` and `worker` subagents with `subagent_check`, `subagent_wait`, and `subagent_cancel`
+- Bundled `explorer` and `worker` subagents with `subagent_cancel` and non-blocking `subagent_list`
 - Bundled `web_search` for current web discovery and `web_crawl` for extracting a known URL
 - Bundled `unslop` skill for removing AI writing patterns
 - `!command` and `!!command` shell execution
@@ -75,54 +75,45 @@ Pi's tools while normal global and trusted project skill discovery still works.
 
 ## Subagents
 
-Subagents come from the subagents Module in [`src/modules/subagents/`](src/modules/subagents/), not Pi core. The Module owns the two Profiles, the child Pi processes, the process-wide concurrency limit, cancellation, the three Limits, output bounds, and the Background Protocol that the sidebar and palette read. Nothing here loads into the regular `pi` command.
+The subagents Module in [`src/modules/subagents/`](src/modules/subagents/) follows the subagent Extension in the user's local Pi setup. It owns the two Profiles, isolated child `AgentSession`s, the Job Manager, two Limits, retained results, and the Background Protocol read by the sidebar. Nothing here loads into the regular `pi` command.
 
 ### Tools
 
-The Extension registers five tools and no others.
+The Extension registers four tools.
 
 | Tool | What it does |
 | --- | --- |
-| `explorer` | Spawns a read-only child under the `explorer` Profile and returns its Job id at once |
-| `worker` | Spawns a write-capable child under the `worker` Profile and returns its Job id at once |
-| `subagent_check` | Returns one Job's status and output preview without waiting and without consuming its result |
-| `subagent_wait` | Blocks on one or more Jobs and returns their results; aborting the wait does not cancel the Jobs |
+| `explorer` | Starts a read-only child under the `explorer` Profile and returns its Job id at once |
+| `worker` | Starts a write-capable child under the `worker` Profile and returns its Job id at once |
 | `subagent_cancel` | Cancels queued or running Jobs and returns once each reaches a terminal state |
+| `subagent_list` | Returns an immediate queued/running snapshot; it never waits or polls |
 
-`explorer` and `worker` take the same arguments: `prompt`, `cwd`, an optional `model` override, and an optional `name` shown in Job listings. Relative `cwd` values resolve from the parent session's working directory.
+`explorer` and `worker` take `{ task, cwd? }`; `cwd` defaults to the parent session's working directory and relative values resolve from it.
 
 ### Profiles
 
-| Profile | Child tools | Prompt | Default model | Env override |
+| Profile | Child tools | Prompt | Model | Thinking |
 | --- | --- | --- | --- | --- |
-| `explorer` | `read`, `grep`, `find`, `ls` | Replaces Pi's coding prompt with a read-only exploration prompt | `openrouter/z-ai/glm-5.3-flash:low` | `PI_EXPLORER_MODEL` |
-| `worker` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Appends [Ponytail](https://ponytail.dev/) minimal-coding guidance to Pi's coding prompt | `openrouter/z-ai/glm-5.3-flash:high` | `PI_WORKER_MODEL` |
+| `explorer` | `read`, `grep`, `find`, `ls` | Replaces Pi's coding prompt with read-only exploration guidance | `openrouter/z-ai/glm-5.3-flash` | low |
+| `worker` | `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls` | Appends minimal coding guidance to Pi's coding prompt | `openrouter/z-ai/glm-5.3-flash` | high |
 
-Model selection is the call's `model` argument first, then the Profile's environment variable, then its default. Both children run with `--no-session`, `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, so a child cannot load this Extension recursively. Each tool's description tells the model the Profile's tools, model, and Limits.
+Each child is an in-process `AgentSession` with session persistence, extensions, skills, prompt templates, themes, and context files disabled, so it cannot load this Extension recursively.
 
-`PI_SUBAGENT_MAX_CONCURRENCY` caps running children process-wide. The default is 4 and the valid range is 1 to 64; extra Jobs queue in FIFO order and can be cancelled before they spawn.
+`PI_SUBAGENT_MAX_ACTIVE` sets per-session concurrency. The default is 4 and the valid range is 1 to 64; up to 16 additional Jobs queue in FIFO order and can be cancelled before they start.
 
 ### Limits
 
-Every Job runs under three Limits. Any child event resets the two stall timers, including streaming tool output, so a long `bash` command that keeps printing stays alive.
-
-| Limit | Default | Fires when | Terminal status |
-| --- | --- | --- | --- |
-| Wall clock | 60 minutes | the Job has run this long, active or not | `timed_out` |
-| Stall | 10 minutes | no child event arrives while no tool is active | `stalled` |
-| Tool stall | 15 minutes | no child event arrives while a tool is active | `tool_stalled` |
-
-When a Limit fires, the child's whole process group gets SIGTERM, then SIGKILL two seconds later, and the Job's error names the Limit and its value. Limits are set per Profile in code; there is no environment variable for them. If pui itself exits for any reason, including a crash, every live child process group gets SIGKILL on the way out.
+Every Job has a 10-minute inactivity Limit, reset by child activity, and a 60-minute hard Limit. Either aborts the child `AgentSession` and produces a `timed_out` result. Reload, session switch, fork, and quit cancel every remaining Job. Jobs are not restored across sessions.
 
 ### Results
 
-When a Job finishes and no `subagent_wait` is holding it, the Extension sends one `subagent-result` message through Pi's `followUp` delivery with `triggerTurn` set. If the agent is idle the message starts a turn; if a turn is running the message queues behind it. A Job consumed by `subagent_wait` sends no follow-up. When the text is truncated, the message ends with `Full output: <path>` pointing at a private `0600` file that lives until session shutdown.
+A finished Job is written to `<temp>/pi-subagents/<session-id>/<job-id>.md`; a numeric suffix preserves an existing result with the same Job id after reload. The result is injected once as a `subagent-result` steer message with `triggerTurn` set. A steer arrives after the current assistant response's tools and before its next model call, avoiding the old blocking-wait and delayed-follow-up race. The inline preview is capped at 16 KiB.
 
-In the transcript, a delivered result renders as a "Background subagent result" card. The sidebar lists every non-terminal Job with its status icon, title, model, status label, elapsed time, and usage. `/subagents`, also reachable from the command palette, opens a picker of recent Jobs; selecting an active one cancels it. Reload, session switch, fork, and quit abort every queued and running Job. Jobs are not restored across sessions.
+The transcript renders a "Background subagent result" card. The sidebar lists active Jobs with Profile, status, and elapsed time. Cancellation remains available to the model through `subagent_cancel`.
 
 Worker Jobs are write-capable and not sandboxed. They can edit files and run arbitrary shell commands, inherit the parent environment, and are not confined to `cwd`. Use `worker` only in trusted repositories. The explorer's read-only allowlist is a Pi tool restriction, not an operating-system sandbox.
 
-See the [subagents Module guide](src/modules/subagents/README.md) for the Job state, the Background Protocol, and troubleshooting.
+See the [subagents Module guide](src/modules/subagents/README.md) for the runtime, result delivery, and pui UI adapter.
 
 ## File-search tools
 

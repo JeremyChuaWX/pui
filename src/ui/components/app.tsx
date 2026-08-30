@@ -119,7 +119,7 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
     });
 
     createEffect(() => {
-        if (!snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.status))) return;
+        if (!snapshot.backgroundSubagents.some((job) => !isTerminalSubagentStatus(job.state))) return;
         setElapsedNow(Date.now());
         const timer = setInterval(() => setElapsedNow(Date.now()), 1_000);
         onCleanup(() => clearInterval(timer));
@@ -296,7 +296,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
 
     const menus = createMenus({
         controller: props.controller,
-        snapshot: () => snapshot,
         openDialog: setDialog,
         closeDialog: () => setDialog(undefined),
         openAsyncPicker,
@@ -313,7 +312,6 @@ export function App(props: { controller: PuiController; initialPrompt?: string }
             ignored: () => {},
             models: () => void menus.openModels(),
             sessions: () => void menus.openSessions(),
-            subagents: menus.openSubagents,
             commands: menus.openCommands,
             help: () => setDialog({ kind: "help" }),
         };

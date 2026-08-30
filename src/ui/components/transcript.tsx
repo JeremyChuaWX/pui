@@ -1,6 +1,7 @@
 import { createMemo, Match, Show, Switch } from "solid-js";
 import type { DisplayItem } from "../state/types.js";
 import { extensionConfirmKeyHint } from "./keys.js";
+import { compactSubagentTask, subagentColor, subagentStatusIcon, subagentStatusLabel } from "./subagent-view.js";
 import { syntaxStyle, theme } from "./theme.js";
 
 export function Welcome(props: { cwd: string }) {
@@ -37,8 +38,8 @@ export function MessageItem(props: {
     const toolItem = itemOfKind("tool");
     const bashItem = itemOfKind("bash");
     const summaryItem = itemOfKind("summary");
+    const subagentResultItem = itemOfKind("subagentResult");
     const customItem = itemOfKind("custom");
-    const isSubagentResult = createMemo(() => customItem()?.label === "subagent-result");
     const toolColor = () => (toolItem()?.isError ? theme.error : toolItem()?.running ? theme.warning : theme.success);
     const bashColor = () =>
         bashItem()?.running
@@ -132,29 +133,62 @@ export function MessageItem(props: {
                     />
                 </box>
             </Match>
+            <Match when={subagentResultItem()}>
+                {(() => {
+                    const result = subagentResultItem()?.result;
+                    if (!result) return null;
+                    const tokens =
+                        result.totalTokens === undefined ? "" : ` · ${Math.round(result.totalTokens / 1_000)}k tokens`;
+                    return (
+                        <box
+                            marginTop={1}
+                            border={["left"]}
+                            borderColor={subagentColor(result.status)}
+                            paddingLeft={2}
+                            paddingTop={1}
+                            paddingBottom={1}
+                        >
+                            <text fg={subagentColor(result.status)}>
+                                {subagentStatusIcon(result.status)} [{result.id}] {subagentStatusLabel(result.status)} ·{" "}
+                                {Math.round(result.runtimeMs / 1_000)}s{tokens}
+                                {result.partial ? " · partial output" : ""}
+                            </text>
+                            <Show
+                                when={props.toolsExpanded}
+                                fallback={
+                                    <>
+                                        <text fg={theme.muted}>{compactSubagentTask(result.task)}</text>
+                                        <text fg={theme.muted}>Ctrl+O to show output</text>
+                                    </>
+                                }
+                            >
+                                <text fg={theme.muted}>Task: {result.task}</text>
+                                <text fg={theme.muted}>Full output: {result.location}</text>
+                                <Show when={result.preview}>
+                                    <markdown
+                                        syntaxStyle={syntaxStyle}
+                                        content={result.preview}
+                                        conceal
+                                        fg={theme.text}
+                                        bg={theme.background}
+                                    />
+                                </Show>
+                            </Show>
+                        </box>
+                    );
+                })()}
+            </Match>
             <Match when={customItem()}>
                 <box
                     marginTop={1}
                     border={["left"]}
-                    borderColor={
-                        customItem()?.label === "error" ? theme.error : isSubagentResult() ? theme.success : theme.info
-                    }
+                    borderColor={customItem()?.label === "error" ? theme.error : theme.info}
                     paddingLeft={2}
-                    paddingTop={isSubagentResult() ? 1 : 0}
-                    paddingBottom={isSubagentResult() ? 1 : 0}
                 >
                     <text fg={customItem()?.label === "error" ? theme.error : theme.info}>
-                        {isSubagentResult() ? "✓ Background subagent result" : customItem()?.label || "message"}
+                        {customItem()?.label || "message"}
                     </text>
-                    <Show when={isSubagentResult()} fallback={<text fg={theme.text}>{customItem()?.text}</text>}>
-                        <markdown
-                            syntaxStyle={syntaxStyle}
-                            content={customItem()?.text}
-                            conceal
-                            fg={theme.text}
-                            bg={theme.background}
-                        />
-                    </Show>
+                    <text fg={theme.text}>{customItem()?.text}</text>
                 </box>
             </Match>
         </Switch>

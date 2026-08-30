@@ -14,9 +14,8 @@ describe("headless smoke entry", () => {
                 "rg",
                 "explorer",
                 "worker",
-                "subagent_wait",
-                "subagent_check",
                 "subagent_cancel",
+                "subagent_list",
                 "web_search",
                 "web_crawl",
             ]);

@@ -1,12 +1,24 @@
 ---
 id: 0003
 title: Fix background subagent result delivery and observability
-status: open
+status: done
 labels: [ready-for-agent, bug]
 created: 2026-08-29
 ---
 
 # Fix background subagent result delivery and observability
+
+## Resolution
+
+Resolved by ADR 0003's alignment with the local Pi subagent Extension. Results now use `steer`,
+which reaches the parent before its next model call. The blocking `subagent_wait` and its
+`terminalConsumed` ownership state were removed; `subagent_list` is an immediate active-Job
+snapshot and completion always arrives as one retained `subagent-result` message. The in-process
+child `AgentSession` runtime also replaces the old process event-folding stack. pui keeps only a
+small active-Job bridge for sidebar observation; cancellation remains a model tool.
+
+The observability enhancements proposed below are not part of the simplified design. They remain
+historical investigation notes rather than current acceptance criteria.
 
 ## Problem statement
 

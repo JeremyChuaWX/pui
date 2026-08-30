@@ -2,13 +2,7 @@ import { For, Show } from "solid-js";
 import { isTerminalSubagentStatus } from "#modules/subagents/interfaces/ui.js";
 import { formatCount } from "../state/format.js";
 import type { PuiSnapshot, ToastMessage } from "../state/types.js";
-import {
-    compactSubagentUsage,
-    subagentColor,
-    subagentElapsed,
-    subagentStatusIcon,
-    subagentStatusLabel,
-} from "./subagent-view.js";
+import { subagentColor, subagentElapsed, subagentStatusIcon, subagentStatusLabel } from "./subagent-view.js";
 import { theme } from "./theme.js";
 
 function progressBar(percent: number | null | undefined, width = 14): string {
@@ -19,7 +13,7 @@ function progressBar(percent: number | null | undefined, width = 14): string {
 
 export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
     const backgroundSubagents = () =>
-        props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.status));
+        props.snapshot.backgroundSubagents.filter((job) => !isTerminalSubagentStatus(job.state));
     const parentTools = () => props.snapshot.activeTools;
 
     return (
@@ -83,19 +77,12 @@ export function Sidebar(props: { snapshot: PuiSnapshot; now: number }) {
                     <For each={backgroundSubagents()}>
                         {(job) => (
                             <box marginBottom={1}>
-                                <text fg={subagentColor(job.status)} wrapMode="none">
-                                    {subagentStatusIcon(job.status)} {job.title}
+                                <text fg={subagentColor(job.state)} wrapMode="none">
+                                    {subagentStatusIcon(job.state)} {job.title}
                                 </text>
                                 <text fg={theme.muted} wrapMode="none">
-                                    {job.model} · {subagentStatusLabel(job.status)} · {subagentElapsed(job, props.now)}
+                                    {job.profile} · {subagentStatusLabel(job.state)} · {subagentElapsed(job, props.now)}
                                 </text>
-                                <Show when={compactSubagentUsage(job.usage)}>
-                                    {(usage) => (
-                                        <text fg={theme.muted} wrapMode="none">
-                                            {usage()}
-                                        </text>
-                                    )}
-                                </Show>
                             </box>
                         )}
                     </For>

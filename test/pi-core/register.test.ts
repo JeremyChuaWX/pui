@@ -22,7 +22,7 @@ import { createPuiRuntimeFactory } from "#ui/state/controller.js";
 
 const bundledTools = {
     "<inline:pui-file-search>": ["fd", "rg"],
-    "<inline:pui-subagent>": ["explorer", "worker", "subagent_wait", "subagent_check", "subagent_cancel"],
+    "<inline:pui-subagent>": ["explorer", "worker", "subagent_cancel", "subagent_list"],
     "<inline:pui-web>": ["web_crawl", "web_search"],
 } as const;
 
@@ -106,7 +106,7 @@ describe("bundled extensions", () => {
             await loader.reload();
             expect(loader.getExtensions().errors).toEqual([]);
             expect(loader.getExtensions().extensions).toHaveLength(1);
-            for (const relativePath of ["modules/subagents/profiles/index.ts", "modules/subagents/semaphore.ts"]) {
+            for (const relativePath of ["modules/subagents/profiles/index.ts", "modules/subagents/manager.ts"]) {
                 expect(
                     (await fs.promises.stat(path.resolve(import.meta.dir, "../../src", relativePath))).isFile(),
                 ).toBe(true);
@@ -347,8 +347,8 @@ export default function (pi: any) {
 
             const sourceRoot = path.resolve(import.meta.dir, "../../src");
             for (const relativePath of [
-                path.join("modules", "subagents", "job-state.ts"),
-                path.join("modules", "subagents", "runner.ts"),
+                path.join("modules", "subagents", "protocol.ts"),
+                path.join("modules", "subagents", "subagent.ts"),
                 path.join("modules", "subagents", "profiles", "worker", "prompt.md"),
                 path.join("modules", "subagents", "profiles", "worker", "prompt.LICENSE"),
                 path.join("modules", "subagents", "profiles", "explorer", "prompt.md"),

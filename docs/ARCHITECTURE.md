@@ -79,7 +79,7 @@ The controller delegates to focused collaborators rather than owning every conce
 
 | Collaborator | Interface | Hides |
 |---|---|---|
-| `src/modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | Background Protocol parsing, bounded view models, instance authority, and cancellation routing |
+| `src/modules/subagents/interfaces/ui.ts` | `BackgroundSubagentBridge` | active-Job snapshot parsing and bounded view models |
 | `src/modules/file-search/interfaces/ui.ts` | `fdCompletionCommand` | system `fd`/`fdfind` resolution for `@` file completion |
 | `src/ui/state/controller-queues.ts` | `ExtensionDialogQueue`, `ToastQueue` | bounded extension dialogs, aborts, timeouts, FIFO resolution, and self-expiring notifications |
 
@@ -149,26 +149,23 @@ What each Module publishes:
 |---|---|---|
 | `file-search` | `fd` and `rg` tools | the `@`-completion command |
 | `web` | `web_search` and `web_crawl` | none |
-| `subagents` | `explorer`, `worker`, `subagent_check`, `subagent_wait`, `subagent_cancel` | Background Protocol parser, reducer, `BackgroundSubagentBridge`, and status helpers |
+| `subagents` | `explorer`, `worker`, `subagent_cancel`, `subagent_list` | Background Protocol parser, `BackgroundSubagentBridge`, and status helpers |
 
 Inside their private files, the Modules are deep:
 
 - `src/modules/file-search/`: `process.ts` is the deep module. `runFileSearch` hides shell-free
   spawning, process-group kill, timeouts, and bounded output capture with temp-file spill (capture
-  creation is an injectable seam). `args.ts` builds argv and `binaries.ts` resolves system binaries.
-- `src/modules/subagents/`: the Module owns child-agent spawning end to end. `profiles/` holds the
-  two Profiles, one directory each with a declaration and a prompt, plus `profile.ts` with the
-  default Limits, the child argument list, and model resolution. `child-agent.ts` spawns the child
-  Pi process, parses its JSONL event stream through `json-events.ts`, and enforces the three Limits
-  on an injected clock. `semaphore.ts` is the process-wide FIFO concurrency limit.
-  `job-state.ts` owns the Job state (types, transitions, validator); `runner.ts` folds child
-  events into `SubagentJobV1` snapshots; `background-manager.ts` owns the Job pipeline (queueing,
-  semaphore, spawn, terminal synthesis, output spill) and hands finished results to the Extension,
-  which sends them as Pi `followUp` messages. `background-protocol.ts` owns the bus envelopes,
-  `background-channel.ts` binds them to `pi.events`, `instance-scoped-jobs.ts` is the
-  copy-on-write reducer with instance authority and the 64-Job cap, and `background-bridge.ts`
-  bounds payloads into view models behind the UI Entry. `working-directory.ts` normalizes the
-  `cwd` argument.
+  creation is an injectable seam). `bounded-process.ts` owns that Module's process-tree termination
+  and bounded capture; `args.ts` builds argv and `binaries.ts` resolves system binaries.
+- `src/modules/subagents/`: the Module follows the local Pi subagent Extension. `profiles/` holds
+  the two Profiles, one directory each with a declaration and prompt, plus `profile.ts` with the
+  default inactivity and hard Limits. `subagent.ts` creates one isolated, in-process child
+  `AgentSession` per Job with extensions, skills, templates, context files, themes, and session
+  persistence disabled. `manager.ts` owns Profile-scoped ids, the FIFO queue, per-session
+  concurrency, cancellation, Limits, and the single delivery path. `result-message.ts` retains full
+  output and builds the collapsible `subagent-result` message, which the Extension sends as a Pi
+  `steer`. `protocol.ts` owns the Job types and complete active-Job snapshot event;
+  `background-bridge.ts` validates and bounds those snapshots behind the UI Entry.
 - `src/modules/web/`: `output-retention.ts` is the deep module (bounded previews, private
   temp-file retention with per-result and per-session quotas); `tool-shell.ts` is the shared
   execute wrapper; `search.ts` and `crawl.ts` hold provider-specific logic only.
@@ -176,23 +173,20 @@ Inside their private files, the Modules are deep:
 ### Shared Primitives, `src/shared/`
 
 Cross-cutting code importable by every layer. Only files with two or more consuming Modules live
-here. Code with one consumer lives in that consumer's Module, which is why the child runner, its
-Profiles and prompt assets, the semaphore, the background channel, the instance-scoped Job reducer,
-and the JSONL splitter all belong to `src/modules/subagents/` (see ADR 0002).
+here. Code with one consumer lives in that consumer's Module, which is why the child AgentSession
+runner, Manager, Profiles, prompt assets, result message, and Background Protocol all belong to
+`src/modules/subagents/` (see ADR 0002).
 
-`src/shared/lib/` is the generic library. It holds four files:
+`src/shared/lib/` is the generic library. It holds three files:
 
-- `bounded-process.ts`: `runBoundedProcess` (spawn, timeout, kill, bounded output),
-  `createGracefulTermination` (SIGTERM then SIGKILL escalation), and `killProcessTree` (group
-  signaling). Consumers: file-search and the subagents child runner.
 - `retained-output.ts`: quota-bounded spill storage (`RetainedOutputStore`) plus
   `composeBoundedOutput`, the single fixed-point composer that fits a truncated preview and its
-  truncation notice inside one byte and line budget. Consumers: all three Modules.
+  truncation notice inside one byte and line budget. Consumers: file-search, web, and UI transcript capture.
 - `validate.ts`: record, error-message, and Unicode-safe bounded-string helpers. Consumers: every
   layer.
 - `clock.ts`: the `Clock` interface (`now`, `setTimeout`, `clearTimeout`), `SYSTEM_CLOCK`, and
   `unrefTimer`. Any long-running owner that must be testable without real sleeps takes a `Clock`.
-  Consumers today: the subagents child runner, runner, manager, and Extension.
+  Consumers today: file-search, the subagents Manager and Extension, and UI-owned queues.
 
 ## Boundary enforcement
 
@@ -237,14 +231,12 @@ Wire formats have exactly one implementation, owned by the producing Module, and
 parsed state through the Module's UI Entry instead of maintaining mirrors.
 
 The one wire format today is the Background Protocol, owned by
-`src/modules/subagents/background-protocol.ts`. The Extension publishes complete version 1 Job
-snapshots (`ready`, `reset`, `upsert`, `remove`) on `pui.subagent.background` and accepts
-cancellation controls on `pui.subagent.background.control` only when both the session id and the
-Extension instance id match. `background-bridge.ts` consumes the parser, bounds every string into
-view models, and exposes `BackgroundSubagentBridge`, which owns instance authority, subscription
-lifecycle, cancellation, and the Job map, published through `interfaces/ui.ts`. The bridge delegates
-instance authority, routed copy-on-write updates, reset and replacement gating, and the 64-Job cap
-to `instance-scoped-jobs.ts`.
+`src/modules/subagents/protocol.ts`. The Extension publishes a complete active-Job array for its
+session on `pi.subagents.jobs`; terminal Jobs leave that array and arrive separately as
+`subagent-result` custom messages. `background-bridge.ts` validates the session route, bounds every
+rendered string, and replaces the Controller's active set. The bridge is published through
+`interfaces/ui.ts`. The protocol is an in-process observation seam, so it has no control channel,
+version envelope, duplicated Job state, or Extension instance-authority reducer.
 
 The UI treats extension payloads as untrusted input: the parser validates shape and routing, and
 the view models bound every string.
@@ -255,15 +247,11 @@ the view models bound every string.
   resolves them explicitly; directly loaded Extensions construct the equivalent defaults. There
   are no module-level resource owners created as import side effects.
 - Constructors are public. Tests build real objects with fake collaborators (fake
-  `AgentSessionRuntime`, private `EventBus`, fake `MenuHost`, fake filesystem, scripted child
-  spawner, hand-advanced `Clock`) instead of casting through private APIs.
+  `AgentSessionRuntime`, private `EventBus`, fake `MenuHost`, fake filesystem, fake child
+  `AgentSession`, hand-advanced `Clock`) instead of casting through private APIs.
 - Narrow seams are preferred over mocks: `MenuController` is a `Pick<>` of the controller, the web
   retention takes a `WebOutputRetentionFileSystem`, file-search takes `createCapture`, and the
-  subagents Extension takes `spawn` and `clock`.
-- One deliberate exception: `src/modules/subagents/child-agent.ts` caches its process-wide
-  semaphore and its registry of live child processes on `globalThis` so a duplicated module
-  instance still shares one concurrency limit and one exit-time kill. The first spawn installs
-  the `exit` hook that SIGKILLs every tracked process group.
+  subagents Extension takes a runner factory and clock. There are no process-global child owners.
 
 ## Testing strategy
 
@@ -273,18 +261,17 @@ the view models bound every string.
   `test/ui/components/menus.test.ts` drives `createMenus` with a fake host). The boundary checker's
   public interface is
   `checkBoundaries`, tested as a function from an import graph to a violation list.
-- Timing is tested with an injected `Clock` and scripted child events, never real sleeps. Each of
-  the three Limits, and the tool-stall reset on streaming output, is exercised this way.
-- Where the real boundary is a process or the filesystem, tests use the real thing: the subagents
-  child runner spawns `test/modules/subagents/fixtures/fake-child.mjs`, and the file-search and web
-  Modules run real bounded processes.
+- Timing is tested with an injected `Clock`, never real sleeps. The inactivity reset and hard Limit
+  are exercised independently.
+- The subagents runner is tested through a fake child `AgentSession`; file-search and web still run
+  real bounded processes where the process or filesystem is their boundary.
 - Bundled-skill tests materialize the real embedded assets and load the resulting path through
   Pi's public resource loader.
 - `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
   (`bun test test`), a binary build, and a smoke test of the built executable.
   `scripts/smoke-build.ts` runs `dist/pui --help` and `dist/pui --smoke` and fails if any bundled
-  tool (`fd`, `rg`, `explorer`, `worker`, `subagent_check`, `subagent_wait`, `subagent_cancel`,
-  `web_search`, `web_crawl`) or the `unslop` skill is missing from the printed JSON.
+  tool (`fd`, `rg`, `explorer`, `worker`, `subagent_cancel`, `subagent_list`, `web_search`,
+  `web_crawl`) or the `unslop` skill is missing from the printed JSON.
 
 ## Notes
 

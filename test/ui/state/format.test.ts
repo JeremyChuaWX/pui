@@ -72,16 +72,35 @@ describe("pui formatting", () => {
                 customType: "subagent-result",
                 content: "Background subagent fixture succeeded.",
                 display: true,
-                details: { id: "job-1", title: "fixture", status: "succeeded" },
+                details: {
+                    id: "explorer_1",
+                    profile: "explorer",
+                    task: "inspect",
+                    status: "completed",
+                    runtimeMs: 1_000,
+                    partial: false,
+                    totalTokens: 2_000,
+                    location: "/tmp/explorer_1.md",
+                    preview: "Found it.",
+                },
                 timestamp: 1,
             },
         ] as AgentMessage[]);
 
         expect(item).toEqual({
             id: "0:1",
-            kind: "custom",
-            label: "subagent-result",
-            text: "Background subagent fixture succeeded.",
+            kind: "subagentResult",
+            result: {
+                id: "explorer_1",
+                profile: "explorer",
+                task: "inspect",
+                status: "completed",
+                runtimeMs: 1_000,
+                partial: false,
+                totalTokens: 2_000,
+                location: "/tmp/explorer_1.md",
+                preview: "Found it.",
+            },
         });
     });
 

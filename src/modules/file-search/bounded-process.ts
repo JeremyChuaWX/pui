@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { type Clock, SYSTEM_CLOCK, unrefTimer } from "./clock.js";
-import { truncateUtf8, truncateUtf8Tail } from "./retained-output.js";
+import { type Clock, SYSTEM_CLOCK, unrefTimer } from "#shared/lib/clock.js";
+import { truncateUtf8, truncateUtf8Tail } from "#shared/lib/retained-output.js";
 
 /**
  * Signal a child's whole process group when possible (taskkill /T on Windows, where signals cannot

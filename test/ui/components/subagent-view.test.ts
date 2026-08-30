@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { BackgroundSubagentViewModel } from "#modules/subagents/interfaces/ui.js";
 import {
-    compactSubagentUsage,
+    compactSubagentTask,
     subagentElapsed,
     subagentStatusIcon,
     subagentStatusLabel,
@@ -9,18 +9,14 @@ import {
 
 function job(overrides: Partial<BackgroundSubagentViewModel> = {}): BackgroundSubagentViewModel {
     return {
-        id: "job-1",
+        id: "explorer_1",
         title: "Inspect controller state",
-        agent: "explorer",
-        model: "openai/gpt-5.4-mini",
+        profile: "explorer",
+        task: "Inspect controller state",
         cwd: "/repo",
-        status: "running",
-        phase: "tool",
+        state: "running",
+        createdAt: 500,
         startedAt: 1_000,
-        updatedAt: 2_000,
-        activeTools: [],
-        recentActivity: [],
-        usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 60, cost: 0.0012, turns: 1 },
         ...overrides,
     };
 }
@@ -31,39 +27,24 @@ describe("subagent view helpers", () => {
     });
 
     test("freezes elapsed time at the end of a terminal Job", () => {
-        const done = job({ status: "succeeded", phase: "exiting", endedAt: 15_000 });
-        expect(subagentElapsed(done, 99_000)).toBe("14s");
-        expect(subagentElapsed(job({ status: "failed", endedAt: 126_000, error: "boom" }), 999_999)).toBe("2m 5s");
+        expect(subagentElapsed(job({ state: "completed", endedAt: 15_000 }), 99_000)).toBe("14s");
+        expect(subagentElapsed(job({ state: "failed", endedAt: 126_000, error: "boom" }), 999_999)).toBe("2m 5s");
     });
 
-    test("falls back to the last update when a Job never started", () => {
-        const queued = job({ status: "queued", phase: "queued", startedAt: undefined, updatedAt: 5_000 });
-        expect(subagentElapsed(queued, 8_000)).toBe("3s");
+    test("falls back to creation time when a Job has not started", () => {
+        expect(subagentElapsed(job({ state: "queued", startedAt: undefined, createdAt: 5_000 }), 8_000)).toBe("3s");
     });
 
-    test("summarises usage as turns and tokens without cost", () => {
-        const usage = {
-            input: 10_000,
-            output: 8_000,
-            cacheRead: 400,
-            cacheWrite: 0,
-            totalTokens: 18_400,
-            cost: 0.0123,
-            turns: 3,
-        };
-        expect(compactSubagentUsage(usage)).toBe("3 turns · 18k tokens");
-        expect(compactSubagentUsage(usage)).not.toContain("$");
-        expect(compactSubagentUsage({ ...usage, turns: 0, totalTokens: 0 })).toBe("");
+    test("compacts a multiline task for collapsed result cards", () => {
+        expect(compactSubagentTask("  inspect\n   the controller  ")).toBe("inspect the controller");
+        expect(compactSubagentTask("x".repeat(121))).toBe(`${"x".repeat(117)}...`);
     });
 
-    test("formats status icons and labels", () => {
+    test("formats local Extension status icons and labels", () => {
+        expect(subagentStatusIcon("completed")).toBe("✓");
         expect(subagentStatusIcon("cancelled")).toBe("⊘");
         expect(subagentStatusIcon("timed_out")).toBe("⧖");
         expect(subagentStatusLabel("timed_out")).toBe("timed out");
-        expect(subagentStatusIcon("stalled")).toBe("⧖");
-        expect(subagentStatusIcon("tool_stalled")).toBe("⧖");
-        expect(subagentStatusLabel("stalled")).toBe("stalled");
-        expect(subagentStatusLabel("tool_stalled")).toBe("tool stalled");
         expect(subagentStatusLabel("running")).toBe("running");
     });
 });

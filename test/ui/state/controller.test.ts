@@ -18,22 +18,18 @@ function usage() {
     };
 }
 
-function jobState(id: string, status: "queued" | "running" | "succeeded" | "failed") {
-    const terminal = status === "succeeded" || status === "failed";
+function backgroundJob(id: string, state: "queued" | "running" | "completed" | "failed") {
+    const terminal = state === "completed" || state === "failed";
     return {
         id,
-        agent: "explorer",
-        model: "fixture/model",
+        profile: "explorer",
+        task: "Background",
         cwd: process.cwd(),
-        status,
-        phase: status === "queued" ? "queued" : terminal ? "exiting" : "thinking",
-        ...(status === "queued" ? {} : { startedAt: 10 }),
-        updatedAt: 20,
+        state,
+        createdAt: 5,
+        ...(state === "queued" ? {} : { startedAt: 10 }),
         ...(terminal ? { endedAt: 30 } : {}),
-        activeTools: [],
-        recentActivity: [],
-        usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: 0, turns: 1 },
-        ...(status === "failed" ? { error: "fixture failure" } : {}),
+        ...(state === "failed" ? { error: "fixture failure" } : {}),
     };
 }
 
@@ -142,7 +138,7 @@ async function createController(
 }
 
 describe("PuiController background event bridge", () => {
-    test("coalesces current-instance updates and clears owned resources on disposal", async () => {
+    test("coalesces active-Job snapshots and clears owned resources on disposal", async () => {
         const bus = createEventBus();
         let skillDisposals = 0;
         const bundledSkillResources: BundledSkillResources = {
@@ -155,46 +151,25 @@ describe("PuiController background event bridge", () => {
         const { controller } = await createController([], bus, bundledSkillResources);
         let notifications = 0;
         controller.subscribe(() => notifications++);
-        const envelope = (type: string, status = "running") => ({
-            schema: "pi.subagent.background",
-            version: 1,
+        const snapshot = (state: "queued" | "running" | "completed" = "running") => ({
             sessionId: "fixture-session",
-            instanceId: "live-instance",
-            type,
-            ...(type === "upsert"
-                ? { job: { id: "job", title: "Background", run: jobState("job", status as any) } }
-                : {}),
+            jobs: [backgroundJob("job", state)],
         });
-        bus.emit("pui.subagent.background", envelope("ready"));
-        bus.emit("pui.subagent.background", envelope("upsert", "queued"));
-        bus.emit("pui.subagent.background", envelope("upsert", "running"));
+        bus.emit("pi.subagents.jobs", snapshot("queued"));
+        bus.emit("pi.subagents.jobs", snapshot("running"));
         expect(notifications).toBe(1);
         await Bun.sleep(25);
         expect(notifications).toBe(2);
         expect(controller.snapshot().backgroundSubagents).toEqual([
-            expect.objectContaining({ id: "job", title: "Background", status: "running" }),
+            expect.objectContaining({ id: "job", title: "Background", state: "running" }),
         ]);
-        let control: unknown;
-        const unsubscribeControl = bus.on("pui.subagent.background.control", (payload) => (control = payload));
-        expect(controller.cancelBackgroundSubagent("job")).toBe(true);
-        expect(control).toEqual({
-            schema: "pi.subagent.background.control",
-            version: 1,
-            sessionId: "fixture-session",
-            instanceId: "live-instance",
-            type: "cancel",
-            jobId: "job",
-        });
-        expect(controller.cancelBackgroundSubagent("missing")).toBe(false);
-        for (const status of ["succeeded", "failed", "cancelled", "timed_out"]) {
-            bus.emit("pui.subagent.background", envelope("upsert", status));
-            expect(controller.cancelBackgroundSubagent("job")).toBe(false);
-        }
-        unsubscribeControl();
+        bus.emit("pi.subagents.jobs", { sessionId: "fixture-session", jobs: [] });
+        await Bun.sleep(25);
+        expect(controller.snapshot().backgroundSubagents).toEqual([]);
         await controller.dispose();
         await controller.dispose();
         expect(skillDisposals).toBe(1);
-        bus.emit("pui.subagent.background", envelope("upsert", "succeeded"));
+        bus.emit("pi.subagents.jobs", snapshot("completed"));
         expect(controller.snapshot().backgroundSubagents).toEqual([]);
     });
 });

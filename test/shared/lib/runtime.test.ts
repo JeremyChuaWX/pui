@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BoundedProcessError, runBoundedProcess } from "#shared/lib/bounded-process.js";
+import { BoundedProcessError, runBoundedProcess } from "#modules/file-search/bounded-process.js";
 import {
     appendBoundedUtf8,
     composeBoundedOutput,

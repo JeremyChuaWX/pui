@@ -1,30 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { DialogState } from "#ui/components/dialogs.js";
 import { createMenus, type MenuController, type MenuHost } from "#ui/components/menus.js";
-import type { PuiSnapshot } from "#ui/state/types.js";
 
 interface Harness {
     menus: ReturnType<typeof createMenus>;
     dialogs: (DialogState | undefined)[];
-    notifications: Array<[string, string | undefined]>;
     controller: MenuController;
 }
 
-function createHarness(overrides: Partial<PuiSnapshot> = {}): Harness {
+function createHarness(): Harness {
     const dialogs: (DialogState | undefined)[] = [];
-    const notifications: Array<[string, string | undefined]> = [];
-    const snapshot = {
-        backgroundSubagents: [],
-        ...overrides,
-    } as unknown as PuiSnapshot;
     const controller: MenuController = {
         listModels: async () => [],
         selectModel: async () => {},
         listSessions: async () => [],
         switchSession: async () => {},
-        notify: (message, type) => notifications.push([message, type]),
-        snapshot: () => snapshot,
-        cancelBackgroundSubagent: () => false,
         newSession: async () => {},
         compact: async () => {},
         cycleThinking: () => {},
@@ -32,7 +22,6 @@ function createHarness(overrides: Partial<PuiSnapshot> = {}): Harness {
     };
     const host: MenuHost = {
         controller,
-        snapshot: () => snapshot,
         openDialog: (dialog) => dialogs.push(dialog),
         closeDialog: () => dialogs.push(undefined),
         openAsyncPicker: async (title, placeholder, load) =>
@@ -41,7 +30,7 @@ function createHarness(overrides: Partial<PuiSnapshot> = {}): Harness {
         toggleToolDetails: () => {},
         openExternalEditor: () => {},
     };
-    return { menus: createMenus(host), dialogs, notifications, controller };
+    return { menus: createMenus(host), dialogs, controller };
 }
 
 function lastPicker(harness: Harness): Extract<DialogState, { kind: "picker" }> {
@@ -59,7 +48,6 @@ describe("menus", () => {
         expect(picker.items.map(({ label }) => label)).toEqual([
             "Models",
             "Sessions",
-            "Subagents",
             "New session",
             "Compact context",
             "Thinking level",

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_LIMITS, defineProfile, describeProfile, profileLimits } from "#modules/subagents/profiles/profile.ts";
+import explorer from "#modules/subagents/profiles/explorer/index.js";
+import { DEFAULT_LIMITS, defineProfile } from "#modules/subagents/profiles/profile.js";
+import worker from "#modules/subagents/profiles/worker/index.js";
 
 const MINUTE = 60_000;
 
@@ -11,35 +13,38 @@ function declare(overrides: Record<string, unknown> = {}) {
         promptSnippet: "fixture",
         promptGuidelines: [],
         tools: ["read"],
-        defaultModel: "fixture/model",
-        modelEnv: "PI_FIXTURE_MODEL",
-        prompt: "prompt",
-        promptFlag: "--system-prompt",
+        model: "fixture/model",
+        thinkingLevel: "low",
+        systemPrompt: "prompt",
+        promptMode: "replace",
         ...overrides,
     });
 }
 
-describe("Profile Limits", () => {
-    test("a declaration without Limits gets the defaults", () => {
-        expect(profileLimits(declare())).toEqual(DEFAULT_LIMITS);
-        expect(DEFAULT_LIMITS).toEqual({
-            wallClockMs: 60 * MINUTE,
-            stallTimeoutMs: 10 * MINUTE,
-            toolStallTimeoutMs: 15 * MINUTE,
+describe("subagent Profiles", () => {
+    test("applies the shared inactivity and hard Limits", () => {
+        expect(DEFAULT_LIMITS).toEqual({ inactivityMs: 10 * MINUTE, hardMs: 60 * MINUTE });
+        expect(declare().config).toMatchObject(DEFAULT_LIMITS);
+        expect(declare({ inactivityMs: MINUTE }).config).toMatchObject({
+            inactivityMs: MINUTE,
+            hardMs: 60 * MINUTE,
         });
     });
 
-    test("a declaration may override any one Limit and the description states the effective values", () => {
-        const profile = declare({ toolStallTimeoutMs: 45 * MINUTE, stallTimeoutMs: 2.5 * MINUTE });
-        expect(profileLimits(profile)).toEqual({
-            wallClockMs: 60 * MINUTE,
-            stallTimeoutMs: 2.5 * MINUTE,
-            toolStallTimeoutMs: 45 * MINUTE,
+    test("matches the local explorer and worker capabilities", () => {
+        expect(explorer.config).toMatchObject({
+            tools: ["read", "grep", "find", "ls"],
+            model: "openrouter/z-ai/glm-5.3-flash",
+            thinkingLevel: "low",
+            promptMode: "replace",
         });
-        expect(describeProfile(profile)).toContain("60 minutes wall clock, 2.5 minutes stall, 45 minutes tool stall");
-    });
-
-    test("a zero Limit is described as disabled", () => {
-        expect(describeProfile(declare({ wallClockMs: 0 }))).toContain("disabled wall clock");
+        expect(worker.config).toMatchObject({
+            tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+            model: "openrouter/z-ai/glm-5.3-flash",
+            thinkingLevel: "high",
+            promptMode: "append",
+        });
+        expect(explorer.config.systemPrompt).toContain("no more than 10 tool-call rounds");
+        expect(worker.config.systemPrompt).toContain("Only your final message is returned to the caller");
     });
 });
