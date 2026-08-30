@@ -7,11 +7,8 @@
 // every cross-boundary edge is textually distinct from an intra-module one.
 //
 // Scope decisions:
-// - Layer rules cover production code only. Test files (*.test.ts, *.test.tsx)
-//   and files under a test-support/ directory are exempt as import sources: e.g.
-//   pi-core/register.test.ts drives the UI controller, and module tests use
-//   test-support/. Production code may not import either of them. The spelling
-//   rule applies to test sources too.
+// - The scanner covers production code under src/. Tests and their support files live
+//   under test/, outside the layer graph.
 // - Only relative and "#" specifiers are checked. Bare specifiers (npm packages,
 //   the Pi SDK, node:/bun: builtins) and asset imports are out of scope.
 import * as fs from "node:fs";
@@ -30,12 +27,9 @@ export interface Violation extends ImportEdge {
     rule: string;
 }
 
-type Layer =
-    | { kind: "app" | "ui" | "pi-core" | "shared" | "test-support" | "unknown" }
-    | { kind: "module"; name: string };
+type Layer = { kind: "app" | "ui" | "pi-core" | "shared" | "unknown" } | { kind: "module"; name: string };
 
 function layerOf(filePath: string): Layer {
-    if (isTestSupportFile(filePath)) return { kind: "test-support" };
     const [top, second] = filePath.split("/");
     if (top === "app" || top === "ui" || top === "pi-core" || top === "shared") return { kind: top };
     if (top === "modules" && second) return { kind: "module", name: second };
@@ -44,10 +38,6 @@ function layerOf(filePath: string): Layer {
 
 function isTestFile(filePath: string): boolean {
     return /\.test\.tsx?$/.test(filePath);
-}
-
-function isTestSupportFile(filePath: string): boolean {
-    return filePath.split("/").includes("test-support");
 }
 
 /** Matches modules/<name>/interfaces/<entry>.ts(x) and returns the entry name. */
@@ -62,10 +52,7 @@ const INTERFACE_ENTRY_BY_LAYER: Record<string, string> = {
     "pi-core": "pi",
 };
 
-/**
- * The unit an import must stay inside to be spelled relatively: a layer, or one Module. Unlike
- * `layerOf`, a Module-local test-support/ directory belongs to its Module here.
- */
+/** The unit an import must stay inside to be spelled relatively: a layer, or one Module. */
 function unitOf(filePath: string): string {
     const [top, second] = filePath.split("/");
     return top === "modules" && second ? `modules/${second}` : (top ?? "");
@@ -90,7 +77,7 @@ function judgeLayerRules(edge: ImportEdge): string | undefined {
     const from = layerOf(edge.from);
     const to = layerOf(edge.to);
 
-    if (to.kind === "test-support") return "production code must not import test support";
+    if (isTestFile(edge.from)) return "test files must live under test/, not src/";
     if (isTestFile(edge.to)) return "production code must not import test files";
     if (to.kind === "unknown") return "import resolves outside the known layers (app, ui, pi-core, modules, shared)";
     if (to.kind === "shared") return undefined;
@@ -127,8 +114,7 @@ function judgeLayerRules(edge: ImportEdge): string | undefined {
 export function checkBoundaries(edges: ImportEdge[]): Violation[] {
     const violations: Violation[] = [];
     for (const edge of edges) {
-        const testSource = isTestFile(edge.from) || isTestSupportFile(edge.from);
-        const rule = judgeSpelling(edge) ?? (testSource ? undefined : judgeLayerRules(edge));
+        const rule = judgeSpelling(edge) ?? judgeLayerRules(edge);
         if (rule !== undefined) violations.push({ ...edge, rule });
     }
     return violations;

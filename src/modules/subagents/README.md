@@ -108,4 +108,5 @@ From the repository root:
 bun run check
 ```
 
-For a focused Module pass, use `bun test src/modules/subagents`. Tests use `fixtures/fake-child.mjs` and do not call a model or the network.
+For a focused Module pass, use `bun test test/modules/subagents`. Tests use
+`test/modules/subagents/fixtures/fake-child.mjs` and do not call a model or the network.

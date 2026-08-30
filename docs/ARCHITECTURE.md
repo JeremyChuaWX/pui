@@ -33,11 +33,12 @@ src/shared/    Shared Primitives: lib
   └──▶ src/shared/ only
 ```
 
-`src/shared/` is importable from every layer; nothing imports `src/app/`. Two entries in `src/` sit
-outside the diagram: `src/test-support/` (test-only helpers that production code may not import)
-and `src/assets.d.ts` (ambient declarations for bundled text/Markdown assets). Everything else at
-the repo root is not source: `scripts/` holds the build, smoke-test, and boundary-check scripts,
-and `docs/` and `issues/` hold documentation.
+`src/shared/` is importable from every layer; nothing imports `src/app/`. The other entry in `src/`
+is `src/assets.d.ts`, which contains ambient declarations for bundled text and Markdown assets.
+Tests live in the sibling `test/` tree, mirroring production paths where useful. Shared test helpers
+live in `test/support/`, and process fixtures live with their tests under `test/modules/`. Everything
+else at the repo root is not source: `scripts/` holds the build, smoke-test, and boundary-check
+scripts, and `docs/` and `issues/` hold documentation.
 
 ### App, `src/app/`
 
@@ -210,25 +211,25 @@ regex-based scanner that resolves every relative and `#` import under `src/`. Ed
 - Outside a Module, only its Interfaces Directory is importable; a deep import into Module
   internals is a violation from any layer.
 - Nothing imports `src/app/`.
-- Production code may not import test files or `test-support/`.
+- Production code may not import files outside the five source layers.
 
 ### Import spelling
 
-An import is relative within a layer or Module and aliased across. The aliases are Node package
-subpath imports declared in `package.json` `"imports"`: `#app/*`, `#ui/*`, `#pi-core/*`,
-`#modules/*`, `#shared/*`, and `#test-support/*` map to `./src/<layer>/*`. Bun, `bun build`, `tsc`
-(NodeNext), and Pi's own extension loader (jiti, which the registration tests go through) all
-resolve them natively. tsconfig `paths` would not, because jiti ignores it. The checker enforces
+An import is relative within a layer or Module and aliased across. The production aliases are Node
+package subpath imports declared in `package.json` `"imports"`: `#app/*`, `#ui/*`, `#pi-core/*`,
+`#modules/*`, and `#shared/*` map to `./src/<layer>/*`. The test-only `#test-support/*` alias maps to
+`./test/support/*`. Bun, `bun build`, `tsc` (NodeNext), and Pi's own extension loader (jiti, which
+the registration tests go through) all resolve them natively. tsconfig `paths` would not, because
+jiti ignores it. The checker enforces
 the spelling both ways: a relative import that crosses a layer or Module boundary is a violation,
 a `#` alias that stays inside one is a violation, and a `#` specifier that does not match the
-imports map is a violation. The spelling rule also applies to test files, which are otherwise
-exempt. The payoff is that every cross-boundary edge is textually distinct from an intra-module
-one: `grep '#shared/'` lists every consumer of the Shared Primitives.
+imports map is a violation. The payoff is that every cross-boundary edge is textually distinct from
+an intra-module one: `grep '#shared/'` lists every consumer of the Shared Primitives.
 
-The layer rules cover production code only. `*.test.ts(x)` files and `test-support/` directories
-are exempt as import sources (module tests use `src/test-support/`, and
-`src/pi-core/register.test.ts` drives the UI controller). Bare specifiers (npm packages, the Pi
-SDK, `node:` and `bun:` builtins) and asset imports are out of scope.
+The boundary scanner covers production code under `src/`. Tests, support files, and fixtures live
+under `test/`, outside the layer graph. Test files import production code through the package
+aliases. Bare specifiers (npm packages, the Pi SDK, `node:` and `bun:` builtins) and asset imports
+are out of scope.
 
 ## Protocol ownership
 
@@ -268,18 +269,19 @@ the view models bound every string.
 
 - Test at module boundaries. Pure modules (protocols, reducers, formatters, key predicates) are
   tested as functions. Stateful modules are driven through their public interface with injected
-  fakes (`controller.test.ts` binds a fake session and emits session events; `menus.test.ts`
-  drives `createMenus` with a fake host). The boundary checker's public interface is
+  fakes (`test/ui/state/controller.test.ts` binds a fake session and emits session events;
+  `test/ui/components/menus.test.ts` drives `createMenus` with a fake host). The boundary checker's
+  public interface is
   `checkBoundaries`, tested as a function from an import graph to a violation list.
 - Timing is tested with an injected `Clock` and scripted child events, never real sleeps. Each of
   the three Limits, and the tool-stall reset on streaming output, is exercised this way.
 - Where the real boundary is a process or the filesystem, tests use the real thing: the subagents
-  child runner spawns `fixtures/fake-child.mjs`, and the file-search and web Modules run real
-  bounded processes.
+  child runner spawns `test/modules/subagents/fixtures/fake-child.mjs`, and the file-search and web
+  Modules run real bounded processes.
 - Bundled-skill tests materialize the real embedded assets and load the resulting path through
   Pi's public resource loader.
 - `bun run check` is the gate: Biome, `tsc`, the boundary check, the full test suite
-  (`bun test src scripts`), a binary build, and a smoke test of the built executable.
+  (`bun test test`), a binary build, and a smoke test of the built executable.
   `scripts/smoke-build.ts` runs `dist/pui --help` and `dist/pui --smoke` and fails if any bundled
   tool (`fd`, `rg`, `explorer`, `worker`, `subagent_check`, `subagent_wait`, `subagent_cancel`,
   `web_search`, `web_crawl`) or the `unslop` skill is missing from the printed JSON.

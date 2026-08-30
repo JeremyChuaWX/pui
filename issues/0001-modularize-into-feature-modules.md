@@ -54,9 +54,9 @@ re-homing of existing code plus formalized entry points, not a rewrite.
 ## Implementation Decisions
 
 - Five top-level layers under `src/`: `app/`, `pi-core/`, `modules/`, `shared/`, `ui/`. Only
-  source lives in `src/`; `scripts/`, `docs/`, `issues/`, and `.pui/` stay at the repo root. The
-  test-only helpers and the ambient asset declarations live at `src/test-support/` and
-  `src/assets.d.ts` — there is no `extensions/` directory, since Extensions live inside their
+  source lives in `src/`; `test/`, `scripts/`, `docs/`, `issues/`, and `.pui/` stay at the repo root.
+  Test files, helpers, and fixtures live under `test/`; ambient asset declarations live at
+  `src/assets.d.ts`. There is no `extensions/` directory, since Extensions live inside their
   Modules. (An earlier revision of this decision kept the layers at the repo root; it was reversed
   once the root listing mixed them with a dozen non-source entries.)
 - Four Modules: `subagents`, `workflows`, `web`, `file-search`. Each Module's only

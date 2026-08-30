@@ -10,12 +10,12 @@
         "#pi-core/*": "./src/pi-core/*",
         "#modules/*": "./src/modules/*",
         "#shared/*": "./src/shared/*",
-        "#test-support/*": "./src/test-support/*"
+        "#test-support/*": "./test/support/*"
     },
     "scripts": {
         "build": "bun scripts/build.ts",
         "start": "bun --preload @opentui/solid/preload src/app/index.tsx",
-        "test": "bun test src scripts",
+        "test": "bun test test",
         "typecheck": "tsc --noEmit",
         "lint": "biome check .",
         "format": "biome format --write .",
