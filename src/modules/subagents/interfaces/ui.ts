@@ -1,13 +1,13 @@
 /**
- * UI Entry: the Background Protocol as the TUI consumes it. The parser validates
- * extension-owned wire payloads and bounds every string for rendering; the bridge
- * owns event subscription, instance authority, and cancellation routing.
+ * UI Entry: validated active-Job snapshots and the Controller bridge. The pui-specific bridge is
+ * the only machinery not shared with the local Pi subagent Extension design.
  */
 export {
     BackgroundSubagentBridge,
-    type BackgroundSubagentState,
     type BackgroundSubagentViewModel,
-    parseBackgroundSubagentEvent,
-    reduceBackgroundSubagentEvent,
+    isTerminalSubagentStatus,
+    parseSubagentJobsEvent,
+    parseSubagentResultDetails,
+    type SubagentResultViewModel,
 } from "../background-bridge.js";
-export { isTerminalSubagentStatus, type SubagentStatus, type SubagentUsageV1 as SubagentUsage } from "../job-state.js";
+export type { JobState as SubagentStatus } from "../protocol.js";

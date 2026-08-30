@@ -1,97 +1,121 @@
 import type { EventBusController } from "@earendil-works/pi-coding-agent";
-import { boundedString } from "#shared/lib/validate.js";
-import {
-    BACKGROUND_SUBAGENT_CHANNEL,
-    BACKGROUND_SUBAGENT_CONTROL_CHANNEL,
-    BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
-    type BackgroundSubagentEventV1,
-    MAX_TRACKED_JOBS,
-    parseBackgroundSubagentEvent as parseWireEvent,
-} from "./background-protocol.js";
-import type { InstanceScopedJobs } from "./instance-scoped-jobs.js";
-import { reduceInstanceScopedJobs } from "./instance-scoped-jobs.js";
-import {
-    isTerminalSubagentStatus,
-    type SubagentActiveToolV1,
-    type SubagentActivityV1,
-    type SubagentJobV1,
-} from "./job-state.js";
+import { boundedString, isRecord } from "#shared/lib/validate.js";
+import { type Job, type JobState, SUBAGENT_JOBS_CHANNEL, type SubagentJobsEvent } from "./protocol.js";
 
-const MAX_TITLE = 512;
-const MAX_PROMPT = 8_000;
+const MAX_JOBS = 80;
+const JOB_STATES = new Set<JobState>(["queued", "running", "completed", "failed", "cancelled", "timed_out"]);
+const RESULT_STATES = new Set<JobState>(["completed", "failed", "timed_out"]);
 
-/** A validated, string-bounded copy of one Job, safe for rendering. */
-export interface BackgroundSubagentViewModel extends SubagentJobV1 {
+/** A validated, string-bounded copy of one active Job, safe for rendering. */
+export interface BackgroundSubagentViewModel extends Job {
     title: string;
-    prompt?: string;
 }
 
-type BackgroundSubagentEvent =
-    | { type: "ready" | "reset"; sessionId: string; instanceId: string }
-    | { type: "upsert" | "remove"; sessionId: string; instanceId: string; job: BackgroundSubagentViewModel };
+export interface SubagentResultViewModel {
+    id: string;
+    profile: string;
+    task: string;
+    status: Extract<JobState, "completed" | "failed" | "timed_out">;
+    runtimeMs: number;
+    partial: boolean;
+    totalTokens?: number;
+    error?: string;
+    location: string;
+    preview: string;
+}
 
-function boundedTool(tool: SubagentActiveToolV1): SubagentActiveToolV1 {
+function finiteNonNegative(value: unknown): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseJob(value: unknown): BackgroundSubagentViewModel | undefined {
+    if (!isRecord(value)) return undefined;
+    if (
+        typeof value.id !== "string" ||
+        typeof value.profile !== "string" ||
+        typeof value.task !== "string" ||
+        typeof value.cwd !== "string" ||
+        typeof value.state !== "string" ||
+        !JOB_STATES.has(value.state as JobState) ||
+        !finiteNonNegative(value.createdAt) ||
+        (value.startedAt !== undefined && !finiteNonNegative(value.startedAt)) ||
+        (value.endedAt !== undefined && !finiteNonNegative(value.endedAt)) ||
+        (value.error !== undefined && typeof value.error !== "string")
+    ) {
+        return undefined;
+    }
+    const task = boundedString(value.task, 8_000);
+    const oneLine = task.replace(/\s+/g, " ").trim() || "Background subagent";
     return {
-        id: boundedString(tool.id, 256),
-        name: boundedString(tool.name, 256),
-        title: boundedString(tool.title, 2_000),
-        startedAt: tool.startedAt,
+        id: boundedString(value.id, 256),
+        profile: boundedString(value.profile, 128),
+        task,
+        title: boundedString(oneLine, 512),
+        cwd: boundedString(value.cwd, 4_000),
+        state: value.state as JobState,
+        createdAt: value.createdAt,
+        ...(value.startedAt === undefined ? {} : { startedAt: value.startedAt as number }),
+        ...(value.endedAt === undefined ? {} : { endedAt: value.endedAt as number }),
+        ...(value.error === undefined ? {} : { error: boundedString(value.error, 16_000) }),
     };
 }
 
-function boundedActivity(activity: SubagentActivityV1): SubagentActivityV1 {
+export interface ParsedSubagentJobsEvent extends Omit<SubagentJobsEvent, "jobs"> {
+    jobs: BackgroundSubagentViewModel[];
+}
+
+/** Parse structured details from a persisted `subagent-result` custom message. */
+export function parseSubagentResultDetails(value: unknown): SubagentResultViewModel | undefined {
+    if (!isRecord(value)) return undefined;
+    if (
+        typeof value.id !== "string" ||
+        typeof value.profile !== "string" ||
+        typeof value.task !== "string" ||
+        typeof value.status !== "string" ||
+        !RESULT_STATES.has(value.status as JobState) ||
+        !finiteNonNegative(value.runtimeMs) ||
+        typeof value.partial !== "boolean" ||
+        (value.totalTokens !== undefined && !finiteNonNegative(value.totalTokens)) ||
+        (value.error !== undefined && typeof value.error !== "string") ||
+        typeof value.location !== "string" ||
+        typeof value.preview !== "string"
+    ) {
+        return undefined;
+    }
     return {
-        sequence: activity.sequence,
-        timestamp: activity.timestamp,
-        kind: activity.kind,
-        title: boundedString(activity.title, 2_000),
-        ...(activity.isError === undefined ? {} : { isError: activity.isError }),
+        id: boundedString(value.id, 256),
+        profile: boundedString(value.profile, 128),
+        task: boundedString(value.task, 8_000),
+        status: value.status as SubagentResultViewModel["status"],
+        runtimeMs: value.runtimeMs,
+        partial: value.partial,
+        ...(value.totalTokens === undefined ? {} : { totalTokens: value.totalTokens as number }),
+        ...(value.error === undefined ? {} : { error: boundedString(value.error, 16_000) }),
+        location: boundedString(value.location, 4_000),
+        preview: boundedString(value.preview, 16 * 1_024),
     };
 }
 
-function boundedJob(job: SubagentJobV1): SubagentJobV1 {
-    return {
-        id: boundedString(job.id, 256),
-        agent: boundedString(job.agent, 128),
-        model: boundedString(job.model, 256),
-        cwd: boundedString(job.cwd, 4_000),
-        status: job.status,
-        ...(job.phase === undefined ? {} : { phase: job.phase }),
-        ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
-        updatedAt: job.updatedAt,
-        ...(job.endedAt === undefined ? {} : { endedAt: job.endedAt }),
-        activeTools: job.activeTools.map(boundedTool),
-        recentActivity: job.recentActivity.map(boundedActivity),
-        usage: { ...job.usage },
-        ...(job.outputPreview === undefined ? {} : { outputPreview: boundedString(job.outputPreview, 16_000) }),
-        ...(job.error === undefined ? {} : { error: boundedString(job.error, 16_000) }),
-        ...(job.fullOutputPath === undefined ? {} : { fullOutputPath: boundedString(job.fullOutputPath, 4_000) }),
-    };
+/** Parse the Extension-owned active-Job snapshot and bound every rendered string. */
+export function parseSubagentJobsEvent(value: unknown): ParsedSubagentJobsEvent | undefined {
+    if (!isRecord(value) || typeof value.sessionId !== "string" || !Array.isArray(value.jobs)) return undefined;
+    if (!value.sessionId || value.sessionId.length > 256 || value.jobs.length > MAX_JOBS) return undefined;
+    const jobs: BackgroundSubagentViewModel[] = [];
+    for (const candidate of value.jobs) {
+        const job = parseJob(candidate);
+        if (!job) return undefined;
+        jobs.push(job);
+    }
+    return { sessionId: value.sessionId, jobs };
 }
 
-/** Parse the extension-owned wire format, then bound every string the views will render. */
-export function parseBackgroundSubagentEvent(value: unknown): BackgroundSubagentEvent | undefined {
-    const event = parseWireEvent(value);
-    if (!event) return undefined;
-    if (event.type === "ready" || event.type === "reset")
-        return { type: event.type, sessionId: event.sessionId, instanceId: event.instanceId };
-    const job = event.job as NonNullable<BackgroundSubagentEventV1["job"]>;
-    return {
-        type: event.type,
-        sessionId: event.sessionId,
-        instanceId: event.instanceId,
-        job: {
-            ...boundedJob(job.state),
-            title: boundedString(job.title, MAX_TITLE),
-            ...(job.prompt === undefined ? {} : { prompt: boundedString(job.prompt, MAX_PROMPT) }),
-        },
-    };
+export function isTerminalSubagentStatus(state: JobState): boolean {
+    return state !== "queued" && state !== "running";
 }
 
-export type BackgroundSubagentState = InstanceScopedJobs<BackgroundSubagentViewModel>;
-
+/** Bridges the Extension's active-Job snapshots into the Controller. */
 export class BackgroundSubagentBridge {
-    private state: BackgroundSubagentState = { jobs: new Map() };
+    private current: BackgroundSubagentViewModel[] = [];
     private sessionId = "";
     private unsubscribe?: () => void;
 
@@ -99,53 +123,23 @@ export class BackgroundSubagentBridge {
 
     bind(sessionId: string): void {
         this.unsubscribe?.();
-        this.state = { jobs: new Map() };
+        this.current = [];
         this.sessionId = sessionId;
-        this.unsubscribe = this.options.eventBus.on(BACKGROUND_SUBAGENT_CHANNEL, (payload) => {
-            const event = parseBackgroundSubagentEvent(payload);
-            if (!event) return;
-            const next = reduceBackgroundSubagentEvent(this.state, event, this.sessionId);
-            if (next === this.state) return;
-            this.state = next;
+        this.unsubscribe = this.options.eventBus.on(SUBAGENT_JOBS_CHANNEL, (payload) => {
+            const event = parseSubagentJobsEvent(payload);
+            if (!event || event.sessionId !== this.sessionId) return;
+            this.current = event.jobs;
             this.options.onChange();
         });
     }
 
     jobs(): BackgroundSubagentViewModel[] {
-        return [...this.state.jobs.values()];
-    }
-
-    cancel(id: string): boolean {
-        const job = this.state.jobs.get(id);
-        if (!job || !this.state.instanceId || isTerminalSubagentStatus(job.status)) return false;
-        this.options.eventBus.emit(BACKGROUND_SUBAGENT_CONTROL_CHANNEL, {
-            schema: BACKGROUND_SUBAGENT_CONTROL_SCHEMA,
-            version: 1,
-            sessionId: this.sessionId,
-            instanceId: this.state.instanceId,
-            type: "cancel",
-            jobId: id,
-        });
-        return true;
+        return this.current.map((job) => ({ ...job }));
     }
 
     dispose(): void {
         this.unsubscribe?.();
         this.unsubscribe = undefined;
-        this.state = { jobs: new Map() };
+        this.current = [];
     }
-}
-
-export function reduceBackgroundSubagentEvent(
-    state: BackgroundSubagentState,
-    event: BackgroundSubagentEvent,
-    sessionId: string,
-): BackgroundSubagentState {
-    return reduceInstanceScopedJobs(
-        state,
-        event.type === "upsert" || event.type === "remove"
-            ? { type: event.type, instanceId: event.instanceId, job: event.job }
-            : { type: event.type, instanceId: event.instanceId },
-        { routeMatches: event.sessionId === sessionId, maxJobs: MAX_TRACKED_JOBS, id: (job) => job.id },
-    );
 }

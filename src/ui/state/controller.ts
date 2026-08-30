@@ -115,7 +115,6 @@ interface RunningBash {
 export type PaletteCommandId =
     | "models"
     | "sessions"
-    | "subagents"
     | "new-session"
     | "compact"
     | "thinking"
@@ -222,12 +221,6 @@ const COMMANDS: readonly CommandDescriptor[] = [
         },
     },
     { name: "commands", description: "Open the command palette", aliases: ["palette"], run: () => "commands" },
-    {
-        name: "subagents",
-        description: "Inspect or cancel background subagents",
-        run: () => "subagents",
-        palette: { id: "subagents", rank: 3, label: "Subagents", detail: "Inspect or cancel background jobs" },
-    },
     {
         name: "thinking",
         description: "Cycle the thinking level",
@@ -862,10 +855,6 @@ export class PuiController {
         if (level) this.notify(`Thinking: ${level}`);
         else this.notify("This model does not support thinking", "warning");
         this.refresh();
-    }
-
-    cancelBackgroundSubagent(id: string): boolean {
-        return this.backgroundSubagents.cancel(id);
     }
 
     async abort(): Promise<void> {

@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { BackgroundSubagentViewModel } from "#modules/subagents/interfaces/ui.js";
+import type { BackgroundSubagentViewModel, SubagentResultViewModel } from "#modules/subagents/interfaces/ui.js";
 
 interface DisplayItemBase {
     id: string;
@@ -34,6 +34,11 @@ interface SummaryDisplayItem extends DisplayItemBase {
     label?: string;
 }
 
+interface SubagentResultDisplayItem extends DisplayItemBase {
+    kind: "subagentResult";
+    result: SubagentResultViewModel;
+}
+
 export interface ToolDisplayItem extends DisplayItemBase {
     kind: "tool";
     toolCallId: string;
@@ -61,6 +66,7 @@ export type DisplayItem =
     | ThinkingDisplayItem
     | CustomDisplayItem
     | SummaryDisplayItem
+    | SubagentResultDisplayItem
     | ToolDisplayItem
     | BashDisplayItem;
 
@@ -135,4 +141,4 @@ export interface AppliedPromptCompletion {
     cursorOffset: number;
 }
 
-export type PromptAction = "sent" | "models" | "sessions" | "subagents" | "commands" | "help" | "ignored";
+export type PromptAction = "sent" | "models" | "sessions" | "commands" | "help" | "ignored";

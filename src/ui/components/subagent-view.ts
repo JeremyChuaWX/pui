@@ -1,21 +1,16 @@
-import type { SubagentStatus, SubagentUsage } from "#modules/subagents/interfaces/ui.js";
-import { formatCount } from "../state/format.js";
+import type { SubagentStatus } from "#modules/subagents/interfaces/ui.js";
 import { theme } from "./theme.js";
 
 export function subagentColor(status: SubagentStatus): string {
     switch (status) {
-        case "succeeded":
+        case "completed":
             return theme.success;
         case "failed":
         case "timed_out":
-        case "stalled":
-        case "tool_stalled":
             return theme.error;
         case "cancelled":
         case "queued":
             return theme.muted;
-        case "starting":
-            return theme.info;
         case "running":
             return theme.warning;
     }
@@ -23,26 +18,23 @@ export function subagentColor(status: SubagentStatus): string {
 
 export function subagentStatusIcon(status: SubagentStatus): string {
     switch (status) {
-        case "succeeded":
+        case "completed":
             return "✓";
         case "failed":
             return "×";
         case "cancelled":
             return "⊘";
         case "timed_out":
-        case "stalled":
-        case "tool_stalled":
             return "⧖";
         case "queued":
             return "○";
-        case "starting":
         case "running":
             return "◌";
     }
 }
 
 export function subagentStatusLabel(status: SubagentStatus): string {
-    return status === "timed_out" ? "timed out" : status.replace("_", " ");
+    return status === "timed_out" ? "timed out" : status;
 }
 
 function formatElapsed(milliseconds: number): string {
@@ -55,20 +47,18 @@ function formatElapsed(milliseconds: number): string {
 }
 
 interface SubagentTiming {
+    createdAt: number;
     startedAt?: number;
-    updatedAt: number;
     endedAt?: number;
 }
 
 export function subagentElapsed(view: SubagentTiming, now = Date.now()): string {
-    const start = view.startedAt ?? view.updatedAt;
+    const start = view.startedAt ?? view.createdAt;
     const end = view.endedAt ?? now;
     return formatElapsed(Math.max(0, end - start));
 }
 
-export function compactSubagentUsage(usage: SubagentUsage): string {
-    const parts: string[] = [];
-    if (usage.turns > 0) parts.push(`${usage.turns} ${usage.turns === 1 ? "turn" : "turns"}`);
-    if (usage.totalTokens > 0) parts.push(`${formatCount(usage.totalTokens)} tokens`);
-    return parts.join(" · ");
+export function compactSubagentTask(task: string): string {
+    const oneLine = task.replace(/\s+/g, " ").trim();
+    return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
 }

@@ -1,0 +1,60 @@
+import { describe, expect, test } from "bun:test";
+import type { DialogState } from "#ui/components/dialogs.js";
+import { createMenus, type MenuController, type MenuHost } from "#ui/components/menus.js";
+
+interface Harness {
+    menus: ReturnType<typeof createMenus>;
+    dialogs: (DialogState | undefined)[];
+    controller: MenuController;
+}
+
+function createHarness(): Harness {
+    const dialogs: (DialogState | undefined)[] = [];
+    const controller: MenuController = {
+        listModels: async () => [],
+        selectModel: async () => {},
+        listSessions: async () => [],
+        switchSession: async () => {},
+        newSession: async () => {},
+        compact: async () => {},
+        cycleThinking: () => {},
+        requestExit: () => {},
+    };
+    const host: MenuHost = {
+        controller,
+        openDialog: (dialog) => dialogs.push(dialog),
+        closeDialog: () => dialogs.push(undefined),
+        openAsyncPicker: async (title, placeholder, load) =>
+            void dialogs.push({ kind: "picker", title, placeholder, items: await load() }),
+        closeCompletions: () => {},
+        toggleToolDetails: () => {},
+        openExternalEditor: () => {},
+    };
+    return { menus: createMenus(host), dialogs, controller };
+}
+
+function lastPicker(harness: Harness): Extract<DialogState, { kind: "picker" }> {
+    const dialog = harness.dialogs.at(-1);
+    if (dialog?.kind !== "picker") throw new Error("expected a picker dialog");
+    return dialog;
+}
+
+describe("menus", () => {
+    test("command palette lists every command", () => {
+        const harness = createHarness();
+        harness.menus.openCommands();
+        const picker = lastPicker(harness);
+        expect(picker.title).toBe("Commands");
+        expect(picker.items.map(({ label }) => label)).toEqual([
+            "Models",
+            "Sessions",
+            "New session",
+            "Compact context",
+            "Thinking level",
+            "Tool details",
+            "Edit in nvim",
+            "Help",
+            "Quit",
+        ]);
+    });
+});
